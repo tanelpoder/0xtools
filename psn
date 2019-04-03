@@ -1,0 +1,286 @@
+#!/usr/bin/env python
+
+# Experimental Script by Tanel Poder (https://tp.dev) and Paul Bridger
+# Use at your own risk! ;-)
+
+
+# - front-load sample reading from fs, to give greater likelihood of sample source consistency
+# - delta-based reports
+# - allow arbitrary filter expressions (?)
+
+import argparse
+import sys, os, os.path, time, datetime
+import re
+import sqlite3
+import logging
+
+import proc, report
+
+default_group_by='cmdline,state'
+#default_group_by='comm,state'
+
+### CLI handling ###
+parser = argparse.ArgumentParser()
+parser.add_argument('-d', dest="sample_seconds", metavar='seconds', type=int, default=5, help='number of seconds to sample for')
+parser.add_argument('-p', '--pid', metavar='pid', default=None, nargs='?', help='process id to sample (including all its threads), or process name regex, or omit for system-wide sampling')
+# TODO implement -t filtering below
+parser.add_argument('-t', '--thread', metavar='tid', default=None, nargs='?', help='thread/task id to sample (not implemented yet)')
+
+parser.add_argument('-r', '--recursive', default=False, action='store_true', help='also sample and report for descendant processes')
+parser.add_argument('-a', '--all-states', default=False, action='store_true', help='display threads in all states, including idle ones')
+
+parser.add_argument('--sample-hz', default=20, type=int, help='sample rate in Hz')
+parser.add_argument('--ps-hz', default=2, type=int, help='sample rate of new processes in Hz')
+
+parser.add_argument('-o', '--output-sample-db', metavar='filename', default=':memory:', type=str, help='path of sqlite3 database to persist samples to, defaults to in-memory/transient')
+parser.add_argument('-i', '--input-sample-db', metavar='filename', default=None, type=str, help='path of sqlite3 database to read samples from instead of actively sampling')
+
+parser.add_argument('-s', '--select', metavar='csv-columns', default='', help='additional columns to report')
+parser.add_argument('-g', '--group-by', metavar='csv-columns', default=default_group_by, help='additional columns to aggregate by in reports')
+#parser.add_argument('-f', '--filter', metavar='filter-sql', default='1=1', help="sample schema SQL to apply to filter report. ('active' and 'idle' keywords may also be used)")
+
+parser.add_argument('--sources', metavar='csv-source-names', default='', help='list csv sources to be captured in full. use with -o or --output-sample-db to capture proc data for manual analysis')
+parser.add_argument('--all-sources', default=False, action='store_true', help='capture all sources in full. use with -o or --output-sample-db')
+
+parser.add_argument('--debug', default=False, action='store_true', help=argparse.SUPPRESS)
+
+args = parser.parse_args()
+
+
+### Set up Logging
+if args.debug:
+    logging.basicConfig(stream=sys.stderr, level=logging.DEBUG, format='%(asctime)s %(message)s')
+else:
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='%(asctime)s %(message)s')
+
+start_time = time.time()
+sample_period_s = 1. / args.sample_hz
+sample_ps_period_s = 1. / args.ps_hz
+
+system_timer_hz = os.sysconf('SC_CLK_TCK')
+
+if args.all_sources:
+    args.sources = proc.all_sources
+else:
+    args.sources = [s for s in proc.all_sources if s.name in args.sources.split(',')]
+
+args.select = args.select.split(',')
+args.group_by = args.group_by.split(',')
+
+if not args.all_states:
+   included_states = 'active'
+else:
+   included_states = None
+
+### Report definition ###
+
+active_process_sample = report.Report(
+    'Active Threads',
+    projection=args.select+['samples', 'avg_threads'],
+    #dimensions=args.group_by+['comm', 'pid', 'task', 'state_name'],
+    dimensions=args.group_by,
+    order=['samples'],
+    where=[included_states]
+)
+
+system_activity_by_user = report.Report(
+    'Active Threads by User',
+    projection=args.select+['uid', 'comm', 'samples', 'avg_threads'],
+    #dimensions=args.group_by+['uid', 'comm', 'pid', 'task', 'state_name'],
+    dimensions=args.group_by,
+)
+
+reports = [active_process_sample]#, system_activity_by_user]
+
+
+# consolidate sources required for all reports
+sources = {} # source -> set(cols)
+for r in reports:
+    for s, cs in r.sources.items():
+        source_cols = sources.get(s, set())
+        source_cols.update(cs)
+        sources[s] = source_cols
+
+# add sources requested for full sampling
+for full_source in args.sources:
+    sources[full_source] = set([c[0] for c in full_source.available_columns])
+
+# update sources with set of reqd columns
+for s, cs in sources.items():
+    s.set_stored_columns(cs)
+
+
+def sqlexec(conn, sql):
+    logging.debug(sql)
+    conn.execute(sql)
+    logging.debug('Done')
+
+def sqlexecmany(conn, sql, samples):
+    logging.debug(sql)
+    conn.execute(sql, samples)
+    logging.debug('Done')
+
+### Schema setup ###
+if args.input_sample_db:
+    conn = sqlite3.connect(args.input_sample_db)
+else:
+    conn = sqlite3.connect(args.output_sample_db)
+    sqlexec(conn, 'pragma synchronous=0')
+
+    def create_table(conn, s):
+        def sqlite_type(python_type):
+            return {int: 'INTEGER', long: 'INTEGER', float: 'REAL', str: 'TEXT', unicode: 'TEXT'}.get(python_type)
+
+        sqlite_cols = [(c[0], sqlite_type(c[1])) for c in s.schema_columns]
+        sqlite_cols_sql = ', '.join([' '.join(c) for c in sqlite_cols])
+        sql = "CREATE TABLE IF NOT EXISTS '%s' (%s)" % (s.name, sqlite_cols_sql)
+        sqlexec(conn,sql)
+
+        sql = "CREATE INDEX IF NOT EXISTS '%s_event_idx' ON %s (event_time, pid, task)" % (s.name, s.name)
+        sqlexec(conn,sql)
+
+    for s in sources:
+        create_table(conn, s)
+
+
+### Sampling utility functions ###
+def get_matching_processes(pid_arg=None, recursive=False):
+    # where pid_arg can be a single pid, comma-separated pids, or a regex on process executable name
+
+    process_children = {} # pid -> [children-pids]
+    pid_basename = []
+
+    # TODO use os.listdir() when -r or process name regex is not needed
+    for line in  os.popen('ps -A -o pid,ppid,comm', 'r').readlines()[1:]:
+        tokens = line.split()
+        pid = int(tokens[0])
+        ppid = int(tokens[1])
+
+        children = process_children.get(ppid, [])
+        children.append(pid)
+        process_children[ppid] = children
+
+        path_cmd = tokens[2]
+        #cmd = os.path.basename(path_cmd)
+        cmd = path_cmd
+        pid_basename.append((pid, cmd))
+
+    if not pid_arg:
+        return [p for p, b in pid_basename]
+
+    try:
+        arg_pids = [int(p) for p in pid_arg.split(',')]
+        selected_pids = [p for p, b in pid_basename if p in arg_pids] 
+    except ValueError as e:
+        selected_pids = [p for p, b in pid_basename if re.search(pid_arg, b)]
+
+    if recursive:
+        i = 0
+        while i < len(selected_pids):
+            children = process_children.get(selected_pids[i], [])
+            selected_pids.extend(children)
+            i += 1
+    # deduplicate pids
+    selected_pids=list(set(selected_pids))
+    return selected_pids
+
+
+def get_process_tasks(pids):
+    tasks_by_pid = {}
+    for pid in pids:
+        try:
+            tasks_by_pid[pid] = os.listdir('/proc/%s/task' % pid)
+        except OSError as e:
+            pass # process may nolonger exist by the time we get here
+    return tasks_by_pid
+
+
+
+### Sampling loop ###
+if args.input_sample_db:
+    num_sample_events = int(sqlexec(conn,'SELECT COUNT(DISTINCT(event_time)) FROM stat').fetchone()[0])
+    total_measure_s = 0.
+else:
+    print
+    print 'Process Snapper sampling %s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)
+    num_sample_events = 0
+    num_ps_samples = 0
+    total_measure_s = 0.
+
+    selected_pids = None
+    process_tasks = {}
+    
+    sample_seconds = args.sample_seconds
+
+    try:
+        while time.time() < start_time + args.sample_seconds:
+            measure_begin_time = datetime.datetime.utcnow()
+            event_time = measure_begin_time.isoformat()
+
+            # refresh matching pids at a much lower frequency than process sampling as the underlying ps is expensive
+            if not selected_pids or time.time() > start_time + num_ps_samples * sample_ps_period_s:
+                selected_pids = get_matching_processes(args.pid, args.recursive)
+                process_tasks = get_process_tasks(selected_pids)
+                num_ps_samples += 1
+
+                if not selected_pids:
+                    print 'No matching processes found:', args.pid
+                    sys.exit(1)
+
+            for pid in selected_pids:
+                try:
+                    # if any process-level samples fail, don't insert any sample event rows for process or tasks...
+                    process_samples = [s.sample(event_time, pid, pid) for s in sources.keys() if s.task_level == False]
+
+                    for s, samples in zip([s for s in sources.keys() if s.task_level == False], process_samples):
+                        sqlexecmany(conn, s.insert_sql, samples)
+
+                    for task in process_tasks.get(pid, []):
+                        try:
+                            # ...but if a task disappears mid-sample simply discard data for that task only
+                            task_samples = [s.sample(event_time, pid, task) for s in sources.keys() if s.task_level == True]
+
+                            for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
+                                # TODO factor out
+                                #sqlexecmany(conn, s.insert_sql, samples)
+                                conn.executemany(s.insert_sql, samples)
+
+                        except IOError, e:
+                            continue
+
+                except IOError, e:
+                    continue
+
+            conn.commit()
+
+            num_sample_events += 1
+            measure_delta = datetime.datetime.utcnow() - measure_begin_time
+            total_measure_s += measure_delta.seconds + (measure_delta.microseconds * 0.000001)
+
+            sleep_until = start_time + num_sample_events * sample_period_s
+            time.sleep(max(0, sleep_until - time.time()))
+
+        print 'finished sampling'
+        print
+    except KeyboardInterrupt as e:
+        sample_seconds = time.time() - start_time
+        print 'sampling interrupted'
+        print
+
+
+
+### Query and report ###
+for r in reports:
+    r.output_report(conn)
+
+print
+print 'samples: %s' %  num_sample_events,
+if not args.input_sample_db:
+    print '(expected: %s)' % int(sample_seconds * args.sample_hz)
+else:
+    print
+first_table_name = sources.keys()[0].name
+print 'total processes: %s,' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()), 'threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone())
+print 'runtime: %.2f,' % (time.time() - start_time), 'measure time: %.2f' % total_measure_s
+print
+
