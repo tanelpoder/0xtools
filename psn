@@ -24,7 +24,7 @@ import logging
 
 import proc, report
 
-default_group_by='cmdline,state'
+default_group_by='comm,state'
 #default_group_by='comm,state'
 
 ### CLI handling ###
@@ -44,7 +44,8 @@ parser.add_argument('-o', '--output-sample-db', metavar='filename', default=':me
 parser.add_argument('-i', '--input-sample-db', metavar='filename', default=None, type=str, help='path of sqlite3 database to read samples from instead of actively sampling')
 
 parser.add_argument('-s', '--select', metavar='csv-columns', default='', help='additional columns to report')
-parser.add_argument('-g', '--group-by', metavar='csv-columns', default=default_group_by, help='additional columns to aggregate by in reports')
+parser.add_argument('-g', '--group-by', metavar='csv-columns', default=default_group_by, help='columns to aggregate by in reports')
+parser.add_argument('-G', '--append-group-by', metavar='csv-columns', default=None, help='default + additional columns to aggregate by in reports')
 #parser.add_argument('-f', '--filter', metavar='filter-sql', default='1=1', help="sample schema SQL to apply to filter report. ('active' and 'idle' keywords may also be used)")
 
 parser.add_argument('--sources', metavar='csv-source-names', default='', help='list csv sources to be captured in full. use with -o or --output-sample-db to capture proc data for manual analysis')
@@ -75,6 +76,10 @@ else:
 
 args.select = args.select.split(',')
 args.group_by = args.group_by.split(',')
+if args.append_group_by: 
+    args.append_group_by = args.append_group_by.split(',')
+else:
+    args.append_group_by = []
 
 if not args.all_states:
    included_states = 'active'
@@ -86,8 +91,7 @@ else:
 active_process_sample = report.Report(
     'Active Threads',
     projection=args.select+['samples', 'avg_threads'],
-    #dimensions=args.group_by+['comm', 'pid', 'task', 'state_name'],
-    dimensions=args.group_by,
+    dimensions=args.group_by+args.append_group_by,
     order=['samples'],
     where=[included_states]
 )
@@ -95,8 +99,7 @@ active_process_sample = report.Report(
 system_activity_by_user = report.Report(
     'Active Threads by User',
     projection=args.select+['uid', 'comm', 'samples', 'avg_threads'],
-    #dimensions=args.group_by+['uid', 'comm', 'pid', 'task', 'state_name'],
-    dimensions=args.group_by,
+    dimensions=args.group_by+args.append_group_by,
 )
 
 reports = [active_process_sample]#, system_activity_by_user]
@@ -175,14 +178,13 @@ def get_matching_processes(pid_arg=None, recursive=False):
         pid_basename.append((pid, cmd))
 
     if pid_arg:
-        #return [p for p, b in pid_basename]
         try:
             arg_pids = [int(p) for p in pid_arg.split(',')]
             selected_pids = [p for p, b in pid_basename if p in arg_pids] 
         except ValueError as e:
             selected_pids = [p for p, b in pid_basename if re.search(pid_arg, b)]
 
-        # recursive is not needed when looking for all pids anyway
+        # recursive pid walking is not needed when looking for all system pids anyway
         if recursive:
             i = 0
             while i < len(selected_pids):
@@ -217,7 +219,8 @@ if args.input_sample_db:
     total_measure_s = 0.
 else:
     print
-    print 'Process Snapper sampling %s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)
+    print('Process Snapper sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
+    sys.stdout.flush()
     num_sample_events = 0
     num_ps_samples = 0
     total_measure_s = 0.
@@ -275,7 +278,7 @@ else:
             sleep_until = start_time + num_sample_events * sample_period_s
             time.sleep(max(0, sleep_until - time.time()))
 
-        print 'finished sampling'
+        print 'finished.'
         print
     except KeyboardInterrupt as e:
         sample_seconds = time.time() - start_time
