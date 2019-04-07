@@ -228,7 +228,7 @@ else:
 
     selected_pids = None
     process_tasks = {}
-    sample_ioerrors = 0
+    sample_ioerrors = 0  # detect permissions issues with /proc/access
     
     sample_seconds = args.sample_seconds
 
@@ -311,5 +311,6 @@ print
 
 # TODO needs some improvement as some file IO errors come from processes/threads exiting 
 # before we get to sample all files of interest under the PID
-#if final_warning: print final_warning
+if sample_ioerrors > 100:
+    print final_warning
 
