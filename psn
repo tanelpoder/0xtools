@@ -25,7 +25,7 @@ import logging
 import proc, report
 
 default_group_by='comm,state'
-#default_group_by='comm,state'
+final_warning='' # show warning text in the end of output, if any
 
 ### CLI handling ###
 parser = argparse.ArgumentParser()
@@ -219,7 +219,8 @@ if args.input_sample_db:
     total_measure_s = 0.
 else:
     print
-    print('Process Snapper sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
+    print('Linux Process Snapper v0.11 by Tanel Poder [https://tp.dev/psnapper]')
+    print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
     sys.stdout.flush()
     num_sample_events = 0
     num_ps_samples = 0
@@ -227,6 +228,7 @@ else:
 
     selected_pids = None
     process_tasks = {}
+    sample_ioerrors = 0
     
     sample_seconds = args.sample_seconds
 
@@ -264,9 +266,13 @@ else:
                                 conn.executemany(s.insert_sql, samples)
 
                         except IOError, e:
+                            sample_ioerrors +=1
+                            logging.debug(e)
                             continue
 
                 except IOError, e:
+                    sample_ioerrors +=1
+                    logging.debug(e)
                     continue
 
             conn.commit()
@@ -279,12 +285,13 @@ else:
             time.sleep(max(0, sleep_until - time.time()))
 
         print 'finished.'
+        if sample_ioerrors: final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
         print
     except KeyboardInterrupt as e:
         sample_seconds = time.time() - start_time
-        print 'sampling interrupted'
+        print 'sampling interrupted.'
+        if sample_ioerrors: final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
         print
-
 
 
 ### Query and report ###
@@ -301,4 +308,8 @@ first_table_name = sources.keys()[0].name
 print 'total processes: %s,' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()), 'threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone())
 print 'runtime: %.2f,' % (time.time() - start_time), 'measure time: %.2f' % total_measure_s
 print
+
+# TODO needs some improvement as some file IO errors come from processes/threads exiting 
+# before we get to sample all files of interest under the PID
+#if final_warning: print final_warning
 
