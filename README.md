@@ -1,6 +1,6 @@
-# psnapper
+# Linux Process Snapper
 
-Linux Process Snapper (pSnapper, psn) is a Linux `/proc` profiler that works by sampling Linux task states and other metrics from `/proc/PID/task/TID pseudofiles`. pSnapper is a _passive sampling profiler_, it does not attach to your program to slow it down, nor alter your program execution path or signal handling (like `strace` may inadvertently do).
+Linux Process Snapper (pSnapper, psn) is a Linux `/proc` profiler that works by sampling Linux task states and other metrics from `/proc/PID/task/TID` pseudofiles. pSnapper is a _passive sampling profiler_, it does not attach to your program to slow it down, nor alter your program execution path or signal handling (like `strace` may inadvertently do).
 
 As pSnapper is just a python script reading /proc files, it does not require software installation, nor install any kernel modules. pSnapper does not even require root access in most cases. The exception is if you want to sample some “private” /proc files (like syscall, and kernel stack) of processes running under other users.
 
