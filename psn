@@ -219,7 +219,7 @@ if args.input_sample_db:
     total_measure_s = 0.
 else:
     print
-    print('Linux Process Snapper v0.11 by Tanel Poder [https://tp.dev/psnapper]')
+    print('Linux Process Snapper v0.12 by Tanel Poder [https://tp.dev/psnapper]')
     print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
     sys.stdout.flush()
     num_sample_events = 0
