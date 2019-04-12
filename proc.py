@@ -247,7 +247,7 @@ status = ProcSource('status', '/proc/%s/status', [
 
 ### syscall ###
 def extract_system_call_ids(unistd_64_fh):
-    syscall_id_to_name = {'running': '[userland]', '-1': '[kernel_thread]'}
+    syscall_id_to_name = {'running': '[running]', '-1': '[kernel_direct]'}
     name_prefix = '__NR_'
 
     for line in unistd_64_fh.readlines():
@@ -270,7 +270,7 @@ def get_system_call_names():
         except IOError, e:
             pass
 
-    raise 'unistd_64.h not found'
+    raise Exception('unistd_64.h not found in' + ' or '.join(unistd_64_paths) + '.\n           You may need to "yum install kernel-headers" or "apt-get install libc6-dev"\n           until this dependency is removed in a newer pSnapper version')
 
 
 syscall_id_to_name = get_system_call_names()
