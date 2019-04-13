@@ -15,7 +15,7 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # structures defining /proc
-import os, os.path
+import os, os.path, re
 
 
 class ProcSource:
@@ -56,9 +56,7 @@ class ProcSource:
 
             def create_row_sample(raw_sample):
                 full_sample = self.parse_sample(self, raw_sample)
-                print full_sample
                 r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
-                print r
                 return r
 
             try:
@@ -110,9 +108,13 @@ def parse_stat_sample(proc_source, sample):
     return tokens
 
 
+trim_comm = re.compile('\d+')
+
+
 stat = ProcSource('stat', '/proc/%s/task/%s/stat', [
     ('pid', int, 0),
-    ('comm', str, 1),
+    ('comm', str, 1, lambda c: re.sub(trim_comm, '*', c)),
+    ('comm2', str, 1),
     ('state_id', str, 2),
     ('state', str, 2, lambda state_id: process_state_name.get(state_id, state_id)),
     ('ppid', int, 3),
@@ -377,10 +379,9 @@ def read_stack_samples(fh):
         func = x.split(' ')[1].split('+')[0]
         if func not in ['entry_SYSCALL_64_after_hwframe','do_syscall_64']:
             if result:          # skip writing the 1st "->" 
-                result += ' -> '  
-            result += func
+                result += '->'  
+            result += func + '()'
 
-    print result or '-'
     return [result or '-']
 
 

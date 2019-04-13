@@ -27,7 +27,7 @@ def flatten(li):
 
 ### ASCII table output ###
 def output_table_report(report, dataset):
-    max_field_width = 200
+    max_field_width = 500
     header_fmts, field_fmts = [], []
     total_field_width = 0
 

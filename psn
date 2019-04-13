@@ -75,9 +75,10 @@ system_timer_hz = os.sysconf('SC_CLK_TCK')
 if args.list:
     for p in proc.all_sources:
         print "\n" + p.name
-        print "===================="
+        print "===================================="
         for c in p.available_columns:
-            print "%20s %10s" % (c[0], type(c[1]))
+            if c[1]:
+                print "%-30s %5s" % (c[0], c[1].__name__)
 
     exit(0)
 
@@ -231,7 +232,7 @@ if args.input_sample_db:
     total_measure_s = 0.
 else:
     print
-    print('Linux Process Snapper v0.12 by Tanel Poder [https://tp.dev/psnapper]')
+    print('Linux Process Snapper v0.13 by Tanel Poder [https://tp.dev/psnapper]')
     print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
     sys.stdout.flush()
     num_sample_events = 0
@@ -297,12 +298,10 @@ else:
             time.sleep(max(0, sleep_until - time.time()))
 
         print 'finished.'
-        if sample_ioerrors: final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
         print
     except KeyboardInterrupt as e:
         sample_seconds = time.time() - start_time
         print 'sampling interrupted.'
-        if sample_ioerrors: final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
         print
 
 
@@ -310,12 +309,14 @@ else:
 for r in reports:
     r.output_report(conn)
 
-print
 print 'samples: %s' %  num_sample_events,
 if not args.input_sample_db:
     print '(expected: %s)' % int(sample_seconds * args.sample_hz)
+    if num_sample_events < 10:
+       final_warning += 'Warning: less than 10 samples captured. Reduce the amount of processes monitored or run pSnapper for longer.'
 else:
     print
+
 first_table_name = sources.keys()[0].name
 print 'total processes: %s,' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()), 'threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone())
 print 'runtime: %.2f,' % (time.time() - start_time), 'measure time: %.2f' % total_measure_s
@@ -323,6 +324,11 @@ print
 
 # TODO needs some improvement as some file IO errors come from processes/threads exiting 
 # before we get to sample all files of interest under the PID
-if sample_ioerrors > 100:
-    print final_warning
+#if sample_ioerrors > 100:
 
+if sample_ioerrors >= 100:
+    final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
+
+if final_warning:
+    print final_warning
+    print 
