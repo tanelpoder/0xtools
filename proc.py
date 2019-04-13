@@ -56,7 +56,10 @@ class ProcSource:
 
             def create_row_sample(raw_sample):
                 full_sample = self.parse_sample(self, raw_sample)
-                return [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
+                print full_sample
+                r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
+                print r
+                return r
 
             try:
                 return [create_row_sample(rs) for rs in raw_samples]
@@ -365,13 +368,24 @@ parse_sample=parse_net_sample)
 
 ### stack ###
 def read_stack_samples(fh):
-    return ['%s %s' % (depth, stack_line) for depth, stack_line in enumerate(fh.readlines()[::-1])]
+    result = ''
+
+    # reverse stack and ignore the (reversed) top frame 0xfffffffffffff
+    #                          |  |
+    #                          v  v
+    for x in fh.readlines()[::-1][1:]:
+        func = x.split(' ')[1].split('+')[0]
+        if func not in ['entry_SYSCALL_64_after_hwframe','do_syscall_64']:
+            if result:          # skip writing the 1st "->" 
+                result += ' -> '  
+            result += func
+
+    print result or '-'
+    return [result or '-']
 
 
 stack = ProcSource('stack', '/proc/%s/task/%s/stack', [
-    ('depth', int, 0),
-    ('address', str, 1, lambda a: a[2:-2] if len(a) > 4 else a),
-    ('symbol', str, 2, lambda s: s.split('+')[0]),
+    ('kstack', str, 0),
 ], None,
 task_level=True,
 read_samples=read_stack_samples)

@@ -48,9 +48,12 @@ parser.add_argument('-g', '--group-by', metavar='csv-columns', default=default_g
 parser.add_argument('-G', '--append-group-by', metavar='csv-columns', default=None, help='default + additional columns to aggregate by in reports')
 #parser.add_argument('-f', '--filter', metavar='filter-sql', default='1=1', help="sample schema SQL to apply to filter report. ('active' and 'idle' keywords may also be used)")
 
-parser.add_argument('--sources', metavar='csv-source-names', default='', help='list csv sources to be captured in full. use with -o or --output-sample-db to capture proc data for manual analysis')
-parser.add_argument('--all-sources', default=False, action='store_true', help='capture all sources in full. use with -o or --output-sample-db')
+parser.add_argument('--list', default=None, action='store_true', help='list all available columns')
 
+# specify csv sources to be captured in full. use with -o or --output-sample-db to capture proc data for manual analysis
+parser.add_argument('--sources', metavar='csv-source-names', default='', help=argparse.SUPPRESS) 
+# capture all sources in full. use with -o or --output-sample-db', help=argparse.SUPPRESS)
+parser.add_argument('--all-sources', default=False, action='store_true', help=argparse.SUPPRESS)
 parser.add_argument('--debug', default=False, action='store_true', help=argparse.SUPPRESS)
 parser.add_argument('--show-yourself', default=False, action='store_true', help=argparse.SUPPRESS)
 
@@ -68,6 +71,15 @@ sample_period_s = 1. / args.sample_hz
 sample_ps_period_s = 1. / args.ps_hz
 
 system_timer_hz = os.sysconf('SC_CLK_TCK')
+
+if args.list:
+    for p in proc.all_sources:
+        print "\n" + p.name
+        print "===================="
+        for c in p.available_columns:
+            print "%20s %10s" % (c[0], type(c[1]))
+
+    exit(0)
 
 if args.all_sources:
     args.sources = proc.all_sources
