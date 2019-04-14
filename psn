@@ -25,7 +25,6 @@ import logging
 import proc, report
 
 default_group_by='comm,state'
-final_warning='' # show warning text in the end of output, if any
 
 ### CLI handling ###
 parser = argparse.ArgumentParser()
@@ -54,7 +53,9 @@ parser.add_argument('--list', default=None, action='store_true', help='list all 
 parser.add_argument('--sources', metavar='csv-source-names', default='', help=argparse.SUPPRESS) 
 # capture all sources in full. use with -o or --output-sample-db', help=argparse.SUPPRESS)
 parser.add_argument('--all-sources', default=False, action='store_true', help=argparse.SUPPRESS)
+
 parser.add_argument('--debug', default=False, action='store_true', help=argparse.SUPPRESS)
+parser.add_argument('--profile', default=False, action='store_true', help=argparse.SUPPRESS)
 parser.add_argument('--show-yourself', default=False, action='store_true', help=argparse.SUPPRESS)
 
 args = parser.parse_args()
@@ -225,110 +226,131 @@ def get_process_tasks(pids):
     return tasks_by_pid
 
 
+## Main sampling loop ###
+def main():
+    final_warning='' # show warning text in the end of output, if any
 
-## Sampling loop ###
-if args.input_sample_db:
-    num_sample_events = int(sqlexec(conn,'SELECT COUNT(DISTINCT(event_time)) FROM stat').fetchone()[0])
-    total_measure_s = 0.
-else:
-    print
-    print('Linux Process Snapper v0.13 by Tanel Poder [https://tp.dev/psnapper]')
-    print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
-    sys.stdout.flush()
-    num_sample_events = 0
-    num_ps_samples = 0
-    total_measure_s = 0.
-
-    selected_pids = None
-    process_tasks = {}
-    sample_ioerrors = 0  # detect permissions issues with /proc/access
+    if args.input_sample_db:
+        num_sample_events = int(sqlexec(conn,'SELECT COUNT(DISTINCT(event_time)) FROM stat').fetchone()[0])
+        total_measure_s = 0.
+    else:
+        print
+        print('Linux Process Snapper v0.14 by Tanel Poder [https://tp.dev/psnapper]')
+        print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
+        sys.stdout.flush()
+        num_sample_events = 0
+        num_ps_samples = 0
+        total_measure_s = 0.
     
-    sample_seconds = args.sample_seconds
-
-    try:
-        while time.time() < start_time + args.sample_seconds:
-            measure_begin_time = datetime.datetime.utcnow()
-            event_time = measure_begin_time.isoformat()
-
-            # refresh matching pids at a much lower frequency than process sampling as the underlying ps is expensive
-            if not selected_pids or time.time() > start_time + num_ps_samples * sample_ps_period_s:
-                selected_pids = get_matching_processes(args.pid, args.recursive)
-                process_tasks = get_process_tasks(selected_pids)
-                num_ps_samples += 1
-
-                if not selected_pids:
-                    print 'No matching processes found:', args.pid
-                    sys.exit(1)
-
-            for pid in selected_pids:
-                try:
-                    # if any process-level samples fail, don't insert any sample event rows for process or tasks...
-                    process_samples = [s.sample(event_time, pid, pid) for s in sources.keys() if s.task_level == False]
-
-                    for s, samples in zip([s for s in sources.keys() if s.task_level == False], process_samples):
-                        sqlexecmany(conn, s.insert_sql, samples)
-
-                    for task in process_tasks.get(pid, []):
-                        try:
-                            # ...but if a task disappears mid-sample simply discard data for that task only
-                            task_samples = [s.sample(event_time, pid, task) for s in sources.keys() if s.task_level == True]
-
-                            for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
-                                # TODO factor out
-                                #sqlexecmany(conn, s.insert_sql, samples)
-                                conn.executemany(s.insert_sql, samples)
-
-                        except IOError, e:
-                            sample_ioerrors +=1
-                            logging.debug(e)
-                            continue
-
-                except IOError, e:
-                    sample_ioerrors +=1
-                    logging.debug(e)
-                    continue
-
-            conn.commit()
-
-            num_sample_events += 1
-            measure_delta = datetime.datetime.utcnow() - measure_begin_time
-            total_measure_s += measure_delta.seconds + (measure_delta.microseconds * 0.000001)
-
-            sleep_until = start_time + num_sample_events * sample_period_s
-            time.sleep(max(0, sleep_until - time.time()))
-
-        print 'finished.'
+        selected_pids = None
+        process_tasks = {}
+        sample_ioerrors = 0  # detect permissions issues with /proc/access
+        
+        sample_seconds = args.sample_seconds
+    
+        try:
+            while time.time() < start_time + args.sample_seconds:
+                measure_begin_time = datetime.datetime.utcnow()
+                event_time = measure_begin_time.isoformat()
+    
+                # refresh matching pids at a much lower frequency than process sampling as the underlying ps is expensive
+                if not selected_pids or time.time() > start_time + num_ps_samples * sample_ps_period_s:
+                    selected_pids = get_matching_processes(args.pid, args.recursive)
+                    process_tasks = get_process_tasks(selected_pids)
+                    num_ps_samples += 1
+    
+                    if not selected_pids:
+                        print 'No matching processes found:', args.pid
+                        sys.exit(1)
+    
+                for pid in selected_pids:
+                    try:
+                        # if any process-level samples fail, don't insert any sample event rows for process or tasks...
+                        process_samples = [s.sample(event_time, pid, pid) for s in sources.keys() if s.task_level == False]
+    
+                        for s, samples in zip([s for s in sources.keys() if s.task_level == False], process_samples):
+                            sqlexecmany(conn, s.insert_sql, samples)
+    
+                        for task in process_tasks.get(pid, []):
+                            try:
+                                # ...but if a task disappears mid-sample simply discard data for that task only
+                                task_samples = [s.sample(event_time, pid, task) for s in sources.keys() if s.task_level == True]
+    
+                                for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
+                                    # TODO factor out
+                                    #sqlexecmany(conn, s.insert_sql, samples)
+                                    conn.executemany(s.insert_sql, samples)
+    
+                            except IOError, e:
+                                sample_ioerrors +=1
+                                logging.debug(e)
+                                continue
+    
+                    except IOError, e:
+                        sample_ioerrors +=1
+                        logging.debug(e)
+                        continue
+    
+                conn.commit()
+    
+                num_sample_events += 1
+                measure_delta = datetime.datetime.utcnow() - measure_begin_time
+                total_measure_s += measure_delta.seconds + (measure_delta.microseconds * 0.000001)
+    
+                sleep_until = start_time + num_sample_events * sample_period_s
+                time.sleep(max(0, sleep_until - time.time()))
+    
+            print 'finished.'
+            print
+        except KeyboardInterrupt as e:
+            sample_seconds = time.time() - start_time
+            print 'sampling interrupted.'
+            print
+    
+    
+    ### Query and report ###
+    for r in reports:
+        r.output_report(conn)
+    
+    print 'samples: %s' %  num_sample_events,
+    if not args.input_sample_db:
+        print '(expected: %s)' % int(sample_seconds * args.sample_hz)
+        if num_sample_events < 10:
+           final_warning += 'Warning: less than 10 samples captured. Reduce the amount of processes monitored or run pSnapper for longer.'
+    else:
         print
-    except KeyboardInterrupt as e:
-        sample_seconds = time.time() - start_time
-        print 'sampling interrupted.'
-        print
-
-
-### Query and report ###
-for r in reports:
-    r.output_report(conn)
-
-print 'samples: %s' %  num_sample_events,
-if not args.input_sample_db:
-    print '(expected: %s)' % int(sample_seconds * args.sample_hz)
-    if num_sample_events < 10:
-       final_warning += 'Warning: less than 10 samples captured. Reduce the amount of processes monitored or run pSnapper for longer.'
-else:
+    
+    first_table_name = sources.keys()[0].name
+    print 'total processes: %s,' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()), 'threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone())
+    print 'runtime: %.2f,' % (time.time() - start_time), 'measure time: %.2f' % total_measure_s
     print
+    
+    # TODO needs some improvement as some file IO errors come from processes/threads exiting 
+    # before we get to sample all files of interest under the PID
+    #if sample_ioerrors > 100:
+    
+    if sample_ioerrors >= 100:
+        final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
+    
+    if final_warning:
+        print final_warning
+        print
 
-first_table_name = sources.keys()[0].name
-print 'total processes: %s,' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()), 'threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone())
-print 'runtime: %.2f,' % (time.time() - start_time), 'measure time: %.2f' % total_measure_s
-print
 
-# TODO needs some improvement as some file IO errors come from processes/threads exiting 
-# before we get to sample all files of interest under the PID
-#if sample_ioerrors > 100:
+## dump python self-profiling data on exit
+def exit(r):
+    if args.profile:
+        import pstats
+        p = pstats.Stats('psn-prof.dmp')
+        p.sort_stats('cumulative').print_stats(30)
+    sys.exit(r)
 
-if sample_ioerrors >= 100:
-    final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
 
-if final_warning:
-    print final_warning
-    print 
+## let's do this!	
+if args.profile:
+    import cProfile
+    cProfile.run('main()', 'psn-prof.dmp')
+else:
+    main()
+
+exit(0)
