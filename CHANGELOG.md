@@ -3,7 +3,7 @@
 0.14
 ======================
 * report file names that are accessed with I/O syscalls with arg0 as the file descriptor
-  - example: sudo psn -G syscall,filename
+  - example: `sudo psn -G syscall,filename`
   - works with read, write, pread, fsync, recvmsg, sendmsg etc, but not with batch io syscalls like io_submit(), select() that may submit multiple fds per call
 
 * no need to install kernel-headers package anymore as pSnapper now has the unistd.h file bundled with the install
