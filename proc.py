@@ -66,8 +66,8 @@ class ProcSource:
                 if self.name == 'syscall':
                     # special case: kernel threads show all-zero "syscall" on newer kernels like 4.x 
                     # otherwise it incorrectly looks like that kernel is in a "read" syscall (id=0 on x86_64)
-                    if full_sample == ['0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0']:
-                        full_sample[0] = 'kernel_thread'
+                    if full_sample[0] == '-1' or full_sample == ['0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0']:
+                        full_sample = ['kernel_thread', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0']
                      
                     try:
                         syscall_id = full_sample[0]  # get string version of syscall number or "running" or "-1"
