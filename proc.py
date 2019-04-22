@@ -15,7 +15,9 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # structures defining /proc
-import os, os.path, re
+import os, os.path
+import re
+import platform
 
 
 class ProcSource:
@@ -50,12 +52,49 @@ class ProcSource:
 
     def sample(self, event_time, pid, task):
         sample_path = self.path % (pid, task) if self.task_level else self.path % pid
+
         with open(sample_path) as f:
             full_sample = None
             raw_samples = self.read_samples(f)
 
             def create_row_sample(raw_sample):
                 full_sample = self.parse_sample(self, raw_sample)
+
+                # some syscall-specific code pushed down to general sampling function
+                # call readlink() to get the file name for system calls that have a file descriptor as arg0
+                filename = ''
+                if self.name == 'syscall':
+                    # special case: kernel threads show all-zero "syscall" on newer kernels like 4.x 
+                    # otherwise it incorrectly looks like that kernel is in a "read" syscall (id=0 on x86_64)
+                    if full_sample == ['0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0', '0x0']:
+                        full_sample[0] = 'kernel_thread'
+                     
+                    try:
+                        syscall_id = full_sample[0]  # get string version of syscall number or "running" or "-1"
+                    except (ValueError, IndexError) as e:
+                        print 'problem extracting syscall id', self.name, 'sample:'
+                        print full_sample
+                        print
+                        raise
+
+                    if syscall_id in syscalls_with_fd_arg:
+                        try:
+                            arg0  = int(full_sample[1], 16)
+                            # a hacky way for avoiding reading false file descriptors for kernel threads on older kernels
+                            # (like 2.6.32) that show "syscall 0x0" for kernel threads + some random false arguments. TODO refactor this and kernel_thread translation above
+                            if arg0 < 65536:
+                                filename = os.readlink("/proc/%s/fd/%s" % (pid, arg0)) + " " + special_fds.get(arg0, '')
+                     
+                        except (OSError) as e:
+                            # file has been closed or process has disappeared
+                            print 'problem with translating fd to name /proc/%s/fd/%s' % (pid, arg0), 'sample:'
+                            print full_sample
+                            print 
+                            filename = '-'
+
+                full_sample += (filename,)
+                         
+                #r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
                 r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
                 return r
 
@@ -252,7 +291,7 @@ status = ProcSource('status', '/proc/%s/status', [
 
 ### syscall ###
 def extract_system_call_ids(unistd_64_fh):
-    syscall_id_to_name = {'running': '[running]', '-1': '[kernel_direct]'}
+    syscall_id_to_name = {'running': '[running]', '-1': '[kernel_direct]', 'kernel_thread':'[kernel_thread]'}
     name_prefix = '__NR_'
 
     for line in unistd_64_fh.readlines():
@@ -265,12 +304,14 @@ def extract_system_call_ids(unistd_64_fh):
 
     return syscall_id_to_name
 
-
+# currently assuming all platforms are x86_64
 def get_system_call_names():
-    unistd_64_paths = ['/usr/include/asm/', '/usr/include/x86_64-linux-gnu/asm/']
+    psn_dir=os.path.dirname(os.path.realpath(__file__))
+    kernel_ver=platform.release().split('-')[0]
+    unistd_64_paths = ['/usr/include/asm/unistd_64.h', '/usr/include/x86_64-linux-gnu/asm/unistd_64.h', '/usr/include/asm-x86_64/unistd.h', psn_dir+'/syscall_64_'+kernel_ver+'.h', psn_dir+'/syscall_64.h']
     for path in unistd_64_paths:
         try:
-            with open(os.path.join(path, 'unistd_64.h')) as f:
+            with open(path) as f:
                 return extract_system_call_ids(f)
         except IOError, e:
             pass
@@ -280,6 +321,26 @@ def get_system_call_names():
 
 syscall_id_to_name = get_system_call_names()
 
+# define syscalls for which we can look up filename from fd argument
+syscall_name_to_id = dict((y,x) for x,y in syscall_id_to_name.iteritems())
+
+syscalls_with_fd_arg = set([                   
+    syscall_name_to_id['read']              
+  , syscall_name_to_id['write']             
+  , syscall_name_to_id['pread64']           
+  , syscall_name_to_id['pwrite64']          
+  , syscall_name_to_id['fsync']             
+  , syscall_name_to_id['fdatasync']         
+  , syscall_name_to_id['recvfrom']          
+  , syscall_name_to_id['sendto']            
+  , syscall_name_to_id['recvmsg']           
+  , syscall_name_to_id['sendmsg']           
+  , syscall_name_to_id['epoll_wait']        
+  , syscall_name_to_id['ioctl']             
+  , syscall_name_to_id['accept']            
+])
+
+special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
 
 def parse_syscall_sample(proc_source, sample):
     tokens = sample.split()
@@ -289,19 +350,29 @@ def parse_syscall_sample(proc_source, sample):
         return tokens
 
 
+trim_socket = re.compile('\d+')
+
 syscall = ProcSource('syscall', '/proc/%s/task/%s/syscall', [
-    ('syscall_id', int, 0, lambda sn: -2 if sn == 'running' else int(sn)),
-    ('syscall', str, 0, lambda sn: syscall_id_to_name[sn]), # convert syscall_id via unistd_64.h into call name
-    ('arg0', str, 1),
-    ('arg1', str, 2),
-    ('arg2', str, 3),
-    ('arg3', str, 4),
-    ('arg4', str, 5),
-    ('arg5', str, 6),
-    ('esp', None, 7), # stack pointer
-    ('eip', None, 8), # program counter/instruction pointer
+    ('syscall_id', int,  0, lambda sn: -2 if sn == 'running' else int(sn)),
+    ('syscall',    str,  0, lambda sn: syscall_id_to_name[sn]),  # convert syscall_id via unistd_64.h into call name
+    ('arg0',       str,  1),
+    ('arg1',       str,  2),
+    ('arg2',       str,  3),
+    ('arg3',       str,  4),
+    ('arg4',       str,  5),
+    ('arg5',       str,  6),
+    ('esp',        None, 7),                                        # stack pointer
+    ('eip',        None, 8),                                        # program counter/instruction pointer
+    ('filename',   str,  9, lambda fn: re.sub(trim_socket, '*', fn) if fn.split(':')[0] in ['socket','pipe'] else fn),  
+    ('filename2',  str,  9),  
+    ('basename',   str,  9, lambda fn: re.sub(trim_socket, '*', fn) if fn.split(':')[0] in ['socket','pipe'] else os.path.basename(fn)), # filename if syscall has fd as arg0
+    ('dirname',    str,  9, lambda fn: re.sub(trim_socket, '*', fn) if fn.split(':')[0] in ['socket','pipe'] else os.path.dirname(fn)),  # filename if syscall has fd as arg0
 ], None,
 task_level=True, parse_sample=parse_syscall_sample)
+
+
+### get file name from file descriptor ###
+#filename = ProcSource('fd', '/proc/%s/task/%s/fd', [('wchan', str, 0)], ['wchan'], task_level=True)
 
 ### process cmdline args ###
 def parse_cmdline_sample(proc_source,sample):

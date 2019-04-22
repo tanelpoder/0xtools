@@ -17,6 +17,7 @@
 # query/report code
 
 from itertools import groupby
+from datetime  import datetime
 
 import proc
 import logging
@@ -30,6 +31,7 @@ def output_table_report(report, dataset):
     max_field_width = 500
     header_fmts, field_fmts = [], []
     total_field_width = 0
+    total_field_width_without_kstack = 0
 
     if dataset:
         col_idx = 0
@@ -67,11 +69,13 @@ def output_table_report(report, dataset):
                 field_fmts.append('%%%s.%sf' % (field_width, 2)) # arbitrary
 
             total_field_width += field_width
+            total_field_width_without_kstack += field_width if token == 'kstack' else 0
             col_idx += 1
 
     report_width = total_field_width + (3 * (len(header_fmts) -1)) + 2
     hr = '-' * report_width
     title_pad = report_width - len(report.name) - 2
+    #title = '=== ' + report.name + ' ' + '=' * (title_pad - 29) + ' [' + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + '] ===' 
     title = '=== ' + report.name + ' ' + '=' * (title_pad - 3)
     header_fmt = ' ' + ' | '.join(header_fmts) + ' '
     field_fmt = ' ' + ' | '.join(field_fmts) + ' '
@@ -106,7 +110,7 @@ class Report:
                     if col_token.lower() == c[0].lower():
                         return (t, [c[0]], c[0], c[0])
 
-            raise Exception('projection/dimension column %s not found' % col_token)
+            raise Exception('projection/dimension column %s not found.\nUse psn --list to see all available columns' % col_token)
 
         def process_filter_sql(filter_sql):
             idle_filter = "stat.state_id IN ('S', 'Z', 'I')"
