@@ -82,19 +82,20 @@ class ProcSource:
                             arg0  = int(full_sample[1], 16)
                             # a hacky way for avoiding reading false file descriptors for kernel threads on older kernels
                             # (like 2.6.32) that show "syscall 0x0" for kernel threads + some random false arguments. TODO refactor this and kernel_thread translation above
-                            if arg0 < 65536:
+                            if arg0 <= 65536:
                                 filename = os.readlink("/proc/%s/fd/%s" % (pid, arg0)) + " " + special_fds.get(arg0, '')
+                            else:
+                                filename = 'fd over 65536'
                      
                         except (OSError) as e:
                             # file has been closed or process has disappeared
-                            print 'problem with translating fd to name /proc/%s/fd/%s' % (pid, arg0), 'sample:'
-                            print full_sample
-                            print 
+                            #print 'problem with translating fd to name /proc/%s/fd/%s' % (pid, arg0), 'sample:'
+                            #print full_sample
+                            #print 
                             filename = '-'
 
                 full_sample += (filename,)
                          
-                #r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
                 r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
                 return r
 
@@ -105,7 +106,6 @@ class ProcSource:
                 print raw_samples
                 print
                 raise
-
 
 
 ### stat ###
