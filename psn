@@ -39,8 +39,8 @@ parser.add_argument('-t', '--thread', metavar='tid', default=None, nargs='?', he
 parser.add_argument('-r', '--recursive', default=False, action='store_true', help='also sample and report for descendant processes')
 parser.add_argument('-a', '--all-states', default=False, action='store_true', help='display threads in all states, including idle ones')
 
-parser.add_argument('--sample-hz', default=20, type=int, help='sample rate in Hz')
-parser.add_argument('--ps-hz', default=2, type=int, help='sample rate of new processes in Hz')
+parser.add_argument('--sample-hz', default=20, type=int, help='sample rate in Hz (default: %(default)d)')
+parser.add_argument('--ps-hz', default=2, type=int, help='sample rate of new processes in Hz (default: %(default)d)')
 
 parser.add_argument('-o', '--output-sample-db', metavar='filename', default=':memory:', type=str, help='path of sqlite3 database to persist samples to, defaults to in-memory/transient')
 parser.add_argument('-i', '--input-sample-db', metavar='filename', default=None, type=str, help='path of sqlite3 database to read samples from instead of actively sampling')
