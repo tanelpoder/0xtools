@@ -338,6 +338,7 @@ syscalls_with_fd_arg = set([
   , syscall_name_to_id['epoll_wait']        
   , syscall_name_to_id['ioctl']             
   , syscall_name_to_id['accept']            
+  , syscall_name_to_id['accept4']            
 ])
 
 special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
