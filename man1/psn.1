@@ -1,0 +1,124 @@
+.TH psn 1 "2019-05-01" "PSN" "Process Snapper User Manual"
+.SH NAME
+psn \- Linux Process Snapper
+.SH SYNOPSIS
+.B psn [-h] [--list]
+.br
+.B psn [options]
+
+.SH DESCRIPTION
+Linux Process Snapper (pSnapper, psn) is a Linux `/proc` profiler that
+works by sampling Linux task states and other metrics 
+from `/proc/PID/task/TID` pseudofiles. pSnapper is a
+.I passive sampling profiler
+, it does not attach to your program to slow it down,
+nor alter your program execution path or signal handling 
+(like `strace` may inadvertently do).
+
+As pSnapper is just a python script reading /proc files, it does not
+require software installation, nor install any kernel modules. 
+pSnapper does not even require root access in most cases. The exception 
+is if you want to sample some “private” /proc files (like syscall,
+and kernel stack) of processes running under other users.
+
+.SH OPTIONS
+.TP
+.B \-h, --help 
+show this help message and exit
+.TP
+.B  --list
+list all available columns
+.TP
+.B \-d <seconds>
+number of seconds to sample for
+.TP
+.B -p [pid], --pid [pid]
+process id to sample (including all its threads), or
+process name regex, or omit for system-wide sampling
+.TP
+.B -t [tid], --thread [tid]
+thread/task id to sample (not implemented yet)
+.TP
+.B  -r, --recursive
+also sample and report for descendant processes
+.TP
+.B -a, --all-states
+display threads in all states, including idle ones
+.TP
+.B --sample-hz SAMPLE_HZ
+sample rate in Hz
+.TP
+.B --ps-hz PS_HZ
+sample rate of new processes in Hz
+.TP
+.B -o filename, --output-sample-db filename
+path of sqlite3 database to persist samples to,
+defaults to in-memory/transient
+.TP
+.B -i filename, --input-sample-db filename
+path of sqlite3 database to read samples from instead
+of actively sampling
+.TP
+.B  -s csv-columns, --select csv-columns
+additional columns to report
+.TP
+.B  -g csv-columns, --group-by csv-columns
+columns to aggregate by in reports
+.TP
+.B  -G csv-columns, --append-group-by csv-columns
+ default + additional columns to aggregate by in reports
+
+.P
+.SH EXAMPLE
+.TP 4
+psn -h
+get help
+.TP
+psn --list
+show all possible reporting columns
+.TP
+psn
+run pSnapper for 5 seconds, report task comm,state profile (default)
+.TP
+psn -d 10
+same as above, but for 10 seconds
+.TP
+psn -p 1234
+run pSnapper for PID 1234
+.TP
+psn -p 1234 -r
+run pSnapper for PID 1234 and its children
+.TP
+psn -p 1234 -a
+as above, but show all thread states (including idle, interruptible sleep)
+.TP
+psn -p "post|kwork"
+run psnapper on processes  matching regex "post|kwork"
+.TP
+sudo psn -g comm,state,syscall
+customize sampled /proc columns (syscall is "private", so need sudo if sampling all procs)
+.TP
+psn -g cmdline,state,syscall,wchan
+choose exact sampled /proc columns
+.TP
+psn -G syscall,wchan
+append sampled columns in addition to the default "comm,state"
+.TP
+psn -G kstack
+show kernel stack backtraces in addition to the default columns
+
+.SH KNOWN ISSUES
+None currently
+.SH SEE ALSO
+sqlite3(1), proc(5), python(1)
+
+.SH AUTHOR
+Written by Tanel Poder \fIhttps://blog.tanelpoder.com/psnapper/\fR
+.br
+If you have suggestions for improvements in this tool, please send them along via the above address.
+
+.SH COPYRIGHT
+Copyright © 2019 Tanel Poder,  License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+.br
+This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+

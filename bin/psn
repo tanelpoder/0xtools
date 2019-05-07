@@ -1,0 +1,3 @@
+#!/bin/bash
+# psnapper wrapper script, so we can call psn from anywhere without putting additional files in $PATH
+exec /usr/lib/psnapper/psn "$@"
