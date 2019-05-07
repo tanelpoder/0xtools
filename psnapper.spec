@@ -76,10 +76,10 @@ touch %{buildroot}//usr/lib/%{name}/{report,proc,argparse}.pyo
 /etc/bash_completion.d/psn.bash
 /usr/share/doc/%{name}
 /usr/share/man/man1/*
-/usr/lib/%{name}/*.py
 /usr/lib/%{name}/*.h
-/usr/lib/%{name}/psn
 %ghost /usr/lib/%{name}/*.pyc
 %ghost /usr/lib/%{name}/*.pyo
 %defattr(0755,root,root)
+/usr/lib/%{name}/*.py
+/usr/lib/%{name}/psn
 /usr/bin/psn
