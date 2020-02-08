@@ -1,0 +1,5 @@
+#!/bin/bash
+
+echo Waiting for first snapshot...
+watch psn -g pid,comm,state -d 5
+
