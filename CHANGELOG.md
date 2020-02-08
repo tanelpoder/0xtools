@@ -1,4 +1,8 @@
-
+0.15
+======================
+* Minor changes only
+  - Handle SIGPIPE to not get `IOError: [Errno 32] Broken pipe` error when piping pSnapper output to other tools like "head"
+  - Change the info link tp.dev/psnapper to tanelpoder.com/psnapper
 
 0.14
 ======================
