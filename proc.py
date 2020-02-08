@@ -19,6 +19,7 @@ import os, os.path
 import re
 import platform
 
+system_timer_hz = os.sysconf('SC_CLK_TCK')
 
 class ProcSource:
     def __init__(self, name, path, available_columns, stored_column_names, task_level=False, read_samples=lambda f: [f.read()], parse_sample=lambda self, sample: sample.split()):
@@ -30,6 +31,7 @@ class ProcSource:
         self.parse_sample = parse_sample
 
         self.set_stored_columns(stored_column_names)
+
 
 
     def set_stored_columns(self, stored_column_names):
@@ -170,6 +172,10 @@ stat = ProcSource('stat', '/proc/%s/task/%s/stat', [
     ('stime', long, 14),
     ('cutime', long, 15),
     ('cstime', long, 16),
+    ('utime_sec',  long, 13, lambda v: int(v) / system_timer_hz),
+    ('stime_sec',  long, 14, lambda v: int(v) / system_timer_hz),
+    ('cutime_sec', long, 15, lambda v: int(v) / system_timer_hz),
+    ('cstime_sec', long, 16, lambda v: int(v) / system_timer_hz),
     ('priority', int, 17),
     ('nice', int, 18),
     ('num_threads', int, 19),

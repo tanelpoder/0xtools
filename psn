@@ -4,7 +4,7 @@
 ##!/usr/bin/env python26 
 
 #  psn -- Linux Process Snapper by Tanel Poder
-#  Copyright 2019 Tanel Poder
+#  Copyright 2019-2020 Tanel Poder
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -24,9 +24,13 @@ import sys, os, os.path, time, datetime
 import re
 import sqlite3
 import logging
-
+from signal import signal, SIGPIPE, SIG_DFL
 import proc, report
 
+# don't print "broken pipe" error when piped into commands like "head"
+signal(SIGPIPE,SIG_DFL) 
+
+### Defaults ###
 default_group_by='comm,state'
 
 ### CLI handling ###
@@ -73,8 +77,6 @@ else:
 start_time = time.time()
 sample_period_s = 1. / args.sample_hz
 sample_ps_period_s = 1. / args.ps_hz
-
-system_timer_hz = os.sysconf('SC_CLK_TCK')
 
 if args.list:
     for p in proc.all_sources:
@@ -238,7 +240,7 @@ def main():
         total_measure_s = 0.
     else:
         print
-        print('Linux Process Snapper v0.14 by Tanel Poder [https://tp.dev/psnapper]')
+        print('Linux Process Snapper v0.15 by Tanel Poder [https://tanelpoder.com/psnapper]')
         print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
         sys.stdout.flush()
         num_sample_events = 0
