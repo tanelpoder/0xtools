@@ -4,7 +4,7 @@
 ##!/usr/bin/env python26 
 
 #  psn -- Linux Process Snapper by Tanel Poder
-#  Copyright 2019 Tanel Poder
+#  Copyright 2019-2020 Tanel Poder
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -24,9 +24,13 @@ import sys, os, os.path, time, datetime
 import re
 import sqlite3
 import logging
-
+from signal import signal, SIGPIPE, SIG_DFL
 import proc, report
 
+# don't print "broken pipe" error when piped into commands like "head"
+signal(SIGPIPE,SIG_DFL) 
+
+### Defaults ###
 default_group_by='comm,state'
 
 ### CLI handling ###
@@ -39,8 +43,8 @@ parser.add_argument('-t', '--thread', metavar='tid', default=None, nargs='?', he
 parser.add_argument('-r', '--recursive', default=False, action='store_true', help='also sample and report for descendant processes')
 parser.add_argument('-a', '--all-states', default=False, action='store_true', help='display threads in all states, including idle ones')
 
-parser.add_argument('--sample-hz', default=20, type=int, help='sample rate in Hz')
-parser.add_argument('--ps-hz', default=2, type=int, help='sample rate of new processes in Hz')
+parser.add_argument('--sample-hz', default=20, type=int, help='sample rate in Hz (default: %(default)d)')
+parser.add_argument('--ps-hz', default=2, type=int, help='sample rate of new processes in Hz (default: %(default)d)')
 
 parser.add_argument('-o', '--output-sample-db', metavar='filename', default=':memory:', type=str, help='path of sqlite3 database to persist samples to, defaults to in-memory/transient')
 parser.add_argument('-i', '--input-sample-db', metavar='filename', default=None, type=str, help='path of sqlite3 database to read samples from instead of actively sampling')
@@ -73,8 +77,6 @@ else:
 start_time = time.time()
 sample_period_s = 1. / args.sample_hz
 sample_ps_period_s = 1. / args.ps_hz
-
-system_timer_hz = os.sysconf('SC_CLK_TCK')
 
 if args.list:
     for p in proc.all_sources:
@@ -238,7 +240,7 @@ def main():
         total_measure_s = 0.
     else:
         print
-        print('Linux Process Snapper v0.14 by Tanel Poder [https://tp.dev/psnapper]')
+        print('Linux Process Snapper v0.15 by Tanel Poder [https://tanelpoder.com/psnapper]')
         print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
         sys.stdout.flush()
         num_sample_events = 0

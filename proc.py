@@ -19,6 +19,7 @@ import os, os.path
 import re
 import platform
 
+system_timer_hz = os.sysconf('SC_CLK_TCK')
 
 class ProcSource:
     def __init__(self, name, path, available_columns, stored_column_names, task_level=False, read_samples=lambda f: [f.read()], parse_sample=lambda self, sample: sample.split()):
@@ -30,6 +31,7 @@ class ProcSource:
         self.parse_sample = parse_sample
 
         self.set_stored_columns(stored_column_names)
+
 
 
     def set_stored_columns(self, stored_column_names):
@@ -82,19 +84,20 @@ class ProcSource:
                             arg0  = int(full_sample[1], 16)
                             # a hacky way for avoiding reading false file descriptors for kernel threads on older kernels
                             # (like 2.6.32) that show "syscall 0x0" for kernel threads + some random false arguments. TODO refactor this and kernel_thread translation above
-                            if arg0 < 65536:
+                            if arg0 <= 65536:
                                 filename = os.readlink("/proc/%s/fd/%s" % (pid, arg0)) + " " + special_fds.get(arg0, '')
+                            else:
+                                filename = 'fd over 65536'
                      
                         except (OSError) as e:
                             # file has been closed or process has disappeared
-                            print 'problem with translating fd to name /proc/%s/fd/%s' % (pid, arg0), 'sample:'
-                            print full_sample
-                            print 
+                            #print 'problem with translating fd to name /proc/%s/fd/%s' % (pid, arg0), 'sample:'
+                            #print full_sample
+                            #print 
                             filename = '-'
 
                 full_sample += (filename,)
                          
-                #r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
                 r =  [event_time, pid, task] + [convert(full_sample[idx]) for idx, convert in self.schema_extract]
                 return r
 
@@ -105,7 +108,6 @@ class ProcSource:
                 print raw_samples
                 print
                 raise
-
 
 
 ### stat ###
@@ -170,6 +172,10 @@ stat = ProcSource('stat', '/proc/%s/task/%s/stat', [
     ('stime', long, 14),
     ('cutime', long, 15),
     ('cstime', long, 16),
+    ('utime_sec',  long, 13, lambda v: int(v) / system_timer_hz),
+    ('stime_sec',  long, 14, lambda v: int(v) / system_timer_hz),
+    ('cutime_sec', long, 15, lambda v: int(v) / system_timer_hz),
+    ('cstime_sec', long, 16, lambda v: int(v) / system_timer_hz),
     ('priority', int, 17),
     ('nice', int, 18),
     ('num_threads', int, 19),
@@ -338,6 +344,7 @@ syscalls_with_fd_arg = set([
   , syscall_name_to_id['epoll_wait']        
   , syscall_name_to_id['ioctl']             
   , syscall_name_to_id['accept']            
+  , syscall_name_to_id['accept4']            
 ])
 
 special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
