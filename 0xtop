@@ -1,0 +1,3 @@
+#!/bin/bash
+
+watch psn -d 2 -G wchan $*
