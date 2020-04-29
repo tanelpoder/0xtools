@@ -8,7 +8,9 @@ The current pSnapper version v0.15 is beta phase. I have many more features to a
 
 More info at https://tanelpoder.com/psnapper
 
-### Example output (MySQL XFS metadata syncing bottleneck & contention)
+### Example 1
+
+MySQL XFS fsync() metadata syncing bottleneck & inode contention:
 
 ```
 $ sudo psn -p "mysqld|kwork" -G syscall,<strong>wchan</strong>
@@ -40,7 +42,9 @@ Sampling /proc/syscall, stat, wchan for 5 seconds... finished.
        1 |        0.12 | (mysqld)      | Running (ON CPU)       | futex     | futex_wait_queue_me      
 ```
 
-### Example output (software RAID syncing causing an I/O hang)
+### Example 2
+
+Linux software RAID syncing causing an I/O hang:
 
 ```
 $ sudo psn -G syscall,wchan -r -p "sync|kworker"
