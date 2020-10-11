@@ -240,7 +240,7 @@ def main():
         total_measure_s = 0.
     else:
         print
-        print('Linux Process Snapper v0.15 by Tanel Poder [https://tanelpoder.com/psnapper]')
+        print('Linux Process Snapper v0.18 by Tanel Poder [https://0x.tools]')
         print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
         sys.stdout.flush()
         num_sample_events = 0
