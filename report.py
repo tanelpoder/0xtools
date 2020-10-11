@@ -69,7 +69,7 @@ def output_table_report(report, dataset):
                 field_fmts.append('%%%s.%sf' % (field_width, 2)) # arbitrary
 
             total_field_width += field_width
-            total_field_width_without_kstack += field_width if token == 'kstack' else 0
+            total_field_width_without_kstack += field_width if token != 'kstack' else 0
             col_idx += 1
 
     report_width = total_field_width + (3 * (len(header_fmts) -1)) + 2
