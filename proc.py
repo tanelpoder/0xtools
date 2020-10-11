@@ -372,6 +372,7 @@ syscall = ProcSource('syscall', '/proc/%s/task/%s/syscall', [
     ('eip',        None, 8),                                        # program counter/instruction pointer
     ('filename',   str,  9, lambda fn: re.sub(trim_socket, '*', fn) if fn.split(':')[0] in ['socket','pipe'] else fn),  
     ('filename2',  str,  9),  
+    ('filenamesum',str,  9, lambda fn: re.sub(trim_socket, '*', fn)),
     ('basename',   str,  9, lambda fn: re.sub(trim_socket, '*', fn) if fn.split(':')[0] in ['socket','pipe'] else os.path.basename(fn)), # filename if syscall has fd as arg0
     ('dirname',    str,  9, lambda fn: re.sub(trim_socket, '*', fn) if fn.split(':')[0] in ['socket','pipe'] else os.path.dirname(fn)),  # filename if syscall has fd as arg0
 ], None,
