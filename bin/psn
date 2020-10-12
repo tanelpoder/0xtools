@@ -19,13 +19,16 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import argparse
 import sys, os, os.path, time, datetime
 import re
 import sqlite3
 import logging
 from signal import signal, SIGPIPE, SIG_DFL
-import proc, report
+
+sys.path.append('/home/tanel/dev/0xtools/lib')
+
+import argparse
+import proc, psnreport
 
 # don't print "broken pipe" error when piped into commands like "head"
 signal(SIGPIPE,SIG_DFL) 
@@ -107,7 +110,7 @@ else:
 
 ### Report definition ###
 
-active_process_sample = report.Report(
+active_process_sample = psnreport.Report(
     'Active Threads',
     projection=args.select+['samples', 'avg_threads'],
     dimensions=args.group_by+args.append_group_by,
@@ -115,7 +118,7 @@ active_process_sample = report.Report(
     where=[included_states]
 )
 
-system_activity_by_user = report.Report(
+system_activity_by_user = psnreport.Report(
     'Active Threads by User',
     projection=args.select+['uid', 'comm', 'samples', 'avg_threads'],
     dimensions=args.group_by+args.append_group_by,
