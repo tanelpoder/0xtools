@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
-# Copyright 2020 Tanel Poder.
+# Copyright 2020 Tanel Poder
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
-# Name:    schedlat.py (v0.1)
+# Name:    schedlat.py (v0.2)
 # Purpose: display % of time a process spent in CPU runqueue 
 #          (scheduling latency)
 # Usage:   ./schedlat.py PID
@@ -12,7 +12,7 @@
 #          %LAT shows % of time the task spent trying to get onto CPU (in runqueue)
 #          %SLP shows the delta (not on CPU, not in runqueue, thus sleeping/waiting)
 #
-# Other:   More info at https://tanelpoder.com
+# Other:   More info at https://0x.tools
 
 from __future__ import print_function
 from datetime import datetime
@@ -25,18 +25,16 @@ if len(sys.argv) != 2:
 pid=sys.argv[1]
 
 with open('/proc/' + pid + '/comm', 'r') as f:
-  print("SchedLat by Tanel Poder (https://tanelpoder.com)\n\nPID=" + pid + " COMM=" + f.read())
+  print("SchedLat by Tanel Poder (https://0x.tools)\n\nPID=" + pid + " COMM=" + f.read())
 
 print("%-20s %6s %6s %6s" % ("TIMESTAMP", "%CPU", "%LAT", "%SLP"))
 
 while True:
   with open('/proc/' + pid + '/schedstat' , 'r') as f:
-    #t1=datetime.now()
     t1=time.time() 
     (cpu_ns1, lat_ns1, dontcare) = f.read().split()
     time.sleep(1)
     f.seek(0)
-    #t2=datetime.now()
     t2=time.time()
     (cpu_ns2, lat_ns2, dontcare) = f.read().split()
   
