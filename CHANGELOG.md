@@ -1,3 +1,13 @@
+0.18
+======================
+* New column
+  - `filenamesum` column strips numbers out of filenames to summarize events against similar files
+
+0.16
+======================
+* New script
+  - schedlat.py - show scheduling latency of a single process
+
 0.15
 ======================
 * Minor changes only
