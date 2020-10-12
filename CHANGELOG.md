@@ -1,4 +1,6 @@
-# pSnapper changelog
+# 0x.tools v1.0
+
+## pSnapper changelog
 
 0.18
 ======================
