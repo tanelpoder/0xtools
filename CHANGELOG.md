@@ -1,3 +1,5 @@
+# pSnapper changelog
+
 0.18
 ======================
 * New column
