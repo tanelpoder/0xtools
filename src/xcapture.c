@@ -1,5 +1,5 @@
 /* 
- * 0xTools by Tanel Poder [https://0x.tools]
+ * 0x.Tools by Tanel Poder [https://0x.tools]
  * Copyright 2019-2020 Tanel Poder
  *
  * This program is free software: you can redistribute it and/or modify
@@ -271,7 +271,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
 
 void printhelp() {
     const char *helptext =
-    "\n0xTools xcapture v1.0 by Tanel Poder [https://0x.tools]\n\n"
+    "\n0x.Tools xcapture v1.0 by Tanel Poder [https://0x.tools]\n\n"
     "Usage:\n"
     "  xcapture [options]\n\n"
     "  By default, sample all /proc tasks in states R, D every second and print to stdout\n\n"

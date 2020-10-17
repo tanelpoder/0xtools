@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#  0xTools by Tanel Poder [https://0x.tools]
+#  0x.Tools by Tanel Poder [https://0x.tools]
 #  Copyright 2019-2020 Tanel Poder
 #
 #  This program is free software: you can redistribute it and/or modify
@@ -20,6 +20,7 @@ FREQUENCY=1 # 1 Hz sampling
 SUDO=sudo # change to empty string if running without sudo
 NICE=-5
 SLEEP=60
+PERF=/usr/bin/perf
 
 if [ $# -ne 1 ]; then
   echo "Usage: $0 output_dir"
@@ -29,7 +30,7 @@ fi
 logger "$0 Starting up outdir=$1 nice=$NICE"
 
 while true ; do
-    $SUDO nice -n $NICE perf record -g -F $FREQUENCY -a \
+    $SUDO nice -n $NICE $PERF record -g -F $FREQUENCY -a \
                 --switch-output=1m \
                 --timestamp-filename \
                 --timestamp \

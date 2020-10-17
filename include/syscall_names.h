@@ -1,5 +1,5 @@
 /* 
- * 0xTools by Tanel Poder [https://0x.tools]
+ * 0x.Tools by Tanel Poder [https://0x.tools]
  * Copyright 2019-2020 Tanel Poder
  *
  * This program is free software: you can redistribute it and/or modify

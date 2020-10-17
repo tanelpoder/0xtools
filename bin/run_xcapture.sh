@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#  0xTools by Tanel Poder [https://0x.tools]
+#  0x.Tools by Tanel Poder [https://0x.tools]
 #  Copyright 2019-2020 Tanel Poder
 #
 #  This program is free software: you can redistribute it and/or modify
@@ -28,7 +28,7 @@ SLEEP=60
 logger "$0 Starting up outdir=$1 nice=$NICE"
 
 while true ; do
-    $SUDO nice -n $NICE xcapture -o $1
+    $SUDO nice -n $NICE xcapture -o $1 -c exe,cmdline,kstack
 
     # we only get here should xcapture be terminated, try to restart
     logger "$0 terminated with $?, attempting to restart in $SLEEP seconds"
