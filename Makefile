@@ -19,7 +19,7 @@ debug0:
 	$(CC) $(CFLAGS_DEBUG0) -o bin/xcapture src/xcapture.c
 
 install:
-	# for now the tempoary "install" method is with symlinks
+	# for now the temporary "install" method is with symlinks
 	ln -s `pwd`/bin/xcapture /usr/bin/xcapture
 	ln -s `pwd`/bin/psn /usr/bin/psn
 	ln -s `pwd`/bin/schedlat /usr/bin/schedlat
