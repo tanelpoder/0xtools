@@ -21,6 +21,11 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
+if [ ! -d "$1" ]; then
+	echo "Directory '$1' does not exist"
+	exit 2
+fi
+
 SUDO=sudo # change to empty string if running without sudo
 NICE=-5 # set to 0 if don't want to increase priority
 SLEEP=60
@@ -28,7 +33,7 @@ SLEEP=60
 logger "$0 Starting up outdir=$1 nice=$NICE"
 
 while true ; do
-    $SUDO nice -n $NICE xcapture -o $1 -c exe,cmdline,kstack
+    $SUDO nice -n $NICE ./xcapture -o $1 -c exe,cmdline,kstack
 
     # we only get here should xcapture be terminated, try to restart
     logger "$0 terminated with $?, attempting to restart in $SLEEP seconds"
