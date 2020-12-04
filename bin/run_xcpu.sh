@@ -20,7 +20,15 @@ FREQUENCY=1 # 1 Hz sampling
 SUDO=sudo # change to empty string if running without sudo
 NICE=-5
 SLEEP=60
-PERF=/usr/bin/perf
+PERF=$(which perf)
+
+[ -x "$PERF" ] || {
+	echo
+	echo "perf is not installed"
+	echo
+	exit 1
+}
+
 
 if [ $# -ne 1 ]; then
   echo "Usage: $0 output_dir"
