@@ -27,6 +27,11 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
+if [ ! -d "$1" ]; then
+	echo "Directory '$1' does not exist"
+	exit 2
+fi
+
 logger "$0 Starting up outdir=$1 nice=$NICE"
 
 while true ; do
