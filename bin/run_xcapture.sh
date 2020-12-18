@@ -29,6 +29,9 @@ logger "$0 Starting up outdir=$1 nice=$NICE"
 
 while true ; do
     $SUDO nice -n $NICE xcapture -o $1 -c exe,cmdline,kstack
+    if [ $? -eq 1 ]; then
+        exit 1
+    fi
 
     # we only get here should xcapture be terminated, try to restart
     logger "$0 terminated with $?, attempting to restart in $SLEEP seconds"
