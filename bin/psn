@@ -286,9 +286,6 @@ def main():
     
                                 for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
                                     # TODO factor out
-                                    #sqlexecmany(conn, s.insert_sql, samples)
-                                    while (len(samples[0]) <6):    # added by lefred because some entries are empty
-                                            samples[0].append("") # added by lefred
                                     conn.executemany(s.insert_sql, samples)
     
                             except IOError as e:
