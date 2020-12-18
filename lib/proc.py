@@ -47,7 +47,7 @@ class ProcSource:
 
         schema_extract_idx = [column_indexes[c[col_name_i]] for c in source_cols]
         schema_extract_convert = [c[schema_type_i] if len(c) == 3 else c[transform_i] for c in source_cols]
-        self.schema_extract = zip(schema_extract_idx, schema_extract_convert)
+        self.schema_extract = list(zip(schema_extract_idx, schema_extract_convert))
 
         self.insert_sql = "INSERT INTO '%s' VALUES (%s)" % (self.name, ','.join(['?' for i in self.schema_columns]))
 
