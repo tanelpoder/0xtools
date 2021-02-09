@@ -221,7 +221,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
     // if printing out only the /proc/PID entry (not TID), then we have just read the relevant stat file into filebuf
     // in the calling function. this callflow-dependent optimization avoids an 'expensive' /proc/PID/stat read
     b = tid ? readfile(pid, tid, "stat", statbuf) : strlen(statbuf); 
-    fieldend = strchr(statbuf, ')'); 
+    fieldend = strstr(statbuf, ") ");
 
     if (b > 0 && fieldend) { // the 1st field end "not null" check is due to /proc not having read consistency (rarely in-flux values are shown as \0\0\0\0\0\0\0...
 
