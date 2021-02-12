@@ -279,12 +279,17 @@ void printhelp() {
     "    -a             capture tasks in additional states, even the ones Sleeping (S)\n"
     "    -A             capture tasks in All states, including Zombie (Z), Exiting (X), Idle (I)\n"
     "    -c <c1,c2>     print additional columns (for example: -c exe,cmdline,kstack)\n"
-    "    -d <N>         seconds to sleep between samples (default: 1)\n"
+    "    -d <N>         seconds between samples (default: 1)\n"
     "    -E <string>    custom task state Exclusion filter (default: XZIS)\n"
     "    -h             display this help message\n"
     "    -o <dirname>   write wide output into hourly CSV files in this directory instead of stdout\n";
 
     fprintf(stderr, "%s\n", helptext);
+}
+
+float timedifference_msec(struct timeval t0, struct timeval t1)
+{
+    return (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f;
 }
 
 int main(int argc, char **argv)
@@ -296,10 +301,12 @@ int main(int argc, char **argv)
     struct dirent *pde, *tde; // process level and thread/task level directory entries in /proc
 
     char timebuf[80], usec_buf[6];
-    struct timeval tmnow;
+    struct timeval tmnow,loop_iteration_start_time,loop_iteration_end_time;
+    float loop_iteration_msec;
+    float sleep_for_msec;
     struct tm *tm;
     int prevhour = -1; // used for detecting switch to a new hour for creating a new output file
-    int sleep_delay = 1;
+    int interval_seconds = 1;
 
     struct stat s;
     uid_t proc_uid;
@@ -323,9 +330,9 @@ int main(int argc, char **argv)
                 add_columns = optarg;
                 break;
             case 'd':
-                sleep_delay = atoi(optarg);
-                if (sleep_delay <= 0 || sleep_delay > 3600) {
-                    fprintf(stderr, "Option -d has invalid value for sleep delay - %s (%d)\n", optarg, sleep_delay);
+                interval_seconds = atoi(optarg);
+                if (interval_seconds <= 0 || interval_seconds > 3600) {
+                    fprintf(stderr, "Option -d has invalid value for capture interval - %s (%d)\n", optarg, interval_seconds);
                     return 1;
                 }
                 break;
@@ -363,6 +370,7 @@ int main(int argc, char **argv)
     while (1) {
 
         gettimeofday(&tmnow, NULL);
+        gettimeofday(&loop_iteration_start_time, NULL);
         tm = localtime(&tmnow.tv_sec);
 
         if (output_dir) {
@@ -430,7 +438,14 @@ int main(int argc, char **argv)
         if (!output_dir && header_printed) fprintf(stdout, "\n");
 
         fflush(stdout);
-        sleep(sleep_delay);
+        // How long did the iteration take
+        gettimeofday(&loop_iteration_end_time, NULL);
+        loop_iteration_msec = timedifference_msec(loop_iteration_start_time, loop_iteration_end_time);
+        // Sleep time so the start of the next snap is at the expected time interval
+        sleep_for_msec = interval_seconds*1000 - loop_iteration_msec;
+        // Sleep now.
+        usleep(sleep_for_msec*1000);
+      
     }
 
     return 0;
