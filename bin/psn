@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 
 # use the following line on RHEL5 (if you have the additional python26 package installed from EPEL):
 ##!/usr/bin/env python26 
@@ -328,8 +328,8 @@ def main():
         print
     
     first_table_name = list(sources.keys())[0].name
-    print('total processes: %s,' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()), 'threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone()))
-    print('runtime: %.2f,' % (time.time() - start_time), 'measure time: %.2f' % total_measure_s)
+    print('total processes: %s, threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()[0], conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone()[0]))
+    print('runtime: %.2f, measure time: %.2f' % (time.time() - start_time, total_measure_s))
     print
     
     # TODO needs some improvement as some file IO errors come from processes/threads exiting 
