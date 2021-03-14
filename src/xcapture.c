@@ -296,7 +296,7 @@ int main(int argc, char **argv)
 {
     char outbuf[BUFSIZ];
     char outpath[PATH_MAX];
-    char dirpath[100]; // used for /proc stuff only, so no long paths
+    char dirpath[PATH_MAX]; // used for /proc stuff only, so no long paths
     DIR *pd, *td;
     struct dirent *pde, *tde; // process level and thread/task level directory entries in /proc
 
