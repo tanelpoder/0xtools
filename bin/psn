@@ -348,8 +348,6 @@ def main():
     
     # TODO needs some improvement as some file IO errors come from processes/threads exiting 
     # before we get to sample all files of interest under the PID
-    #if sample_ioerrors > 100:
-    
     if sample_ioerrors >= 100:
         final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
     
