@@ -20,6 +20,8 @@
  *
  */
 
+#define XCAP_VERSION "1.1.0"
+
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -53,7 +55,7 @@ char *output_dir = NULL;  // use stdout if output_dir is not set
 int  header_printed = 0;
 char output_format = 'S'; // S -> space-delimited fixed output format, C -> CSV
 char outsep = ' ';
-int  pad = 1; // output field padding (for space-delimited fixed-width output)
+int  pad = 1;             // output field padding (for space-delimited fixed-width output)
   
 const char *getusername(uid_t uid)
 {
@@ -274,7 +276,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
 
 void printhelp() {
     const char *helptext =
-    "\n0x.Tools xcapture v1.0 by Tanel Poder [https://0x.tools]\n\n"
+    "by Tanel Poder [https://0x.tools]\n\n"
     "Usage:\n"
     "  xcapture [options]\n\n"
     "  By default, sample all /proc tasks in states R, D every second and print to stdout\n\n"
@@ -282,12 +284,12 @@ void printhelp() {
     "    -a             capture tasks in additional states, even the ones Sleeping (S)\n"
     "    -A             capture tasks in All states, including Zombie (Z), Exiting (X), Idle (I)\n"
     "    -c <c1,c2>     print additional columns (for example: -c exe,cmdline,kstack)\n"
-    "    -d <N>         seconds between samples (default: 1)\n"
+    "    -d <N>         seconds between samples (default: 1.0)\n"
     "    -E <string>    custom task state Exclusion filter (default: XZIS)\n"
     "    -h             display this help message\n"
     "    -o <dirname>   write wide output into hourly CSV files in this directory instead of stdout\n";
 
-    fprintf(stderr, "%s\n", helptext);
+    fprintf(stderr, "\n0x.Tools xcapture v%s %s\n", XCAP_VERSION, helptext);
 }
 
 float timedifference_msec(struct timeval t0, struct timeval t1)
@@ -309,7 +311,7 @@ int main(int argc, char **argv)
     float sleep_for_msec;
     struct tm *tm;
     int prevhour = -1; // used for detecting switch to a new hour for creating a new output file
-    int interval_seconds = 1;
+    int interval_msec = 1000;
 
     struct stat s;
     uid_t proc_uid;
@@ -333,9 +335,9 @@ int main(int argc, char **argv)
                 add_columns = optarg;
                 break;
             case 'd':
-                interval_seconds = atoi(optarg);
-                if (interval_seconds <= 0 || interval_seconds > 3600) {
-                    fprintf(stderr, "Option -d has invalid value for capture interval - %s (%d)\n", optarg, interval_seconds);
+                interval_msec = atof(optarg) * 1000;
+                if (interval_msec <= 0 || interval_msec > 3600000) {
+                    fprintf(stderr, "Option -d has invalid value for capture interval - %s (%d)\n", optarg, interval_msec);
                     return 1;
                 }
                 break;
@@ -368,7 +370,7 @@ int main(int argc, char **argv)
 
     setbuf(stdout, outbuf);
 
-    fprintf(stderr, "\n0xTools xcapture v1.0 by Tanel Poder [https://0x.tools]\n\nSampling /proc...\n\n");
+    fprintf(stderr, "\n0xTools xcapture v%s by Tanel Poder [https://0x.tools]\n\nSampling /proc...\n\n", XCAP_VERSION);
 
     while (1) {
 
@@ -441,13 +443,12 @@ int main(int argc, char **argv)
         if (!output_dir && header_printed) fprintf(stdout, "\n");
 
         fflush(stdout);
-        // How long did the iteration take
+
+        // sleep for the requested interval minus time spent taking the previous sample
         gettimeofday(&loop_iteration_end_time, NULL);
         loop_iteration_msec = timedifference_msec(loop_iteration_start_time, loop_iteration_end_time);
-        // Sleep time so the start of the next snap is at the expected time interval
-        sleep_for_msec = interval_seconds*1000 - loop_iteration_msec;
-        // Sleep now.
-        usleep(sleep_for_msec*1000);
+        sleep_for_msec = interval_msec - loop_iteration_msec;
+        if (sleep_for_msec > 0) usleep(sleep_for_msec * 1000);
       
     }
 
