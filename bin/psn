@@ -33,6 +33,8 @@
 #  "#!/usr/bin/env python26"
 #
 
+PSN_VERSION = '1.1.0'
+
 import sys, os, os.path, time, datetime
 import re
 import sqlite3
@@ -257,7 +259,7 @@ def main():
         total_measure_s = 0.
     else:
         print
-        print('Linux Process Snapper v0.18 by Tanel Poder [https://0x.tools]')
+        print('Linux Process Snapper v%s by Tanel Poder [https://0x.tools]' % PSN_VERSION)
         print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
         sys.stdout.flush()
         num_sample_events = 0
