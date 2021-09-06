@@ -300,7 +300,13 @@ status = ProcSource('status', '/proc/%s/status', [
 
 ### syscall ###
 def extract_system_call_ids(unistd_64_fh):
-    syscall_id_to_name = {'running': '[running]', '-1': '[kernel_direct]', 'kernel_thread':'[kernel_thread]'}
+    syscall_id_to_name = {
+        'running': '[running]',
+        '-1': '[kernel_direct]',
+        'kernel_thread':'[kernel_thread]',
+        '1879048192':'[rtai_thread]'	# correspond to RTAI_SYSCALL_NR set to 0x70000000 for real time task in rtai kernels
+    }
+
     name_prefix = '__NR_'
 
     for line in unistd_64_fh.readlines():
@@ -366,7 +372,7 @@ trim_socket = re.compile('\d+')
 
 syscall = ProcSource('syscall', '/proc/%s/task/%s/syscall', [
     ('syscall_id', int,  0, lambda sn: -2 if sn == 'running' else int(sn)),
-    ('syscall',    str,  0, lambda sn: syscall_id_to_name[sn]),  # convert syscall_id via unistd_64.h into call name
+    ('syscall',    str,  0, lambda sn: syscall_id_to_name[sn] if sn in syscall_id_to_name else 'unknown: ' + str(sn)),  # convert syscall_id via unistd_64.h into call name
     ('arg0',       str,  1),
     ('arg1',       str,  2),
     ('arg2',       str,  3),
