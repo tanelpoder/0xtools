@@ -1,0 +1,3 @@
+SAMPLEINTERVAL=10
+LOGDIRPATH=/var/run/xcapture
+ADDITIONALOPTIONS="exe,cmdline,syscall,wchan"

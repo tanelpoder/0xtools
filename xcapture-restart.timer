@@ -1,0 +1,8 @@
+[Unit]
+Description=xcapture restart
+
+[Timer]
+OnCalendar=hourly
+
+[Install]
+WantedBy=timer.target
