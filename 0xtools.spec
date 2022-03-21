@@ -1,8 +1,8 @@
 %define  debug_package %{nil}
 # %define _unpackaged_files_terminate_build 0
 
-%define ReleaseNumber 1
-%define VERSION 1.2.0
+%define ReleaseNumber 2
+%define VERSION 1.2.1
 
 Name:           0xtools
 Version:        %{VERSION}
@@ -34,7 +34,7 @@ install -m 0755 bin/run_xcapture.sh %{buildroot}/usr/bin/run_xcapture.sh
 PREFIX=%{buildroot}/usr make install
 
 
-install -d -m 0755  %{buildroot}/var/run/xcapture
+install -d -m 0755  %{buildroot}/var/log/xcapture
 
 # systemd service
 install -Dp -m 0644 xcapture.default  $RPM_BUILD_ROOT/etc/default/xcapture
@@ -68,4 +68,4 @@ fi
 /usr/lib/systemd/system/xcapture-restart.service
 /usr/lib/systemd/system/xcapture-restart.timer
 %config(noreplace) /etc/default/xcapture
-%dir /var/run/xcapture/
+%dir /var/log/xcapture/

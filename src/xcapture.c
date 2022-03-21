@@ -1,4 +1,4 @@
-/* 
+/*
  *  0x.Tools xCapture - sample thread activity from Linux procfs [https://0x.tools]
  *  Copyright 2019-2021 Tanel Poder
  *
@@ -16,11 +16,11 @@
  *  with this program; if not, write to the Free Software Foundation, Inc.,
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- *  SPDX-License-Identifier: GPL-2.0-or-later 
+ *  SPDX-License-Identifier: GPL-2.0-or-later
  *
  */
 
-#define XCAP_VERSION "1.1.0"
+#define XCAP_VERSION "1.2.1"
 
 #define _GNU_SOURCE
 
@@ -34,7 +34,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <asm/unistd.h>
-#include <linux/limits.h>  
+#include <linux/limits.h>
 #include <pwd.h>
 #include <sys/stat.h>
 #include <ctype.h>
@@ -56,7 +56,7 @@ int  header_printed = 0;
 char output_format = 'S'; // S -> space-delimited fixed output format, C -> CSV
 char outsep = ' ';
 int  pad = 1;             // output field padding (for space-delimited fixed-width output)
-  
+
 const char *getusername(uid_t uid)
 {
   struct passwd *pw = getpwuid(uid);
@@ -77,14 +77,14 @@ int readfile(int pid, int tid, const char *name, char *buf)
     tid ? sprintf(path, "/proc/%d/task/%d/%s", pid, tid, name) : sprintf(path, "/proc/%d/%s", pid, name);
 
     fd = open(path, O_RDONLY);
-    if (fd == -1)  { 
-        if (DEBUG) fprintf(stderr, "error opening file %s\n", path); 
+    if (fd == -1)  {
+        if (DEBUG) fprintf(stderr, "error opening file %s\n", path);
         return -1;
     }
 
     bytes = read(fd, buf, MAXFILEBUF);
     close(fd);
-   
+
     // handle errors, empty records and missing string terminators in input
     assert(bytes >= -1);
     switch (bytes) {
@@ -104,9 +104,9 @@ int readfile(int pid, int tid, const char *name, char *buf)
             bytes = 2;
             break;
         default: // bytes >= 2
-            if (bytes < MAXFILEBUF) 
+            if (bytes < MAXFILEBUF)
                 buf[bytes] = 0;
-            else 
+            else
                 buf[MAXFILEBUF-1] = 0;
     }
     return bytes;
@@ -116,7 +116,7 @@ int outputstack(char *str) {
     int i;
 
     // find the end and start of function name in the stack
-    // example input lines (different number of fields): 
+    // example input lines (different number of fields):
     //    [<ffffffff8528428c>] vfs_read+0x8c/0x130
     //    [<ffffffffc03b03f4>] xfs_file_fsync+0x224/0x240 [xfs]
     for (i=strlen(str)-1; i>=0; i--) {
@@ -126,7 +126,7 @@ int outputstack(char *str) {
                 strcmp(str+i+1, "do_syscall_64") &&
                 strcmp(str+i+1, "0xffffffffffffffff\n")
             ) {
-                fprintf(stdout, "->%s()", str+i+1); 
+                fprintf(stdout, "->%s()", str+i+1);
             }
         }
     }
@@ -139,7 +139,7 @@ int outputfields(char *str, char *mask, char *sep) {
     char *field, *pos;
 
     // special case for stack trace handling, we don't want to split the input string before calling outputstack()
-    if (mask[0] == 't')  
+    if (mask[0] == 't')
         return outputstack(str);
 
     for (i=0; i<strlen(mask); i++) {
@@ -151,14 +151,14 @@ int outputfields(char *str, char *mask, char *sep) {
                     pos = strrchr(field, '/');
                     if (pos)
                         fprintf(stdout, "%s%c", pos, outsep);
-                    else 
+                    else
                         fprintf(stdout, "%s%c", field, outsep);
                     break;
                 case 'E': // same as above, but wider output
                     pos = strrchr(field, '/');
                     if (pos)
                         fprintf(stdout, pad ? "%-20s%c" : "%s%c", pos+1, outsep);
-                    else 
+                    else
                         fprintf(stdout, pad ? "%-20s%c" : "%s%c", field, outsep);
                     break;
                 case 'o': // just output string as is
@@ -180,9 +180,9 @@ int outputfields(char *str, char *mask, char *sep) {
                 case 't': // we shouldn't get here thanks to the if statement above
                     break;
                 default:
-                    fprintf(stderr, "Error: Wrong char '%c' in mask %s\n", mask[i], mask); 
+                    fprintf(stderr, "Error: Wrong char '%c' in mask %s\n", mask[i], mask);
                     exit(1);
-             }       
+             }
         }
         else break;
     }
@@ -193,7 +193,7 @@ int outputfields(char *str, char *mask, char *sep) {
 // currently a fixed string, will make this dynamic together with command line option support
 int outputheader(char *add_columns) {
 
-    fprintf(stdout, pad ? "%-23s %7s %7s %-15s %-2s %-25s %-25s %-25s" : "%s,%s,%s,%s,%s,%s,%s,%s", 
+    fprintf(stdout, pad ? "%-23s %7s %7s %-15s %-2s %-25s %-25s %-25s" : "%s,%s,%s,%s,%s,%s,%s,%s",
             output_dir ? "TS" : "DATE       TIME", "PID", "TID", "USERNAME", "ST", "COMMAND", "SYSCALL", "WCHAN");
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "EXE");
     if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "CMDLINE");
@@ -207,7 +207,7 @@ void outputprocpartial(int pid, int tid, char *sampletime, uid_t proc_uid, char 
 
     header_printed = header_printed ? 1 : outputheader(add_columns);
 
-    fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c %-25s %-25s %-25s" : "%s,%d,%d,%s,%c,%s,%s,%s", 
+    fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c %-25s %-25s %-25s" : "%s,%d,%d,%s,%c,%s,%s,%s",
                     sampletime, pid, tid, getusername(proc_uid), '-', message, "-", "-");
 
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "-");
@@ -225,7 +225,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
 
     // if printing out only the /proc/PID entry (not TID), then we have just read the relevant stat file into filebuf
     // in the calling function. this callflow-dependent optimization avoids an 'expensive' /proc/PID/stat read
-    b = tid ? readfile(pid, tid, "stat", statbuf) : strlen(statbuf); 
+    b = tid ? readfile(pid, tid, "stat", statbuf) : strlen(statbuf);
     fieldend = strstr(statbuf, ") ");
 
     if (b > 0 && fieldend) { // the 1st field end "not null" check is due to /proc not having read consistency (rarely in-flux values are shown as \0\0\0\0\0\0\0...
@@ -238,10 +238,10 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
             // only print header (in stdout mode) when there are any samples to report
             header_printed = header_printed ? 1 : outputheader(add_columns);
 
-            fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c " : "%s,%d,%d,%s,%c,", sampletime, pid, tid, getusername(proc_uid), task_status); 
+            fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c " : "%s,%d,%d,%s,%c,", sampletime, pid, tid, getusername(proc_uid), task_status);
             outputfields(statbuf, ".O", WSP);     // .O......x for PF_ flags
 
-            b = readfile(pid, tid, "syscall", filebuf); 
+            b = readfile(pid, tid, "syscall", filebuf);
             if (b > 0) { outputfields(filebuf, "S", WSP); } else { fprintf(stdout, pad ? "%-25s " : "%s,", "-"); }
 
             b = readfile(pid, tid, "wchan", filebuf);
@@ -259,7 +259,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
             }
 
             if (strcasestr(add_columns, "kstack")) {
-                b = readfile(pid, tid, "stack", filebuf); 
+                b = readfile(pid, tid, "stack", filebuf);
                 if (b > 0) { outputfields(filebuf, "t", WSP); } else { fprintf(stdout, "-"); }
             }
 
@@ -398,16 +398,16 @@ int main(int argc, char **argv)
         strcat(timebuf, usec_buf);
 
         pd = opendir("/proc");
-        if (!pd) { fprintf(stderr, "/proc listing error='%s', this shouldn't happen\n", strerror(errno)); exit(1); } 
+        if (!pd) { fprintf(stderr, "/proc listing error='%s', this shouldn't happen\n", strerror(errno)); exit(1); }
 
         while ((pde = readdir(pd))) { // /proc/PID
             if (pde->d_name[0] >= '0' && pde->d_name[0] <= '9' && atoi(pde->d_name) != mypid) {
                 sprintf(dirpath, "/proc/%s", pde->d_name);
                 proc_uid = stat(dirpath, &s) ? -1 : s.st_uid;
 
- 
+
                 // if not multithreaded, read current /proc/PID/x files for efficiency. "nthreads" is 20th field in proc/PID/stat
-                if (readfile(atoi(pde->d_name), 0, "stat", statbuf) > 0) { 
+                if (readfile(atoi(pde->d_name), 0, "stat", statbuf) > 0) {
                     sscanf(statbuf, "%*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %u", &nthreads);
 
                     if (nthreads > 1) {
@@ -418,7 +418,7 @@ int main(int argc, char **argv)
 
                             while ((tde = readdir(td))) { // proc/PID/task/TID
                                 if (tde->d_name[0] >= '0' && tde->d_name[0] <= '9') {
-                                    outputprocentry(atoi(pde->d_name), atoi(tde->d_name), timebuf, proc_uid, add_columns); 
+                                    outputprocentry(atoi(pde->d_name), atoi(tde->d_name), timebuf, proc_uid, add_columns);
                                 }
                             }
                         }
@@ -426,7 +426,7 @@ int main(int argc, char **argv)
                             outputprocpartial(atoi(pde->d_name), -1, timebuf, proc_uid, add_columns, "[task_entry_lost(list)]");
                         }
                         closedir(td);
-                    } 
+                    }
                     else { // nthreads <= 1, therefore pid == tid
                         outputprocentry(atoi(pde->d_name), atoi(pde->d_name), timebuf, proc_uid, add_columns);
                     }
@@ -449,7 +449,7 @@ int main(int argc, char **argv)
         loop_iteration_msec = timedifference_msec(loop_iteration_start_time, loop_iteration_end_time);
         sleep_for_msec = interval_msec - loop_iteration_msec;
         if (sleep_for_msec > 0) usleep(sleep_for_msec * 1000);
-      
+
     }
 
     return 0;

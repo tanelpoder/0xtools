@@ -1,3 +1,4 @@
 SAMPLEINTERVAL=10
-LOGDIRPATH=/var/run/xcapture
+LOGDIRPATH=/var/log/xcapture
 ADDITIONALOPTIONS="exe,cmdline,syscall,wchan"
+DAYS=7

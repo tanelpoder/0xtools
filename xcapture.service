@@ -3,13 +3,14 @@ Description=0x.Tools xcapture
 
 [Service]
 Environment="SAMPLEINTERVAL=10"
-Environment="LOGDIRPATH=/var/run/xcapture"
+Environment="LOGDIRPATH=/var/log/xcapture"
 Environment="ADDITIONALOPTIONS=exe,cmdline,syscall,wchan"
+Environment="DAYS=7"
 EnvironmentFile=/etc/default/xcapture
 ExecStartPre=/bin/sh -c 'test -d "$LOGDIRPATH"'
 ExecStartPre=/bin/sh -c 'test "$SAMPLEINTERVAL" -ge 1'
 ExecStart=/bin/sh -c '/usr/bin/xcapture -d ${SAMPLEINTERVAL} -c ${ADDITIONALOPTIONS} -o ${LOGDIRPATH}'
-ExecStartPost=/usr/bin/find "${LOGDIRPATH}" -name "*.csv" -mtime +7 -exec rm -v {} \;
+ExecStartPost=/usr/bin/find "${LOGDIRPATH}" -name "*.csv" -mtime +${DAYS} -exec rm -v {} \;
 KillSignal=SIGTERM
 
 [Install]
