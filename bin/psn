@@ -2,22 +2,22 @@
 #
 #  psn -- Linux Process Snapper by Tanel Poder [https://0x.tools]
 #  Copyright 2019-2021 Tanel Poder
-#  
+#
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
 #  the Free Software Foundation; either version 2 of the License, or
 #  (at your option) any later version.
-#  
+#
 #  This program is distributed in the hope that it will be useful,
 #  but WITHOUT ANY WARRANTY; without even the implied warranty of
 #  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #  GNU General Public License for more details.
-#  
+#
 #  You should have received a copy of the GNU General Public License along
 #  with this program; if not, write to the Free Software Foundation, Inc.,
 #  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-#  
-#  SPDX-License-Identifier: GPL-2.0-or-later 
+#
+#  SPDX-License-Identifier: GPL-2.0-or-later
 #
 # NOTES
 #
@@ -27,13 +27,13 @@
 #  For example (on RHEL 8):
 #    sudo alternatives --set python /usr/bin/python3
 #
-#  One exception on RHEL 5, use the following line, without quotes (if you have the 
+#  One exception on RHEL 5, use the following line, without quotes (if you have the
 #  additional python26 package installed from EPEL):
 #
 #  "#!/usr/bin/env python26"
 #
 
-PSN_VERSION = '1.2.2'
+PSN_VERSION = '1.2.3'
 
 import sys, os, os.path, time, datetime
 import re
@@ -47,7 +47,7 @@ import argparse
 import proc, psnreport
 
 # don't print "broken pipe" error when piped into commands like "head"
-signal(SIGPIPE,SIG_DFL) 
+signal(SIGPIPE,SIG_DFL)
 
 ### Defaults ###
 default_group_by='comm,state'
@@ -76,7 +76,7 @@ parser.add_argument('-G', '--append-group-by', metavar='csv-columns', default=No
 parser.add_argument('--list', default=None, action='store_true', help='list all available columns')
 
 # specify csv sources to be captured in full. use with -o or --output-sample-db to capture proc data for manual analysis
-parser.add_argument('--sources', metavar='csv-source-names', default='', help=argparse.SUPPRESS) 
+parser.add_argument('--sources', metavar='csv-source-names', default='', help=argparse.SUPPRESS)
 # capture all sources in full. use with -o or --output-sample-db', help=argparse.SUPPRESS)
 parser.add_argument('--all-sources', default=False, action='store_true', help=argparse.SUPPRESS)
 
@@ -114,7 +114,7 @@ else:
 
 args.select = args.select.split(',')
 args.group_by = args.group_by.split(',')
-if args.append_group_by: 
+if args.append_group_by:
     args.append_group_by = args.append_group_by.split(',')
 else:
     args.append_group_by = []
@@ -218,7 +218,7 @@ def get_matching_processes(pid_arg=None, recursive=False):
     if pid_arg:
         try:
             arg_pids = [int(p) for p in pid_arg.split(',')]
-            selected_pids = [p for p, b in pid_basename if p in arg_pids] 
+            selected_pids = [p for p, b in pid_basename if p in arg_pids]
         except ValueError as e:
             selected_pids = [p for p, b in pid_basename if re.search(pid_arg, b)]
 
@@ -234,8 +234,8 @@ def get_matching_processes(pid_arg=None, recursive=False):
 
     # deduplicate pids & remove pSnapper pid (as pSnapper doesnt consume any resources when it's not running)
     selected_pids=list(set(selected_pids))
-    if not args.show_yourself: 
-        if os.getpid() in selected_pids: 
+    if not args.show_yourself:
+        if os.getpid() in selected_pids:
             selected_pids.remove(os.getpid())
     return selected_pids
 
@@ -265,76 +265,76 @@ def main():
         num_sample_events = 0
         num_ps_samples = 0
         total_measure_s = 0.
-    
+
         selected_pids = None
         process_tasks = {}
         sample_ioerrors = 0  # detect permissions issues with /proc/access
-        
+
         sample_seconds = args.sample_seconds
-    
+
         try:
             while time.time() < start_time + args.sample_seconds:
                 measure_begin_time = datetime.datetime.utcnow()
                 event_time = measure_begin_time.isoformat()
-    
+
                 # refresh matching pids at a much lower frequency than process sampling as the underlying ps is expensive
                 if not selected_pids or time.time() > start_time + num_ps_samples * sample_ps_period_s:
                     selected_pids = get_matching_processes(args.pid, args.recursive)
                     process_tasks = get_process_tasks(selected_pids)
                     num_ps_samples += 1
-    
+
                     if not selected_pids:
                         print('No matching processes found:', args.pid)
                         sys.exit(1)
-    
+
                 for pid in selected_pids:
                     try:
                         # if any process-level samples fail, don't insert any sample event rows for process or tasks...
                         process_samples = [s.sample(event_time, pid, pid) for s in sources.keys() if s.task_level == False]
-    
+
                         for s, samples in zip([s for s in sources.keys() if s.task_level == False], process_samples):
                             sqlexecmany(conn, s.insert_sql, samples)
-    
+
                         for task in process_tasks.get(pid, []):
                             try:
                                 # ...but if a task disappears mid-sample simply discard data for that task only
                                 task_samples = [s.sample(event_time, pid, task) for s in sources.keys() if s.task_level == True]
-    
+
                                 for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
                                     # TODO factor out
                                     conn.executemany(s.insert_sql, samples)
-    
+
                             except IOError as e:
                                 sample_ioerrors +=1
                                 logging.debug(e)
                                 continue
-    
+
                     except IOError as e:
                         sample_ioerrors +=1
                         logging.debug(e)
                         continue
-    
+
                 conn.commit()
-    
+
                 num_sample_events += 1
                 measure_delta = datetime.datetime.utcnow() - measure_begin_time
                 total_measure_s += measure_delta.seconds + (measure_delta.microseconds * 0.000001)
-    
+
                 sleep_until = start_time + num_sample_events * sample_period_s
                 time.sleep(max(0, sleep_until - time.time()))
-    
+
             print('finished.')
             print
         except KeyboardInterrupt as e:
             sample_seconds = time.time() - start_time
             print('sampling interrupted.')
             print
-    
-    
+
+
     ### Query and report ###
     for r in reports:
         r.output_report(conn)
-    
+
     print('samples: %s' %  num_sample_events),
     if not args.input_sample_db:
         print('(expected: %s)' % int(sample_seconds * args.sample_hz))
@@ -342,17 +342,17 @@ def main():
            final_warning += 'Warning: less than 10 samples captured. Reduce the amount of processes monitored or run pSnapper for longer.'
     else:
         print
-    
+
     first_table_name = list(sources.keys())[0].name
     print('total processes: %s, threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()[0], conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone()[0]))
     print('runtime: %.2f, measure time: %.2f' % (time.time() - start_time, total_measure_s))
     print
-    
-    # TODO needs some improvement as some file IO errors come from processes/threads exiting 
+
+    # TODO needs some improvement as some file IO errors come from processes/threads exiting
     # before we get to sample all files of interest under the PID
     if sample_ioerrors >= 100:
         final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
-    
+
     if final_warning:
         print(final_warning)
         print
@@ -367,7 +367,7 @@ def exit(r):
     sys.exit(r)
 
 
-## let's do this!	
+## let's do this!
 if args.profile:
     import cProfile
     cProfile.run('main()', 'psn-prof.dmp')

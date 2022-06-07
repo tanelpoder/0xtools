@@ -20,7 +20,7 @@
  *
  */
 
-#define XCAP_VERSION "1.2.2"
+#define XCAP_VERSION "1.2.3"
 
 #define _GNU_SOURCE
 

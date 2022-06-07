@@ -1,8 +1,8 @@
 %define  debug_package %{nil}
 # %define _unpackaged_files_terminate_build 0
 
-%define ReleaseNumber 3
-%define VERSION 1.2.2
+%define ReleaseNumber 4
+%define VERSION 1.2.3
 
 Name:           0xtools
 Version:        %{VERSION}
