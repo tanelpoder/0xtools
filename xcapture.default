@@ -1,4 +1,4 @@
 SAMPLEINTERVAL=10
 LOGDIRPATH=/var/log/xcapture
-ADDITIONALOPTIONS="exe,cmdline,syscall,wchan"
+ADDITIONALOPTIONS="exe,cmdline,syscall,wchan,kstack"
 MINUTES=1440
