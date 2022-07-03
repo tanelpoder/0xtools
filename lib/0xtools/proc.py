@@ -1,9 +1,9 @@
-#  proc.py -- Linux Process Snapper by Tanel Poder
-#  Copyright 2019 Tanel Poder
-#
-#  This program is free software: you can redistribute it and/or modify
+#  psn -- Linux Process Snapper by Tanel Poder [https://0x.tools]
+#  Copyright 2019-2021 Tanel Poder
+#  
+#  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation, either version 3 of the License, or
+#  the Free Software Foundation; either version 2 of the License, or
 #  (at your option) any later version.
 #  
 #  This program is distributed in the hope that it will be useful,
@@ -11,8 +11,11 @@
 #  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #  GNU General Public License for more details.
 #  
-#  You should have received a copy of the GNU General Public License
-#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#  You should have received a copy of the GNU General Public License along
+#  with this program; if not, write to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#  
+#  SPDX-License-Identifier: GPL-2.0-or-later 
 
 # structures defining /proc
 import os, os.path
@@ -47,7 +50,7 @@ class ProcSource:
 
         schema_extract_idx = [column_indexes[c[col_name_i]] for c in source_cols]
         schema_extract_convert = [c[schema_type_i] if len(c) == 3 else c[transform_i] for c in source_cols]
-        self.schema_extract = zip(schema_extract_idx, schema_extract_convert)
+        self.schema_extract = list(zip(schema_extract_idx, schema_extract_convert))
 
         self.insert_sql = "INSERT INTO '%s' VALUES (%s)" % (self.name, ','.join(['?' for i in self.schema_columns]))
 
@@ -74,8 +77,8 @@ class ProcSource:
                     try:
                         syscall_id = full_sample[0]  # get string version of syscall number or "running" or "-1"
                     except (ValueError, IndexError) as e:
-                        print 'problem extracting syscall id', self.name, 'sample:'
-                        print full_sample
+                        print('problem extracting syscall id', self.name, 'sample:')
+                        printr(full_sample)
                         print
                         raise
 
@@ -104,8 +107,8 @@ class ProcSource:
             try:
                 return [create_row_sample(rs) for rs in raw_samples]
             except (ValueError, IndexError) as e:
-                print 'problem parsing', self.name, 'sample:'
-                print raw_samples
+                print('problem parsing', self.name, 'sample:')
+                print(raw_samples)
                 print
                 raise
 
@@ -168,21 +171,21 @@ stat = ProcSource('stat', '/proc/%s/task/%s/stat', [
     ('cminflt', int, 10),
     ('majflt', int, 11),
     ('cmajflt', int, 12),
-    ('utime', long, 13),
-    ('stime', long, 14),
-    ('cutime', long, 15),
-    ('cstime', long, 16),
-    ('utime_sec',  long, 13, lambda v: int(v) / system_timer_hz),
-    ('stime_sec',  long, 14, lambda v: int(v) / system_timer_hz),
-    ('cutime_sec', long, 15, lambda v: int(v) / system_timer_hz),
-    ('cstime_sec', long, 16, lambda v: int(v) / system_timer_hz),
+    ('utime', int, 13),
+    ('stime', int, 14),
+    ('cutime', int, 15),
+    ('cstime', int, 16),
+    ('utime_sec',  int, 13, lambda v: int(v) / system_timer_hz),
+    ('stime_sec',  int, 14, lambda v: int(v) / system_timer_hz),
+    ('cutime_sec', int, 15, lambda v: int(v) / system_timer_hz),
+    ('cstime_sec', int, 16, lambda v: int(v) / system_timer_hz),
     ('priority', int, 17),
     ('nice', int, 18),
     ('num_threads', int, 19),
     ('itrealvalue', None, 20),
-    ('starttime', long, 21),
-    ('vsize', long, 22),
-    ('rss', long, 23),
+    ('starttime', int, 21),
+    ('vsize', int, 22),
+    ('rss', int, 23),
     ('rsslim', str, 24),
     ('startcode', None, 25),
     ('endcode', None, 26),
@@ -200,7 +203,7 @@ stat = ProcSource('stat', '/proc/%s/task/%s/stat', [
     ('processor', int, 38),
     ('rt_priority', int, 39),
     ('policy', None, 40),
-    ('delayacct_blkio_ticks', long, 41),
+    ('delayacct_blkio_ticks', int, 41),
     ('guest_time', int, 42),
     ('cgust_time', int, 43),
     ('start_data', None, 44),
@@ -319,7 +322,7 @@ def get_system_call_names():
         try:
             with open(path) as f:
                 return extract_system_call_ids(f)
-        except IOError, e:
+        except IOError as e:
             pass
 
     raise Exception('unistd_64.h not found in' + ' or '.join(unistd_64_paths) + '.\n           You may need to "yum install kernel-headers" or "apt-get install libc6-dev"\n           until this dependency is removed in a newer pSnapper version')
@@ -328,7 +331,9 @@ def get_system_call_names():
 syscall_id_to_name = get_system_call_names()
 
 # define syscalls for which we can look up filename from fd argument
-syscall_name_to_id = dict((y,x) for x,y in syscall_id_to_name.iteritems())
+# before the change for Python 3
+#syscall_name_to_id = dict((y,x) for x,y in syscall_id_to_name.iteritems())
+syscall_name_to_id = dict((y,x) for x,y in syscall_id_to_name.items())
 
 syscalls_with_fd_arg = set([                   
     syscall_name_to_id['read']              

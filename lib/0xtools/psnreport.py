@@ -1,9 +1,9 @@
-#  report.py -- Linux Process Snapper by Tanel Poder
-#  Copyright 2019 Tanel Poder
-#
-#  This program is free software: you can redistribute it and/or modify
+#  psn -- Linux Process Snapper by Tanel Poder [https://0x.tools]
+#  Copyright 2019-2021 Tanel Poder
+#  
+#  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation, either version 3 of the License, or
+#  the Free Software Foundation; either version 2 of the License, or
 #  (at your option) any later version.
 #  
 #  This program is distributed in the hope that it will be useful,
@@ -11,8 +11,11 @@
 #  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #  GNU General Public License for more details.
 #  
-#  You should have received a copy of the GNU General Public License
-#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#  You should have received a copy of the GNU General Public License along
+#  with this program; if not, write to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#  
+#  SPDX-License-Identifier: GPL-2.0-or-later 
 
 # query/report code
 
@@ -48,7 +51,7 @@ def output_table_report(report, dataset):
             else:
                 col_type = str
 
-            if col_type in (str, int, long):
+            if col_type in (str, int, int):
                 max_field_length = max([len(str(row[col_idx])) for row in dataset])
             elif col_idx == float:
                 max_field_length = max([len(str(int(row[col_idx]))) for row in dataset]) + 3 # arbitrary!
@@ -63,7 +66,7 @@ def output_table_report(report, dataset):
                
             if col_type == str:
                 field_fmts.append('%%-%s.%ss' % (field_width, field_width))
-            elif col_type in (int, long):
+            elif col_type in (int, int):
                 field_fmts.append('%%%sd' % field_width)
             elif col_type == float:
                 field_fmts.append('%%%s.%sf' % (field_width, 2)) # arbitrary
@@ -81,15 +84,15 @@ def output_table_report(report, dataset):
     field_fmt = ' ' + ' | '.join(field_fmts) + ' '
 
     print
-    print title
+    print(title)
     print 
     if dataset:
-        print header_fmt % tuple([c[3] for c in report.full_projection()])
-        print hr
+        print(header_fmt % tuple([c[3] for c in report.full_projection()]))
+        print(hr)
         for row in dataset:
-            print field_fmt % row
+            print(field_fmt % row)
     else:
-        print 'query returned no rows'
+        print('query returned no rows')
     print
     print
 
@@ -155,8 +158,8 @@ class Report:
             return '%s.%s' % (c[0].name, c[2]) if c[0] else c[2]
 
         # build join conditions
-        first_source_name = self.sources.keys()[0].name
-        join_where = flatten([['%s.%s = %s.%s' % (s.name, c, first_source_name, c) for c in ['pid', 'task', 'event_time']] for s in self.sources.keys()[1:]])
+        first_source_name = list(self.sources.keys())[0].name
+        join_where = flatten([['%s.%s = %s.%s' % (s.name, c, first_source_name, c) for c in ['pid', 'task', 'event_time']] for s in list(self.sources.keys())[1:]])
 
         attr = {
             'projection': '\t' + ',\n\t'.join([render_col(c) for c in self.full_projection()]),
