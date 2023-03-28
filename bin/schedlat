@@ -18,7 +18,7 @@ from __future__ import print_function
 from datetime import datetime
 import time, sys
 
-if len(sys.argv) != 2:
+if len(sys.argv) != 2 or sys.argv[1] == '-h':
   print("usage: " + sys.argv[0] + " PID")
   exit(1)
 

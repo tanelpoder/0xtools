@@ -1,6 +1,25 @@
-# 0x.tools v1.0
+# 0x.tools changelog
 
-## pSnapper changelog
+1.1.0
+======================
+* general
+  - using semantic versioning now (major.minor.patch)
+  - in the future, will update version numbers in a specific tool only when it was updated
+
+* pSnapper
+  - `psn` works with python 3 now too (uses whereever the "/usr/bin/env python" command points to)
+
+* xcapture
+ - Fixed xcapture compiler warnings shown on newer gcc versions
+ - More precise sampling interval (account for sampling busy-time and subtract that from next sleep duration)
+ - Under 1 sec sleep durations supported (For example `-d 0.1` for sampling at 10 Hz)
+
+* make/install
+ - by default, executables go to `/usr/bin` now
+ - python libraries go under PREFIX/lib/0xtools now
+ - use PREFIX option in makefile to adjust the installation root
+ - makefile uses the `install` command instead of the `ln -s` hack for installing files
+ - `make uninstall` removes installed files
 
 0.18
 ======================

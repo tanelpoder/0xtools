@@ -1,4 +1,5 @@
 CC=gcc
+PREFIX ?= /usr
 
 # build
 CFLAGS=-I include -Wall
@@ -19,16 +20,18 @@ debug0:
 	$(CC) $(CFLAGS_DEBUG0) -o bin/xcapture src/xcapture.c
 
 install:
-	# for now the temporary "install" method is with symlinks
-	ln -s `pwd`/bin/xcapture /usr/bin/xcapture
-	ln -s `pwd`/bin/psn /usr/bin/psn
-	ln -s `pwd`/bin/schedlat /usr/bin/schedlat
+	install -m 0755 bin/xcapture ${PREFIX}/bin/xcapture
+	install -m 0755 bin/psn ${PREFIX}/bin/psn
+	install -m 0755 bin/schedlat ${PREFIX}/bin/schedlat
+	install -m 0755 -d ${PREFIX}/lib/0xtools
+	install -m 0644 lib/0xtools/proc.py ${PREFIX}/lib/0xtools/proc.py
+	install -m 0644 lib/0xtools/psnreport.py ${PREFIX}/lib/0xtools/psnreport.py
+	install -m 0644 lib/0xtools/argparse.py ${PREFIX}/lib/0xtools/argparse.py
 
 uninstall:
-	rm -fv /usr/bin/xcapture
-	rm -fv /usr/bin/psn
-	rm -fv /usr/bin/schedlat
+	rm -fv  ${PREFIX}/bin/xcapture ${PREFIX}/bin/psn ${PREFIX}/bin/schedlat
+	rm -fv  ${PREFIX}/lib/0xtools/proc.py ${PREFIX}/lib/0xtools/psnreport.py ${PREFIX}/lib/0xtools/argparse.py
+	rm -rfv ${PREFIX}/lib/0xtools 
 
 clean:
-	rm -f ./bin/xcapture
-
+	rm -fv bin/xcapture

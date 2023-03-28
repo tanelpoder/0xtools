@@ -1,21 +1,26 @@
 /* 
- * 0x.Tools by Tanel Poder [https://0x.tools]
- * Copyright 2019-2020 Tanel Poder
+ *  0x.Tools xCapture - sample thread activity from Linux procfs [https://0x.tools]
+ *  Copyright 2019-2021 Tanel Poder
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *
+ *  SPDX-License-Identifier: GPL-2.0-or-later 
  *
  */
+
+#define XCAP_VERSION "1.1.0"
 
 #define _GNU_SOURCE
 
@@ -50,7 +55,7 @@ char *output_dir = NULL;  // use stdout if output_dir is not set
 int  header_printed = 0;
 char output_format = 'S'; // S -> space-delimited fixed output format, C -> CSV
 char outsep = ' ';
-int  pad = 1; // output field padding (for space-delimited fixed-width output)
+int  pad = 1;             // output field padding (for space-delimited fixed-width output)
   
 const char *getusername(uid_t uid)
 {
@@ -221,7 +226,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
     // if printing out only the /proc/PID entry (not TID), then we have just read the relevant stat file into filebuf
     // in the calling function. this callflow-dependent optimization avoids an 'expensive' /proc/PID/stat read
     b = tid ? readfile(pid, tid, "stat", statbuf) : strlen(statbuf); 
-    fieldend = strchr(statbuf, ')'); 
+    fieldend = strstr(statbuf, ") ");
 
     if (b > 0 && fieldend) { // the 1st field end "not null" check is due to /proc not having read consistency (rarely in-flux values are shown as \0\0\0\0\0\0\0...
 
@@ -271,7 +276,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
 
 void printhelp() {
     const char *helptext =
-    "\n0x.Tools xcapture v1.0 by Tanel Poder [https://0x.tools]\n\n"
+    "by Tanel Poder [https://0x.tools]\n\n"
     "Usage:\n"
     "  xcapture [options]\n\n"
     "  By default, sample all /proc tasks in states R, D every second and print to stdout\n\n"
@@ -279,27 +284,34 @@ void printhelp() {
     "    -a             capture tasks in additional states, even the ones Sleeping (S)\n"
     "    -A             capture tasks in All states, including Zombie (Z), Exiting (X), Idle (I)\n"
     "    -c <c1,c2>     print additional columns (for example: -c exe,cmdline,kstack)\n"
-    "    -d <N>         seconds to sleep between samples (default: 1)\n"
+    "    -d <N>         seconds between samples (default: 1.0)\n"
     "    -E <string>    custom task state Exclusion filter (default: XZIS)\n"
     "    -h             display this help message\n"
     "    -o <dirname>   write wide output into hourly CSV files in this directory instead of stdout\n";
 
-    fprintf(stderr, "%s\n", helptext);
+    fprintf(stderr, "\n0x.Tools xcapture v%s %s\n", XCAP_VERSION, helptext);
+}
+
+float timedifference_msec(struct timeval t0, struct timeval t1)
+{
+    return (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_usec - t0.tv_usec) / 1000.0f;
 }
 
 int main(int argc, char **argv)
 {
     char outbuf[BUFSIZ];
     char outpath[PATH_MAX];
-    char dirpath[100]; // used for /proc stuff only, so no long paths
+    char dirpath[PATH_MAX]; // used for /proc stuff only, so no long paths
     DIR *pd, *td;
     struct dirent *pde, *tde; // process level and thread/task level directory entries in /proc
 
     char timebuf[80], usec_buf[6];
-    struct timeval tmnow;
+    struct timeval tmnow,loop_iteration_start_time,loop_iteration_end_time;
+    float loop_iteration_msec;
+    float sleep_for_msec;
     struct tm *tm;
     int prevhour = -1; // used for detecting switch to a new hour for creating a new output file
-    int sleep_delay = 1;
+    int interval_msec = 1000;
 
     struct stat s;
     uid_t proc_uid;
@@ -323,9 +335,9 @@ int main(int argc, char **argv)
                 add_columns = optarg;
                 break;
             case 'd':
-                sleep_delay = atoi(optarg);
-                if (sleep_delay <= 0 || sleep_delay > 3600) {
-                    fprintf(stderr, "Option -d has invalid value for sleep delay - %s (%d)\n", optarg, sleep_delay);
+                interval_msec = atof(optarg) * 1000;
+                if (interval_msec <= 0 || interval_msec > 3600000) {
+                    fprintf(stderr, "Option -d has invalid value for capture interval - %s (%d)\n", optarg, interval_msec);
                     return 1;
                 }
                 break;
@@ -358,11 +370,12 @@ int main(int argc, char **argv)
 
     setbuf(stdout, outbuf);
 
-    fprintf(stderr, "\n0xTools xcapture v1.0 by Tanel Poder [https://0x.tools]\n\nSampling /proc...\n\n");
+    fprintf(stderr, "\n0xTools xcapture v%s by Tanel Poder [https://0x.tools]\n\nSampling /proc...\n\n", XCAP_VERSION);
 
     while (1) {
 
         gettimeofday(&tmnow, NULL);
+        gettimeofday(&loop_iteration_start_time, NULL);
         tm = localtime(&tmnow.tv_sec);
 
         if (output_dir) {
@@ -430,7 +443,13 @@ int main(int argc, char **argv)
         if (!output_dir && header_printed) fprintf(stdout, "\n");
 
         fflush(stdout);
-        sleep(sleep_delay);
+
+        // sleep for the requested interval minus time spent taking the previous sample
+        gettimeofday(&loop_iteration_end_time, NULL);
+        loop_iteration_msec = timedifference_msec(loop_iteration_start_time, loop_iteration_end_time);
+        sleep_for_msec = interval_msec - loop_iteration_msec;
+        if (sleep_for_msec > 0) usleep(sleep_for_msec * 1000);
+      
     }
 
     return 0;
