@@ -5,4 +5,4 @@ Description=xcapture restart
 OnCalendar=hourly
 
 [Install]
-WantedBy=timer.target
+WantedBy=timers.target
