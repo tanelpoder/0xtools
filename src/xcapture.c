@@ -164,8 +164,8 @@ int outputfields(char *str, char *mask, char *sep) {
                 case 'o': // just output string as is
                     fprintf(stdout, "%s%c", field, outsep);
                     break;
-                case 'O': // just output string as is, padded to 25 chars
-                    fprintf(stdout, pad ? "%-25s%c" : "%s%c", field, outsep);
+                case 'O': // just output string as is, padded to 30 chars
+                    fprintf(stdout, pad ? "%-30s%c" : "%s%c", field, outsep);
                     break;
                 case 'x': // print in hex
                     fprintf(stdout, pad ? "0x%llx " : "0x%llx%c", atoll(field), outsep);
@@ -175,7 +175,7 @@ int outputfields(char *str, char *mask, char *sep) {
                     fprintf(stdout, "%s%c", field[0]=='r' ? "[running]" : field[0]=='-' ? "[no_syscall]" : sysent0[atoi(field)].name, outsep);
                     break;
                 case 'S': // same as above, but wider output
-                    fprintf(stdout, pad ? "%-25s%c" : "%s%c", field[0]=='r' ? "[running]" : field[0]=='-' ? "[no_syscall]" : sysent0[atoi(field)].name, outsep);
+                    fprintf(stdout, pad ? "%-30s%c" : "%s%c", field[0]=='r' ? "[running]" : field[0]=='-' ? "[no_syscall]" : sysent0[atoi(field)].name, outsep);
                     break;
                 case 't': // we shouldn't get here thanks to the if statement above
                     break;
@@ -193,7 +193,7 @@ int outputfields(char *str, char *mask, char *sep) {
 // currently a fixed string, will make this dynamic together with command line option support
 int outputheader(char *add_columns) {
 
-    fprintf(stdout, pad ? "%-23s %7s %7s %-15s %-2s %-25s %-25s %-25s" : "%s,%s,%s,%s,%s,%s,%s,%s",
+    fprintf(stdout, pad ? "%-23s %7s %7s %-15s %-2s %-30s %-30s %-30s" : "%s,%s,%s,%s,%s,%s,%s,%s",
             output_dir ? "TS" : "DATE       TIME", "PID", "TID", "USERNAME", "ST", "COMMAND", "SYSCALL", "WCHAN");
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "EXE");
     if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "CMDLINE");
@@ -208,7 +208,7 @@ void outputprocpartial(int pid, int tid, char *sampletime, uid_t proc_uid, long 
 
     header_printed = header_printed ? 1 : outputheader(add_columns);
 
-    fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c %-25s %-25s %-25s" : "%s,%d,%d,%s,%c,%s,%s,%s",
+    fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c %-30s %-30s %-30s" : "%s,%d,%d,%s,%c,%s,%s,%s",
                     sampletime, pid, tid, getusername(proc_uid), '-', message, "-", "-");
 
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "-");
@@ -244,10 +244,10 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, long nsp
             outputfields(statbuf, ".O", WSP);     // .O......x for PF_ flags
 
             b = readfile(pid, tid, "syscall", filebuf);
-            if (b > 0) { outputfields(filebuf, "S", WSP); } else { fprintf(stdout, pad ? "%-25s " : "%s,", "-"); }
+            if (b > 0) { outputfields(filebuf, "S", WSP); } else { fprintf(stdout, pad ? "%-30s " : "%s,", "-"); }
 
             b = readfile(pid, tid, "wchan", filebuf);
-            if (b > 0) { outputfields(filebuf, "O", ". \n"); } else { fprintf(stdout, pad ? "%-25s " : "%s,", "-"); }
+            if (b > 0) { outputfields(filebuf, "O", ". \n"); } else { fprintf(stdout, pad ? "%-30s " : "%s,", "-"); }
 
             if (strcasestr(add_columns, "exe")) {
                 tid ? sprintf(sympath, "/proc/%d/task/%d/exe", pid, tid) : sprintf(sympath, "/proc/%d/exe", pid);
