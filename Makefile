@@ -24,6 +24,7 @@ install:
 	install -m 0755 bin/xcapture ${PREFIX}/bin/xcapture
 	install -m 0755 bin/psn ${PREFIX}/bin/psn
 	install -m 0755 bin/schedlat ${PREFIX}/bin/schedlat
+	install -m 0755 bin/vmtop ${PREFIX}/bin/vmtop
 	install -m 0755 -d ${PREFIX}/lib/0xtools
 	install -m 0644 lib/0xtools/psnproc.py ${PREFIX}/lib/0xtools/psnproc.py
 	install -m 0644 lib/0xtools/psnreport.py ${PREFIX}/lib/0xtools/psnreport.py
