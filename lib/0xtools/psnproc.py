@@ -86,7 +86,8 @@ class ProcSource:
                         try:
                             arg0  = int(full_sample[1], 16)
                             # a hacky way for avoiding reading false file descriptors for kernel threads on older kernels
-                            # (like 2.6.32) that show "syscall 0x0" for kernel threads + some random false arguments. TODO refactor this and kernel_thread translation above
+                            # (like 2.6.32) that show "syscall 0x0" for kernel threads + some random false arguments. 
+                            # TODO refactor this and kernel_thread translation above
                             if arg0 <= 65536:
                                 filename = os.readlink("/proc/%s/fd/%s" % (pid, arg0)) + " " + special_fds.get(arg0, '')
                             else:
@@ -336,33 +337,33 @@ syscall_id_to_name = get_system_call_names()
 syscall_name_to_id = dict((y,x) for x,y in syscall_id_to_name.items())
 
 syscalls_with_fd_arg = set([                   
-    syscall_name_to_id['read']              
-  , syscall_name_to_id['write']             
-  , syscall_name_to_id['pread64']           
-  , syscall_name_to_id['pwrite64']          
-  , syscall_name_to_id['fsync']             
-  , syscall_name_to_id['fdatasync']         
-  , syscall_name_to_id['recvfrom']          
-  , syscall_name_to_id['sendto']            
-  , syscall_name_to_id['recvmsg']           
-  , syscall_name_to_id['sendmsg']           
-  , syscall_name_to_id['epoll_wait']        
-  , syscall_name_to_id['ioctl']             
-  , syscall_name_to_id['accept']            
-  , syscall_name_to_id['accept4']         
-  , syscall_name_to_id['getdents']        
-  , syscall_name_to_id['getdents64']      
-  , syscall_name_to_id['unlinkat']        
-  , syscall_name_to_id['fstat']
-  , syscall_name_to_id['fstatfs']
-  , syscall_name_to_id['newfstatat']
-  , syscall_name_to_id['openat']
-  , syscall_name_to_id['readv']
-  , syscall_name_to_id['writev']
-  , syscall_name_to_id['preadv']
-  , syscall_name_to_id['pwritev']
-  , syscall_name_to_id['preadv2']
-  , syscall_name_to_id['pwritev2']
+    syscall_name_to_id.get('read'       , 'N/A')       
+  , syscall_name_to_id.get('write'      , 'N/A')       
+  , syscall_name_to_id.get('pread64'    , 'N/A')       
+  , syscall_name_to_id.get('pwrite64'   , 'N/A')       
+  , syscall_name_to_id.get('fsync'      , 'N/A')       
+  , syscall_name_to_id.get('fdatasync'  , 'N/A')       
+  , syscall_name_to_id.get('recvfrom'   , 'N/A')       
+  , syscall_name_to_id.get('sendto'     , 'N/A')       
+  , syscall_name_to_id.get('recvmsg'    , 'N/A')       
+  , syscall_name_to_id.get('sendmsg'    , 'N/A')       
+  , syscall_name_to_id.get('epoll_wait' , 'N/A')       
+  , syscall_name_to_id.get('ioctl'      , 'N/A')       
+  , syscall_name_to_id.get('accept'     , 'N/A')       
+  , syscall_name_to_id.get('accept4'    , 'N/A')     
+  , syscall_name_to_id.get('getdents'   , 'N/A')     
+  , syscall_name_to_id.get('getdents64' , 'N/A')     
+  , syscall_name_to_id.get('unlinkat'   , 'N/A')     
+  , syscall_name_to_id.get('fstat'      , 'N/A')
+  , syscall_name_to_id.get('fstatfs'    , 'N/A')
+  , syscall_name_to_id.get('newfstatat' , 'N/A')
+  , syscall_name_to_id.get('openat'     , 'N/A')
+  , syscall_name_to_id.get('readv'      , 'N/A')
+  , syscall_name_to_id.get('writev'     , 'N/A')
+  , syscall_name_to_id.get('preadv'     , 'N/A')
+  , syscall_name_to_id.get('pwritev'    , 'N/A')
+  , syscall_name_to_id.get('preadv2'    , 'N/A')
+  , syscall_name_to_id.get('pwritev2'   , 'N/A') 
 ])
 
 special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
