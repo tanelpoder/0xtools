@@ -44,7 +44,7 @@ from signal import signal, SIGPIPE, SIG_DFL
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + '/lib/0xtools')
 
 import argparse
-import proc, psnreport
+import psnproc as proc, psnreport
 
 # don't print "broken pipe" error when piped into commands like "head"
 signal(SIGPIPE,SIG_DFL)
@@ -258,9 +258,9 @@ def main():
         num_sample_events = int(sqlexec(conn,'SELECT COUNT(DISTINCT(event_time)) FROM stat').fetchone()[0])
         total_measure_s = 0.
     else:
-        print
+        print("")
         print('Linux Process Snapper v%s by Tanel Poder [https://0x.tools]' % PSN_VERSION)
-        print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
+        print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds), end=""),
         sys.stdout.flush()
         num_sample_events = 0
         num_ps_samples = 0
