@@ -22,7 +22,7 @@
 from itertools import groupby
 from datetime  import datetime
 
-import proc
+import psnproc as proc
 import logging
 
 def flatten(li):
@@ -83,9 +83,9 @@ def output_table_report(report, dataset):
     header_fmt = ' ' + ' | '.join(header_fmts) + ' '
     field_fmt = ' ' + ' | '.join(field_fmts) + ' '
 
-    print
+    print("")
     print(title)
-    print 
+    print("")
     if dataset:
         print(header_fmt % tuple([c[3] for c in report.full_projection()]))
         print(hr)
@@ -93,8 +93,8 @@ def output_table_report(report, dataset):
             print(field_fmt % row)
     else:
         print('query returned no rows')
-    print
-    print
+    print("")
+    print("")
 
 
 
