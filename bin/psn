@@ -260,7 +260,7 @@ def main():
     else:
         print("")
         print('Linux Process Snapper v%s by Tanel Poder [https://0x.tools]' % PSN_VERSION)
-        print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds), end=""),
+        print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
         sys.stdout.flush()
         num_sample_events = 0
         num_ps_samples = 0
