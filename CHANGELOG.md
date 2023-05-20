@@ -1,5 +1,19 @@
 # 0x.tools changelog
 
+1.2.3
+======================
+* OS support
+  - add unistd.h lookup for arm64 and ppc64le platforms
+
+* Installation & running
+  - add RPMspec for creating RPMs
+  - add systemd service definitions
+
+* Features
+  - add more "single file descriptor" syscalls that can report filenames accessed
+  - report /proc/PID/ns/pid for container namespace info
+  - systems with python3 now print out extra newlines like intended
+
 1.1.0
 ======================
 * general
