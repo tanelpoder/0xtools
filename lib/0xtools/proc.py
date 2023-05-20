@@ -350,6 +350,7 @@ syscalls_with_fd_arg = set([
   , syscall_name_to_id['ioctl']             
   , syscall_name_to_id['accept']            
   , syscall_name_to_id['accept4']            
+  , syscall_name_to_id['fstat']            
 ])
 
 special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
