@@ -317,7 +317,7 @@ def extract_system_call_ids(unistd_64_fh):
 def get_system_call_names():
     psn_dir=os.path.dirname(os.path.realpath(__file__))
     kernel_ver=platform.release().split('-')[0]
-    unistd_64_paths = ['/usr/include/asm/unistd_64.h', '/usr/include/x86_64-linux-gnu/asm/unistd_64.h', '/usr/include/asm-x86_64/unistd.h', psn_dir+'/syscall_64_'+kernel_ver+'.h', psn_dir+'/syscall_64.h']
+    unistd_64_paths = ['/usr/include/asm/unistd_64.h', '/usr/include/x86_64-linux-gnu/asm/unistd_64.h', '/usr/include/asm-x86_64/unistd.h', '/usr/include/asm/unistd.h', psn_dir+'/syscall_64_'+kernel_ver+'.h', psn_dir+'/syscall_64.h']
     for path in unistd_64_paths:
         try:
             with open(path) as f:
@@ -349,8 +349,20 @@ syscalls_with_fd_arg = set([
   , syscall_name_to_id['epoll_wait']        
   , syscall_name_to_id['ioctl']             
   , syscall_name_to_id['accept']            
-  , syscall_name_to_id['accept4']            
-  , syscall_name_to_id['fstat']            
+  , syscall_name_to_id['accept4']         
+  , syscall_name_to_id['getdents']        
+  , syscall_name_to_id['getdents64']      
+  , syscall_name_to_id['unlinkat']        
+  , syscall_name_to_id['fstat']
+  , syscall_name_to_id['fstatfs']
+  , syscall_name_to_id['newfstatat']
+  , syscall_name_to_id['openat']
+  , syscall_name_to_id['readv']
+  , syscall_name_to_id['writev']
+  , syscall_name_to_id['preadv']
+  , syscall_name_to_id['pwritev']
+  , syscall_name_to_id['preadv2']
+  , syscall_name_to_id['pwritev2']
 ])
 
 special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
