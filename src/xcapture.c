@@ -197,13 +197,14 @@ int outputheader(char *add_columns) {
             output_dir ? "TS" : "DATE       TIME", "PID", "TID", "USERNAME", "ST", "COMMAND", "SYSCALL", "WCHAN");
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "EXE");
     if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "CMDLINE");
+    if (strcasestr(add_columns, "nspid"))   fprintf(stdout, pad ? " %12s"  : ",%s", "NSPID");
     if (strcasestr(add_columns, "kstack"))  fprintf(stdout, pad ? " %s"    : ",%s", "KSTACK");
     fprintf(stdout, "\n");
     return 1;
 }
 
 // partial entry happens when /proc/PID/stat disappears before we manage to read it
-void outputprocpartial(int pid, int tid, char *sampletime, uid_t proc_uid, char *add_columns, char *message) {
+void outputprocpartial(int pid, int tid, char *sampletime, uid_t proc_uid, long nspid, char *add_columns, char *message) {
 
     header_printed = header_printed ? 1 : outputheader(add_columns);
 
@@ -212,11 +213,12 @@ void outputprocpartial(int pid, int tid, char *sampletime, uid_t proc_uid, char 
 
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "-");
     if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "-");
+    if (strcasestr(add_columns, "nspid"))   fprintf(stdout, pad ? " %12s"  : ",%s", "-");
     if (strcasestr(add_columns, "kstack"))  fprintf(stdout, pad ? " %s"    : ",%s", "-");
     fprintf(stdout, "\n");
 }
 
-int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *add_columns) {
+int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, long nspid, char *add_columns) {
 
     int b;
     char task_status;         // used for early bailout, filtering by task status
@@ -248,9 +250,13 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
             if (b > 0) { outputfields(filebuf, "O", ". \n"); } else { fprintf(stdout, pad ? "%-25s " : "%s,", "-"); }
 
             if (strcasestr(add_columns, "exe")) {
-               tid ? sprintf(sympath, "/proc/%d/task/%d/exe", pid, tid) : sprintf(sympath, "/proc/%d/exe", pid);
-               b = readlink(sympath, filebuf, PATH_MAX);
-               if (b > 0) { filebuf[b] = 0 ; outputfields(filebuf, "E", WSP); } else { fprintf(stdout, pad ? "%-20s " : "%s,", "-"); }
+                tid ? sprintf(sympath, "/proc/%d/task/%d/exe", pid, tid) : sprintf(sympath, "/proc/%d/exe", pid);
+                b = readlink(sympath, filebuf, PATH_MAX);
+                if (b > 0) { filebuf[b] = 0 ; outputfields(filebuf, "E", WSP); } else { fprintf(stdout, pad ? "%-20s " : "%s,", "-"); }
+            }
+
+            if (strcasestr(add_columns, "nspid")) {
+                fprintf(stdout, pad ? "%12ld%c" : "%ld%c", nspid, outsep);
             }
 
             if (strcasestr(add_columns, "cmdline")) {
@@ -267,7 +273,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, char *ad
         }
     }
     else {
-        outputprocpartial(pid, tid, sampletime, proc_uid, add_columns, "[task_entry_lost(read)]");
+        outputprocpartial(pid, tid, sampletime, proc_uid, nspid, add_columns, "[task_entry_lost(read)]");
         return 1;
     }
 
@@ -283,7 +289,7 @@ void printhelp() {
     "  Options:\n"
     "    -a             capture tasks in additional states, even the ones Sleeping (S)\n"
     "    -A             capture tasks in All states, including Zombie (Z), Exiting (X), Idle (I)\n"
-    "    -c <c1,c2>     print additional columns (for example: -c exe,cmdline,kstack)\n"
+    "    -c <c1,c2>     print additional columns (for example: -c exe,cmdline,nspid,kstack)\n"
     "    -d <N>         seconds between samples (default: 1.0)\n"
     "    -E <string>    custom task state Exclusion filter (default: XZIS)\n"
     "    -h             display this help message\n"
@@ -313,8 +319,9 @@ int main(int argc, char **argv)
     int prevhour = -1; // used for detecting switch to a new hour for creating a new output file
     int interval_msec = 1000;
 
-    struct stat s;
+    struct stat pidstat, nspstat;
     uid_t proc_uid;
+    long nspid;
 
     int nthreads = 0;
     int mypid = getpid();
@@ -353,7 +360,7 @@ int main(int argc, char **argv)
                 output_format = 'C'; // CSV
                 outsep = ',';
                 pad = 0;
-                if (!strlen(add_columns)) add_columns = "exe,kstack";
+                if (!strlen(add_columns)) add_columns = "nspid,exe,kstack";
                 break;
             case '?':
                 if (strchr("cEd", optopt))
@@ -403,8 +410,9 @@ int main(int argc, char **argv)
         while ((pde = readdir(pd))) { // /proc/PID
             if (pde->d_name[0] >= '0' && pde->d_name[0] <= '9' && atoi(pde->d_name) != mypid) {
                 sprintf(dirpath, "/proc/%s", pde->d_name);
-                proc_uid = stat(dirpath, &s) ? -1 : s.st_uid;
-
+                proc_uid = stat(dirpath, &pidstat) ? -1 : pidstat.st_uid;
+                sprintf(dirpath, "/proc/%s/ns/pid", pde->d_name);
+                nspid = stat(dirpath, &nspstat) ? -1 : nspstat.st_ino;
  
                 // if not multithreaded, read current /proc/PID/x files for efficiency. "nthreads" is 20th field in proc/PID/stat
                 if (readfile(atoi(pde->d_name), 0, "stat", statbuf) > 0) { 
@@ -418,22 +426,22 @@ int main(int argc, char **argv)
 
                             while ((tde = readdir(td))) { // proc/PID/task/TID
                                 if (tde->d_name[0] >= '0' && tde->d_name[0] <= '9') {
-                                    outputprocentry(atoi(pde->d_name), atoi(tde->d_name), timebuf, proc_uid, add_columns); 
+                                    outputprocentry(atoi(pde->d_name), atoi(tde->d_name), timebuf, proc_uid, nspid, add_columns); 
                                 }
                             }
                         }
                         else {
-                            outputprocpartial(atoi(pde->d_name), -1, timebuf, proc_uid, add_columns, "[task_entry_lost(list)]");
+                            outputprocpartial(atoi(pde->d_name), -1, timebuf, proc_uid, nspid, add_columns, "[task_entry_lost(list)]");
                         }
                         closedir(td);
                     } 
                     else { // nthreads <= 1, therefore pid == tid
-                        outputprocentry(atoi(pde->d_name), atoi(pde->d_name), timebuf, proc_uid, add_columns);
+                        outputprocentry(atoi(pde->d_name), atoi(pde->d_name), timebuf, proc_uid, nspid, add_columns);
                     }
 
                 } // readfile(statbuf)
                 else {
-                    outputprocpartial(atoi(pde->d_name), -1, timebuf, proc_uid, add_columns, "[proc_entry_lost(list)]");
+                    outputprocpartial(atoi(pde->d_name), -1, timebuf, proc_uid, nspid, add_columns, "[proc_entry_lost(list)]");
                     if (DEBUG) fprintf(stderr, "proc entry disappeared /proc/%s/stat, len=%zu, errno=%s\n", pde->d_name, strlen(statbuf), strerror(errno));
                 }
             }
