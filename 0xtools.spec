@@ -52,22 +52,23 @@ make install PREFIX=%{buildroot}/usr
 %install
 install -m 0755 -d -p %{buildroot}/usr/bin
 install -m 0755 -d -p %{buildroot}/usr/bin/%{name}
+install -m 0755 -d -p %{buildroot}/usr/lib/%{name}
 install -m 0755 -d -p %{buildroot}/usr/share/%{name}
 install -m 0755 -d -p %{buildroot}/var/log/xcapture
 
 install -m 0755 bin/run_xcpu.sh %{buildroot}/usr/bin/run_xcpu.sh
 install -m 0755 bin/run_xcapture.sh %{buildroot}/usr/bin/run_xcapture.sh
-# install -m 0755 bin/schedlat %{buildroot}/usr/bin/vmtop
-# install -m 0755 bin/vmtop %{buildroot}/usr/bin/vmtop
+install -m 0755 bin/schedlat %{buildroot}/usr/bin/schedlat
+install -m 0755 bin/vmtop %{buildroot}/usr/bin/vmtop
 
 cp -p doc/licenses/*  %{buildroot}/usr/share/%{name}
 cp -p LICENSE %{buildroot}/usr/share/%{name}
 
 
-# empty files to please %ghost section (we don't want precompiled)
-# This ensures the object files also get cleaned up if we uninstall the RPM
-touch %{buildroot}//usr/lib/%{name}/{psnreport,psnproc,argparse}.pyc
-touch %{buildroot}//usr/lib/%{name}/{psnreport,psnproc,argparse}.pyo
+## empty files to please %ghost section (we don't want precompiled)
+## This ensures the object files also get cleaned up if we uninstall the RPM
+#touch %{buildroot}/usr/lib/%{name}/{psnreport,psnproc,argparse}.pyc
+#touch %{buildroot}/usr/lib/%{name}/{psnreport,psnproc,argparse}.pyo
 
 
 # systemd service
