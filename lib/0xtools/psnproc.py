@@ -319,14 +319,17 @@ def get_system_call_names():
     psn_dir=os.path.dirname(os.path.realpath(__file__))
     kernel_ver=platform.release().split('-')[0]
     unistd_64_paths = ['/usr/include/asm-generic/unistd.h', '/usr/include/asm/unistd_64.h', '/usr/include/x86_64-linux-gnu/asm/unistd_64.h', '/usr/include/asm-x86_64/unistd.h', '/usr/include/asm/unistd.h', psn_dir+'/syscall_64_'+kernel_ver+'.h', psn_dir+'/syscall_64.h']
+    result_dict = {}
     for path in unistd_64_paths:
         try:
             with open(path) as f:
-                return extract_system_call_ids(f)
+                result_dict.update(extract_system_call_ids(f))
         except IOError as e:
             pass
-
-    raise Exception('unistd_64.h not found in' + ' or '.join(unistd_64_paths) + '.\n           You may need to "yum install kernel-headers" or "apt-get install libc6-dev"\n           until this dependency is removed in a newer pSnapper version')
+    if result_dict:
+        return result_dict
+    else:
+        raise Exception('unistd_64.h not found in' + ' or '.join(unistd_64_paths) + '.\n           You may need to "yum install kernel-headers" or "apt-get install libc6-dev"\n           until this dependency is removed in a newer pSnapper version')
 
 
 syscall_id_to_name = get_system_call_names()
