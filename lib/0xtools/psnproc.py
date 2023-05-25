@@ -475,7 +475,8 @@ def read_stack_samples(fh):
     #                          v  v
     for x in fh.readlines()[::-1][1:]:
         func = x.split(' ')[1].split('+')[0]
-        if func not in ['entry_SYSCALL_64_after_hwframe','do_syscall_64']:
+        if func not in ['entry_SYSCALL_64_after_hwframe','do_syscall_64','el0t_64_sync_handler', 
+                        'el0_svc', 'do_el0_svc', 'el0_svc_common.constprop.0', 'invoke_syscall.constprop.0' ]:
             if result:          # skip writing the 1st "->" 
                 result += '->'  
             result += func + '()'
