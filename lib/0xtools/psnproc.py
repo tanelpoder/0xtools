@@ -302,15 +302,19 @@ status = ProcSource('status', '/proc/%s/status', [
 ### syscall ###
 def extract_system_call_ids(unistd_64_fh):
     syscall_id_to_name = {'running': '[running]', '-1': '[kernel_direct]', 'kernel_thread':'[kernel_thread]'}
-    name_prefix = '__NR_'
 
-    for line in unistd_64_fh.readlines():
-        tokens = line.split()
-        if tokens and len(tokens) == 3 and tokens[0] == '#define':
-            _, s_name, s_id = tokens
-            if s_name.startswith(name_prefix):
-                s_name = s_name[len(name_prefix):]
-                syscall_id_to_name[s_id] = s_name
+    # examples from a unistd.h file
+    #  #define __NR_mount 40
+    #  #define __NR3264_truncate 45
+
+    for name_prefix in ['__NR_', '__NR3264_']:
+        for line in unistd_64_fh.readlines():
+            tokens = line.split()
+            if tokens and len(tokens) == 3 and tokens[0] == '#define':
+                _, s_name, s_id = tokens
+                if s_name.startswith(name_prefix):
+                    s_name = s_name[len(name_prefix):]
+                    syscall_id_to_name[s_id] = s_name
 
     return syscall_id_to_name
 
