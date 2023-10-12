@@ -55,7 +55,7 @@ tracepoint:raw_syscalls:sys_enter {
     @syscall_id     [tid] = args->id;
     @probe_name     [tid] = probe;
     @syscall_args   [tid] = (args->args[0], args->args[1], args->args[2], args->args[3], args->args[4], args->args[5]);
-    @syscall_ustack [tid] = ustack;
+    @syscall_ustack [tid] = ustack();
     @syscall_kstack [tid] = kstack();
 }
 
