@@ -1,0 +1,157 @@
+/*
+ *  0x.Tools xcapture.bt v0.1 - Proof-of-concept prototype for sampling 
+ *                              Linux thread activity using eBPF [0x.tools]
+ *
+ *  Copyright 2019-2023 Tanel Poder
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *
+ *  SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ */
+
+// This is a PoC prototype for demonstrating feasibility of the custom, programmable
+// task state object populating + sampling approach. This script is not complete and 
+// it probably has bugs. It's not a finished tool or a product.
+//
+// To avoid the extremely slow stack address to symbol resolution in bpftrace, enable
+// symbol caching, for example:
+//
+// sudo BPFTRACE_CACHE_USER_SYMBOLS=1 bpftrace xcapture.bt
+// or
+// sudo BPFTRACE_CACHE_USER_SYMBOLS=1 bpftrace -f json xcapture.bt > out.json
+
+BEGIN {
+    @TASK_STATES[0x00] = "R"; // "(running)"
+    @TASK_STATES[0x01] = "S"; // "(sleeping)"
+    @TASK_STATES[0x02] = "D"; // "(disk sleep)"
+    @TASK_STATES[0x04] = "T"; // "(stopped)"
+    @TASK_STATES[0x08] = "t"; // "(tracing stop)"
+    @TASK_STATES[0x10] = "X"; // "(dead)"
+    @TASK_STATES[0x20] = "Z"; // "(zombie)"
+    @TASK_STATES[0x40] = "P"; // "(parked)"
+    @TASK_STATES[0x80] = "I"; // "(idle)"
+}
+
+tracepoint:raw_syscalls:sys_enter {
+    // thread local storage, cleaned out automatically on thread exit
+    @pid            [tid] = pid; // *in bpftrace* tid means thread ID (task ID), pid means Process ID (thread group ID)
+    @uid            [tid] = uid;
+    @gid            [tid] = gid;
+    @comm           [tid] = comm;
+    @task_state     [tid] = @TASK_STATES[curtask->__state & 0xff];
+    @syscall_id     [tid] = args->id;
+    @probe_name     [tid] = probe;
+    @syscall_args   [tid] = (args->args[0], args->args[1], args->args[2], args->args[3], args->args[4], args->args[5]);
+    @syscall_ustack [tid] = ustack;
+    @syscall_kstack [tid] = kstack();
+}
+
+tracepoint:raw_syscalls:sys_exit {
+    // could use delete(@syscall[tid]) but these fields are likely reused/reallocated quickly
+    // better to handle emitting/printing out only relevant fields in the printout loop
+    @syscall_id     [tid] = -1;
+}
+
+// newer kernels have the "isra" version of this function name, thus the * wildcard
+kprobe:finish_task_switch* {
+    @task_state[tid] = @TASK_STATES[curtask->__state & 0xff];
+   
+    $prev_task = ((struct task_struct *)arg0);
+    if ($prev_task->pid != 0) { 
+        @prev_task_pid   [tid] = $prev_task->pid;
+        @prev_task_state [tid] = $prev_task->__state;
+
+        // this is where we mark the previous (off-cpu) thread state to whatever it now is
+        // if the previous task went to sleep due to issuing a syscall, we can see the latest
+        // syscall in @syscall_id[$prev_task->pid] and @syscall_ustack[$prev_task->pid] etc...
+        @task_state[$prev_task->pid] = @TASK_STATES[$prev_task->__state & 0xff]; 
+    }
+}
+
+// update the stack id of threads currently running on (any) cpu
+profile:hz:1 { 
+    @profile_ustack[tid] = ustack(); 
+    @profile_kstack[tid] = kstack();
+}
+
+// interval is executed on 1 CPU only, so we won't emit duplicates
+// of the same "global" maps on all CPUs
+interval:hz:1 {
+    //printf("\nSAMPLE_TIME %s\n", strftime("%Y-%m-%d %H:%M:%S.%f", nsecs));
+    @SAMPLE_TIME=strftime("%Y-%m-%d %H:%M:%S.%f", nsecs);
+    print(@SAMPLE_TIME);
+
+    print(@pid);
+    print(@comm);
+    print(@task_state);
+    print(@syscall_id);
+    print(@syscall_args);
+    print(@probe_name);
+    print(@profile_ustack);
+    print(@profile_kstack);
+    print(@syscall_ustack);
+    print(@syscall_kstack);
+}
+
+END {
+    clear(@SAMPLE_TIME);
+    clear(@TASK_STATES);
+    clear(@pid);
+    clear(@uid);
+    clear(@gid);
+    clear(@comm);
+    clear(@prev_task_pid);
+    clear(@prev_task_state);
+    clear(@profile_ustack);
+    clear(@profile_kstack);
+    clear(@syscall_ustack);
+    clear(@syscall_kstack);
+    clear(@syscall_id);
+    clear(@syscall_args);
+    clear(@task_state);
+    clear(@probe_name);
+}
+
+// TODO: 
+// ---------------------------------------------------------------------------------------------
+// There's *plenty* to do! If you know bcc/libbpf and are interested in helping out, ping me :-)
+//
+// Email: tanel@tanelpoder.com
+//
+// PRINTOUT NOTES:
+// ----------------------------------------------------------------------------------------------
+// "Kernel: 5.3 bpftrace supports C style while loops:
+// bpftrace -e 'i:ms:100 { $i = 0; while ($i <= 100) { printf("%d ", $i); $i++} exit(); }'
+// Loops can be short circuited by using the continue and break keywords."
+// 
+// Unfortunately bpftrace doesn't (yet?) support iterating through only the existing (populated)
+// elements in hash maps, we don't want to loop from 1 to pid_max every time we emit output!
+//
+// Thus, we need to use bcc/libbpf for the sampling loops or use bpftool to dump or mount 
+// the kernel ebpf maps as files and do our reading / sampling from there.
+//
+// Since we don't want to always emit/print every single task, but would rather have some 
+// conditional logic & intelligence of what threads are interesting (a'la only print R & D states
+// and some specific syscalls under S state), it's better to push this decision logic down to
+// kernel. This means bcc or more likely libbpf as mentioned above.
+//
+// DATA STRUCTURE NOTES:
+// ----------------------------------------------------------------------------------------------
+// With bcc/libbpf it's likely possible to use a hashmap of structs (or hashmap of maps) for 
+// storing each thread's complete state in a single thread state "array", under a single TID key.
+// This should reduce any timing & "read consistency" issues when sampling/emitting records too.
+//
+//# vi:syntax=c
