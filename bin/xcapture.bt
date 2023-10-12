@@ -90,8 +90,7 @@ profile:hz:1 {
 // interval is executed on 1 CPU only, so we won't emit duplicates
 // of the same "global" maps on all CPUs
 interval:hz:1 {
-    //printf("\nSAMPLE_TIME %s\n", strftime("%Y-%m-%d %H:%M:%S.%f", nsecs));
-    @SAMPLE_TIME=strftime("%Y-%m-%d %H:%M:%S.%f", nsecs);
+    @SAMPLE_TIME=strftime("\"%Y-%m-%d %H:%M:%S.%f\"", nsecs); // extra "" for json output
     print(@SAMPLE_TIME);
 
     print(@pid);
