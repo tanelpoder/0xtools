@@ -1,5 +1,5 @@
 /*
- *  0x.Tools xcapture.bt v0.2 - Proof-of-concept prototype for sampling 
+ *  0x.Tools xcapture.bt v0.3 - Proof-of-concept prototype for sampling 
  *                              Linux thread activity using eBPF [0x.tools]
  *
  *  Copyright 2019-2023 Tanel Poder
