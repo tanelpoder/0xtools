@@ -1,5 +1,5 @@
 /*
- *  0x.Tools xcapture.bt v0.1 - Proof-of-concept prototype for sampling 
+ *  0x.Tools xcapture.bt v0.2 - Proof-of-concept prototype for sampling 
  *                              Linux thread activity using eBPF [0x.tools]
  *
  *  Copyright 2019-2023 Tanel Poder
@@ -45,6 +45,8 @@ BEGIN {
     @TASK_STATES[0x80] = "I"; // "(idle)"
 }
 
+
+// use rawtracepoint instead?
 tracepoint:raw_syscalls:sys_enter {
     // thread local storage, cleaned out automatically on thread exit
     @pid            [tid] = pid; // *in bpftrace* tid means thread ID (task ID), pid means Process ID (thread group ID)
@@ -61,7 +63,7 @@ tracepoint:raw_syscalls:sys_enter {
 
 tracepoint:raw_syscalls:sys_exit {
     // could use delete(@syscall[tid]) but these fields are likely reused/reallocated quickly
-    // better to handle emitting/printing out only relevant fields in the printout loop
+    // better to handle emitting/printing out only relevant fields in the printout loop (?)
     @syscall_id     [tid] = -1;
 }
 
@@ -81,6 +83,36 @@ kprobe:finish_task_switch* {
     }
 }
 
+
+// Context enrichment example (kernel): tasks waiting in the CPU runqueue
+tracepoint:sched:sched_wakeup,
+tracepoint:sched:sched_wakeup_new {
+    @sched_wakeup[args->pid] = 1;
+}
+
+tracepoint:sched:sched_switch {
+  delete(@sched_wakeup[args->next_pid]); // or: @sched_wakeup[args->next_pid] = -1;
+}
+
+tracepoint:sched:sched_process_exit {
+  delete(@sched_wakeup[args->pid]);
+}
+
+
+// Context enrichment example (application): Oracle database wait events
+uprobe:/u01/app/oracle/product/19.0.0/dbhome_1/bin/oracle:kskthbwt {
+    $EVENT_NAME_ARRAY_START=(uint64 *) *uptr(0x600069f0); // uaddr("ksledt_") gave error...
+    $EVENT_NAME_SLOT_SIZE=(uint64) 56;                    // sizeof(struct)
+
+    @oracle_wait_event[tid] = str(*uptr($EVENT_NAME_ARRAY_START + ($EVENT_NAME_SLOT_SIZE * arg1)/8));
+}
+
+uprobe:/u01/app/oracle/product/19.0.0/dbhome_1/bin/oracle:kskthewt {
+    delete(@oracle_wait_event[tid]);                      // @oracle_wait_event[tid] = -1;
+}
+
+
+
 // update the stack id of threads currently running on (any) cpu
 profile:hz:1 { 
     @profile_ustack[tid] = ustack(); 
@@ -88,9 +120,9 @@ profile:hz:1 {
 }
 
 // interval is executed on 1 CPU only, so we won't emit duplicates
-// of the same "global" maps on all CPUs
+// of the same "global" maps on all CPUs (assuming that this is an issue with print() in profile probes)
 interval:hz:1 {
-    @SAMPLE_TIME=strftime("\"%Y-%m-%d %H:%M:%S.%f\"", nsecs); // extra "" for json output
+    @SAMPLE_TIME=strftime("\"%Y-%m-%dT%H:%M:%S.%f\"", nsecs); // extra "" for json output
     print(@SAMPLE_TIME);
 
     print(@pid);
@@ -103,6 +135,12 @@ interval:hz:1 {
     print(@profile_kstack);
     print(@syscall_ustack);
     print(@syscall_kstack);
+    print(@oracle_wait_event);
+    print(@sched_wakeup);
+
+    //testing
+    //if (@i) { exit(); }
+    //@i++
 }
 
 END {
@@ -122,6 +160,8 @@ END {
     clear(@syscall_args);
     clear(@task_state);
     clear(@probe_name);
+    clear(@oracle_wait_event);
+    //clear(@i);
 }
 
 // TODO: 
