@@ -46,7 +46,7 @@ BEGIN {
 }
 
 
-// use rawtracepoint instead?
+// is this thread in a syscall?
 tracepoint:raw_syscalls:sys_enter {
     // thread local storage, cleaned out automatically on thread exit
     @pid            [tid] = pid; // *in bpftrace* tid means thread ID (task ID), pid means Process ID (thread group ID)
@@ -62,11 +62,18 @@ tracepoint:raw_syscalls:sys_enter {
 }
 
 tracepoint:raw_syscalls:sys_exit {
-    // could use delete(@syscall[tid]) but these fields are likely reused/reallocated quickly
-    // better to handle emitting/printing out only relevant fields in the printout loop (?)
-    @syscall_id     [tid] = -1;
+    delete(@syscall_id[tid]) // @syscall_id [tid] = -1;
 }
 
+
+// sampled profiling of on-CPU threads
+// update the stack id of threads currently running on (any) cpu
+profile:hz:1 { 
+    @profile_ustack[tid] = ustack(); 
+    @profile_kstack[tid] = kstack();
+}
+
+// in which task state is this thread?
 // newer kernels have the "isra" version of this function name, thus the * wildcard
 kprobe:finish_task_switch* {
     @task_state[tid] = @TASK_STATES[curtask->__state & 0xff];
@@ -82,7 +89,6 @@ kprobe:finish_task_switch* {
         @task_state[$prev_task->pid] = @TASK_STATES[$prev_task->__state & 0xff]; 
     }
 }
-
 
 // Context enrichment example (kernel): tasks waiting in the CPU runqueue
 tracepoint:sched:sched_wakeup,
@@ -112,15 +118,8 @@ uprobe:/u01/app/oracle/product/19.0.0/dbhome_1/bin/oracle:kskthewt {
 }
 
 
-
-// update the stack id of threads currently running on (any) cpu
-profile:hz:1 { 
-    @profile_ustack[tid] = ustack(); 
-    @profile_kstack[tid] = kstack();
-}
-
+// write out SAMPLES of thread states & activity
 // interval is executed on 1 CPU only, so we won't emit duplicates
-// of the same "global" maps on all CPUs (assuming that this is an issue with print() in profile probes)
 interval:hz:1 {
     @SAMPLE_TIME=strftime("\"%Y-%m-%dT%H:%M:%S.%f\"", nsecs); // extra "" for json output
     print(@SAMPLE_TIME);
@@ -137,10 +136,6 @@ interval:hz:1 {
     print(@syscall_kstack);
     print(@oracle_wait_event);
     print(@sched_wakeup);
-
-    //testing
-    //if (@i) { exit(); }
-    //@i++
 }
 
 END {
@@ -159,9 +154,9 @@ END {
     clear(@syscall_id);
     clear(@syscall_args);
     clear(@task_state);
+    clear(@sched_wakeup);
     clear(@probe_name);
     clear(@oracle_wait_event);
-    //clear(@i);
 }
 
 // TODO: 
