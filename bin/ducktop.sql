@@ -1,11 +1,12 @@
 SELECT
     COUNT(*) num_samples
   , ROUND(COUNT(*) / 300, 1) avg_threads -- querying 5 minutes (300 sec) of wall-clock time
+  , REGEXP_REPLACE(cmdline, '.*/', '') cmdline2
+--  , cmdline
   , REGEXP_REPLACE(comm, '[0-9]+','*') comm2
   , task_state
   , oracle_wait_event
   , syscall_name
---  , cmdline
 --  , syscall_arg0
 --  , profile_ustack
 --  , profile_kstack
@@ -21,14 +22,15 @@ ON (samples.syscall_id = syscalls.syscall_id)
 WHERE
     sample_time BETWEEN TIMESTAMP'2023-10-19 05:00:00' AND TIMESTAMP'2023-10-19 05:05:00'
 AND task_state IN ('R','D')
+--AND cmdline LIKE 'postgres%'
 AND comm != 'bpftrace' -- bpftrace is shown always active when taking a sample
-AND offcpu_ustack IS NOT NULL
 GROUP BY 
-    comm2
+    cmdline2
+  , cmdline
+  , comm2
   , task_state
   , oracle_wait_event
   , syscall_name
---  , cmdline
 --  , syscall_arg0
 --  , profile_ustack
 --  , profile_kstack
