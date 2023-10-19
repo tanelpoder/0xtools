@@ -1,5 +1,5 @@
 /*
- *  0x.Tools xcapture.bt v0.3 - Proof-of-concept prototype for sampling 
+ *  0x.Tools xcapture.bt v0.4 - Proof-of-concept prototype for sampling 
  *                              Linux thread activity using eBPF [0x.tools]
  *
  *  Copyright 2019-2023 Tanel Poder
@@ -24,7 +24,7 @@
 
 // This is a PoC prototype for demonstrating feasibility of the custom, programmable
 // task state object populating + sampling approach. This script is not complete and 
-// it probably has bugs. It's not a finished tool or a product.
+// it probably has bugs. I have plenty of improvements in It's not a finished tool or a product.
 //
 // To avoid the extremely slow stack address to symbol resolution in bpftrace, enable
 // symbol caching, for example:
@@ -46,19 +46,19 @@ BEGIN {
 }
 
 
-// is this thread in a syscall?
+// record system calls by threads into the thread state array
+// ideally/eventually need to move pid/uid/gid (and perhaps comm) assignment out of the syscall probe
 tracepoint:raw_syscalls:sys_enter {
-    // thread local storage, cleaned out automatically on thread exit
+    // [tid] uses thread local storage, cleaned out automatically on thread exit
     @pid            [tid] = pid; // *in bpftrace* tid means thread ID (task ID), pid means Process ID (thread group ID)
     @uid            [tid] = uid;
     @gid            [tid] = gid;
     @comm           [tid] = comm;
+    @cmdline        [tid] = str(uptr(curtask->mm->arg_start));
     @task_state     [tid] = @TASK_STATES[curtask->__state & 0xff];
     @syscall_id     [tid] = args->id;
-    @probe_name     [tid] = probe;
     @syscall_args   [tid] = (args->args[0], args->args[1], args->args[2], args->args[3], args->args[4], args->args[5]);
     @syscall_ustack [tid] = ustack();
-    @syscall_kstack [tid] = kstack();
 }
 
 tracepoint:raw_syscalls:sys_exit {
@@ -66,28 +66,28 @@ tracepoint:raw_syscalls:sys_exit {
 }
 
 
-// sampled profiling of on-CPU threads
-// update the stack id of threads currently running on (any) cpu
-profile:hz:1 { 
-    @profile_ustack[tid] = ustack(); 
-    @profile_kstack[tid] = kstack();
+// thread requests going off CPU
+// by the time schedule() is called, the caller has set the new task state
+kprobe:schedule {
+    @task_state    [tid] = @TASK_STATES[curtask->__state & 0xff];
+    @offcpu_ustack [tid] = ustack();
+    @offcpu_kstack [tid] = kstack();
 }
 
-// in which task state is this thread?
+// thread has been put back on CPU
 // newer kernels have the "isra" version of this function name, thus the * wildcard
 kprobe:finish_task_switch* {
-    @task_state[tid] = @TASK_STATES[curtask->__state & 0xff];
-   
-    $prev_task = ((struct task_struct *)arg0);
-    if ($prev_task->pid != 0) { 
-        @prev_task_pid   [tid] = $prev_task->pid;
-        @prev_task_state [tid] = $prev_task->__state;
+    @task_state    [tid] = @TASK_STATES[curtask->__state & 0xff];
+    delete(@offcpu_ustack[tid]); 
+    delete(@offcpu_kstack[tid]); 
+}
 
-        // this is where we mark the previous (off-cpu) thread state to whatever it now is
-        // if the previous task went to sleep due to issuing a syscall, we can see the latest
-        // syscall in @syscall_id[$prev_task->pid] and @syscall_ustack[$prev_task->pid] etc...
-        @task_state[$prev_task->pid] = @TASK_STATES[$prev_task->__state & 0xff]; 
-    }
+// sampled profiling of on-CPU threads
+// update the stack id of threads currently running on (any) cpu
+profile:hz:1 {
+    @task_state    [tid] = @TASK_STATES[curtask->__state & 0xff];
+    @profile_ustack[tid] = ustack(); 
+    @profile_kstack[tid] = kstack();
 }
 
 // Context enrichment example (kernel): tasks waiting in the CPU runqueue
@@ -97,11 +97,20 @@ tracepoint:sched:sched_wakeup_new {
 }
 
 tracepoint:sched:sched_switch {
-  delete(@sched_wakeup[args->next_pid]); // or: @sched_wakeup[args->next_pid] = -1;
+    delete(@sched_wakeup[args->next_pid]); // or: @sched_wakeup[args->next_pid] = -1;
 }
 
 tracepoint:sched:sched_process_exit {
-  delete(@sched_wakeup[args->pid]);
+    delete(@pid            [args->pid]);
+    delete(@uid            [args->pid]);
+    delete(@gid            [args->pid]);
+    delete(@comm           [args->pid]);
+    delete(@cmdline        [args->pid]);
+    delete(@task_state     [args->pid]);
+    delete(@syscall_id     [args->pid]);
+    delete(@syscall_args   [args->pid]);
+    delete(@syscall_ustack [args->pid]);
+    delete(@sched_wakeup   [args->pid]);
 }
 
 
@@ -126,16 +135,17 @@ interval:hz:1 {
 
     print(@pid);
     print(@comm);
+    print(@cmdline);
     print(@task_state);
     print(@syscall_id);
     print(@syscall_args);
-    print(@probe_name);
     print(@profile_ustack);
     print(@profile_kstack);
     print(@syscall_ustack);
-    print(@syscall_kstack);
-    print(@oracle_wait_event);
+    print(@offcpu_ustack); 
+    print(@offcpu_kstack); 
     print(@sched_wakeup);
+    print(@oracle_wait_event);
 }
 
 END {
@@ -145,17 +155,16 @@ END {
     clear(@uid);
     clear(@gid);
     clear(@comm);
-    clear(@prev_task_pid);
-    clear(@prev_task_state);
+    clear(@cmdline);
     clear(@profile_ustack);
     clear(@profile_kstack);
     clear(@syscall_ustack);
-    clear(@syscall_kstack);
+    clear(@offcpu_ustack); 
+    clear(@offcpu_kstack); 
+    clear(@sched_wakeup);
     clear(@syscall_id);
     clear(@syscall_args);
     clear(@task_state);
-    clear(@sched_wakeup);
-    clear(@probe_name);
     clear(@oracle_wait_event);
 }
 
