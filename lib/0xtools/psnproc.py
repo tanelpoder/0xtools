@@ -55,6 +55,15 @@ class ProcSource:
         self.insert_sql = "INSERT INTO '%s' VALUES (%s)" % (self.name, ','.join(['?' for i in self.schema_columns]))
 
 
+    # knowing the bit length, we can decide if it's a large positive number or just a (small or large) negative one
+    def hex_to_signed_int(self, hex_str, bit_length):
+        unsigned_int = int(hex_str, 16)
+
+        if unsigned_int >= 2**(bit_length - 1):
+            return unsigned_int - 2**bit_length
+        return unsigned_int
+
+
     def sample(self, event_time, pid, task):
         sample_path = self.path % (pid, task) if self.task_level else self.path % pid
 
@@ -99,6 +108,13 @@ class ProcSource:
                             #print full_sample
                             #print 
                             filename = '-'
+
+                    elif syscall_id in syscalls_with_sint_arg:
+                        waitpid = self.hex_to_signed_int(full_sample[1], 32)
+                        if waitpid == -1:
+                            filename = 'pid:[child]'
+                        else:
+                            filename = 'pid:[' + str(waitpid) + ']'
 
                 full_sample += (filename,)
                          
@@ -377,6 +393,11 @@ syscalls_with_fd_arg = set([
 ])
 
 special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
+
+syscalls_with_sint_arg = set([
+    syscall_name_to_id.get('wait4'      , 'N/A') # arg0 is pid_t
+  , syscall_name_to_id.get('waitpid'    , 'N/A')
+])
 
 def parse_syscall_sample(proc_source, sample):
     tokens = sample.split()
