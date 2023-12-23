@@ -22,6 +22,11 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
+if [ ! -d "$1" ]; then
+	echo "Directory '$1' does not exist"
+	exit 2
+fi
+
 SUDO=sudo # change to empty string if running without sudo
 NICE=-5 # set to 0 if don't want to increase priority
 SLEEP=60
