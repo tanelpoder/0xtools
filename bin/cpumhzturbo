@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# cpumhzturbo wrapper by Tanel Poder [https://0x.tools]
+# run this as root or add CAP_SYS_RAWIO capability to turbostat
+
+turbostat -q -s Bzy_MHz -i 1 -n 1 | grep -v Bzy_MHz \
+  | awk '{ printf("%04d\n",$1) }' \
+  | awk '{ split($1,x,".") ; printf substr(x[1],1,2) "00..99 \n" }' | sed 's/^0/ /' | sort | uniq -c \
+  | awk '{ printf $0 ; for(x=0;x<$1;x++) printf "#"; printf "\n" }' \
+  | sort -nbrk 2
+

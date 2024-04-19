@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# cpumhz tool by Tanel Poder [https://0x.tools]
+
+grep MHz /proc/cpuinfo | awk '{ split($4,x,".") ; printf substr(x[1],1,2) "00..99 \n" }' \
+	               | sed 's/^0/ /' | sort | uniq -c \
+                       | awk '{ printf $0 ; for(x=0;x<$1;x++) printf "#"; printf "\n" }' \
+                       | sort -nbrk 2
+
