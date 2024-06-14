@@ -24,7 +24,9 @@
 
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
-#include <linux/log2.h>
+#include <linux/types.h>
+#include <linux/uidgid.h>
+#include <linux/cred.h>
 
 #ifdef BCC_SEC
 #define __BCC__
@@ -33,13 +35,14 @@
 
 BPF_STACK_TRACE(kstackmap, 131072);
 BPF_STACK_TRACE(ustackmap, 131072);
-//BPF_PERF_OUTPUT(events);
 
 struct thread_state_t {
     u32 state;
     u32 tid;  // thread (task) ID 
     u32 pid;  // the process ID (thread group leader ID)
-    u32 uid;
+
+    u32 effective_uid;
+    s32 login_uid; // using s32 as __kuid_val() returns -1 on lookup failure
 
     char cmdline[64]; // just first bytes for now
     char comm[TASK_COMM_LEN];
@@ -61,6 +64,7 @@ struct thread_state_t {
     //s32 sched_waker_ustack;
 
     bool in_sched_wakeup;
+    u32 waker_tid;
 
     // app-specific context
     //s32 oracle_wait_event;
@@ -69,7 +73,6 @@ struct thread_state_t {
     bool syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't use syscall_id
     s16 probe;
     s16 probe_before;
-    s16 err;
 };
 
 
@@ -130,9 +133,8 @@ TRACEPOINT_PROBE(raw_syscalls, sys_exit) {
 } // raw_syscalls:sys_exit
 
 
-// sampled profiling of on-CPU threads - profile:hz:1
-// update the stack id of threads currently running on (any) cpu
-
+// sampling profiling of on-CPU threads (python frontend uses perf event with freq=1)
+// update the stack id of threads currently running on (any) CPU
 int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
 
     u32 tid = bpf_get_current_pid_tgid() & 0xffffffff;
@@ -162,10 +164,10 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
 
 
 // Context enrichment example (kernel): tasks waiting in the CPU runqueue
-// tracepoint:sched:sched_wakeup,sched_wakeup_new 
+// tracepoint:sched:sched_wakeup,sched_wakeup_new (will add sched_waker at some point too)
 TRACEPOINT_PROBE(sched, sched_wakeup) {
 
-    //struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
+    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
     struct thread_state_t t_empty = {};
 
     u32 tid_woken = args->pid;
@@ -175,6 +177,8 @@ TRACEPOINT_PROBE(sched, sched_wakeup) {
 
     t_being_waked_up->probe = 6; // "sched_wakeup";
     t_being_waked_up->in_sched_wakeup = 1;
+    t_being_waked_up->tid = tid_woken;          // this guy is being woken up
+    t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up
 
     tsa.update(&tid_woken, t_being_waked_up);
 
@@ -184,6 +188,7 @@ TRACEPOINT_PROBE(sched, sched_wakeup) {
 // duplicate function (can be fixed in python code with attach_tracepoint)
 TRACEPOINT_PROBE(sched, sched_wakeup_new) {
 
+    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
     u32 tid_woken = args->pid;
 
     struct thread_state_t t_empty = {};
@@ -191,8 +196,9 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     if (!t_being_waked_up) return 0;
 
     t_being_waked_up->probe = 7; // "sched_wakeup_new";
-    t_being_waked_up->tid = tid_woken;
     t_being_waked_up->in_sched_wakeup = 1;
+    t_being_waked_up->tid = tid_woken;          // this guy is being woken up
+    t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up
 
     tsa.update(&tid_woken, t_being_waked_up);
 
@@ -204,7 +210,6 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
     s32 prev_tid; // task
     s32 prev_pid; // tgid
-
     s32 next_tid; // task
     s32 next_pid; // tgid
 
@@ -220,17 +225,10 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     next_pid = next->tgid;
     prev_state = ctx->args[3];
 
-    int err = 0; // debug
-    // err += bpf_probe_read_kernel(&prev_tid, sizeof(prev->pid), &prev->pid);
-    // err += bpf_probe_read_kernel(&prev_pid, sizeof(prev->tgid), &prev->tgid);
-    // err += bpf_probe_read_kernel(&next_tid, sizeof(next->pid), &next->pid);
-    // err += bpf_probe_read_kernel(&next_pid, sizeof(next->tgid), &next->tgid);
-    // err += bpf_probe_read_kernel(&prev_state, sizeof(prev_state), &ctx->args[3]); // 4th arg (arg3) is prev_state
-
     struct thread_state_t t_empty_prev = {};
     struct thread_state_t t_empty_next = {};
 
-    // we don't want to capture/report the previous cpuidle state during actual task wakeups (tid 0)
+    // we don't want to capture/report the previous cpuidle "task" during actual task wakeups (tid 0)
     if (prev_tid) {
         struct thread_state_t *t_prev = tsa.lookup_or_try_init(&prev_tid, &t_empty_prev);
         if (!t_prev) return 0;
@@ -239,19 +237,20 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->pid = prev_pid;
         t_prev->in_sched_wakeup = 0;
         bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm); // BCC allows this syntax
+
+        t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+
         // debug
         t_prev->probe_before = t_prev->probe;
         t_prev->probe = 8; // "sched_switch(prev)";
         t_prev->state = prev_state; // prev_state passed in as an arg to sched_switch probe
-        t_prev->err = err;
 
-        t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-        t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         
         tsa.update(&prev_tid, t_prev);
     }
 
-    // we don't want to capture/report kernel state when CPU goes to cpuidle (tid 0)
+    // we don't want to capture/report the cpuidle "task" (tid 0) when CPU goes to cpuidle
     if (next_tid) {
         struct thread_state_t *t_next = tsa.lookup_or_try_init(&next_tid, &t_empty_next);
         if (!t_next) return 0;
@@ -260,11 +259,13 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->pid = next_pid;
         bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm); // BCC allows this syntax
         t_next->in_sched_wakeup = 0;
+        t_next->login_uid = next->loginuid.val; //__kuid_val(next->loginuid);
+        t_next->effective_uid = __kuid_val(next->cred->euid);
+
         // debug
         t_next->probe_before = t_next->probe;
         t_next->probe = 9; // "sched_switch(next)";
         t_next->state = next->__state;
-        t_next->err = err;
 
         tsa.update(&next_tid, t_next);
     }
@@ -289,6 +290,5 @@ TRACEPOINT_PROBE(sched, sched_kthread_stop) {
 
     return 0;
 }
-
 
 // vim:syntax=c
