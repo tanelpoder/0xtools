@@ -4,6 +4,37 @@
 
 **0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or clever metric-voodoo tricks with traditional system-level statistics.
 
+An example of _one of_ the tools `psn` is here:
+
+```
+$ sudo psn -p "mysqld|kwork" -G syscall,wchan
+
+Linux Process Snapper v0.14 by Tanel Poder [https://0x.tools]
+Sampling /proc/syscall, stat, wchan for 5 seconds... finished.
+
+
+=== Active Threads ========================================================================================
+
+ samples | avg_threads | comm          | state                  | syscall   | wchan                        
+-----------------------------------------------------------------------------------------------------------
+      25 |        3.12 | (mysqld)      | Disk (Uninterruptible) | fsync     | _xfs_log_force_lsn
+      16 |        2.00 | (mysqld)      | Running (ON CPU)       | [running] | 0                            
+      14 |        1.75 | (mysqld)      | Disk (Uninterruptible) | pwrite64  | call_rwsem_down_write_failed
+       8 |        1.00 | (mysqld)      | Disk (Uninterruptible) | fsync     | submit_bio_wait              
+       4 |        0.50 | (mysqld)      | Disk (Uninterruptible) | pread64   | io_schedule                  
+       4 |        0.50 | (mysqld)      | Disk (Uninterruptible) | pwrite64  | io_schedule                  
+       3 |        0.38 | (mysqld)      | Disk (Uninterruptible) | pread64   | 0                            
+       3 |        0.38 | (mysqld)      | Running (ON CPU)       | [running] | io_schedule                  
+       3 |        0.38 | (mysqld)      | Running (ON CPU)       | pread64   | 0                            
+       2 |        0.25 | (mysqld)      | Disk (Uninterruptible) | [running] | 0                            
+       1 |        0.12 | (kworker/*:*) | Running (ON CPU)       | read      | worker_thread                
+       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | fsync     | io_schedule                  
+       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | futex     | call_rwsem_down_write_failed 
+       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | poll      | 0                            
+       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | pwrite64  | _xfs_log_force_lsn           
+       1 |        0.12 | (mysqld)      | Running (ON CPU)       | fsync     | submit_bio_wait              
+       1 |        0.12 | (mysqld)      | Running (ON CPU)       | futex     | futex_wait_queue_me
+```
 Usage info and more details here:
 * https://0x.tools
 
