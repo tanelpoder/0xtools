@@ -21,7 +21,7 @@
 
 # NOTES
 # Basic documentation is in my blog entry:
-#  https://tanelpoder.com/list-linux-system-call-arguments-with-syscallargs
+#  https://tanelpoder.com/posts/list-linux-system-call-arguments-with-syscallargs/
 
 # You can list system call numbers using:
 #  ausyscall --dump
