@@ -134,7 +134,7 @@ while True:
             fieldname = f[0]
             if fieldname[0:5] != "__pad":
                 value = getattr(i[1], fieldname, '-')
-                    
+               
                 if fieldname == "state":
                     state = return_task_state(int(value))
                     if state in ['R','D']:
@@ -167,6 +167,8 @@ while True:
                         output_ustack[value, pid] = True
 
         if state in ['R','D']: print(out)
+
+    continue
 
     # print stack traces
     class Data(ctypes.Structure):
