@@ -90,8 +90,7 @@ def main():
     parser.add_argument('--path', type=str, default=DEFAULT_PATH, help=f'Path to the debugfs syscalls directory: {DEFAULT_PATH}')
 
     args = parser.parse_args()
-    syscalls_path = args.syscalls_path
-    #syscalls_path = '/sys/kernel/debug/tracing/events/syscalls'
+    syscalls_path = args.path
     syscalls = list_syscalls(syscalls_path)
     
     for syscall in syscalls:
