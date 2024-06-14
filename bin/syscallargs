@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+
+#  syscallargs -- List Linux system calls and their arguments, by Tanel Poder [https://0x.tools]
+#  Copyright 2024 Tanel Poder
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License along
+#  with this program; if not, write to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+#  SPDX-License-Identifier: GPL-2.0-or-later
+
+# NOTES
+# Basic documentation is in my blog entry:
+#  https://tanelpoder.com/list-linux-system-call-arguments-with-syscallargs
+
+# You can list system call numbers using:
+#  ausyscall --dump
+#
+# Or check psnproc.py to see how psn reads it from /usr/include/.../unistd.h files
+
+import os, argparse, signal
+
+__version__     = "1.0"
+__author__      = "Tanel Poder"
+__date__        = "2024-06-11"
+__description__ = "List system call arguments from debugfs"
+__url__         = "https://0x.tools"
+
+DEFAULT_PATH='/sys/kernel/debug/tracing/events/syscalls'
+
+
+def parse_syscall_format(file_path):
+    syscall_info = {}
+    args_found = False
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+        for line in lines:
+            line = line.strip()
+            if line.startswith('name:'):
+                # split line to fields, also remove leading "sys_enter_" with [10:]
+                syscall_name = line.split(':')[1].strip()[10:] 
+                syscall_info['name'] = syscall_name
+            elif line.startswith('field:'):
+                # syscall arguments come immediately after "__syscall_nr" line
+                # saving syscall_nr to populate dict as not all syscalls have arguments
+                if line.startswith('field:int __syscall_nr'):
+                    args_found = True
+                if args_found:
+                    # example: field:char * buf; offset:24;  size:8; signed:0;
+                    field_info = line.split(';')[0].replace(':',' ').split()
+                    if len(field_info) >= 3:
+                        field_type = ' '.join(field_info[1:-1])
+                        field_name = field_info[-1]
+                        if 'args' not in syscall_info:
+                            syscall_info['args'] = []
+                        syscall_info['args'].append((field_type, field_name))
+
+    return syscall_info
+
+def list_syscalls(syscalls_path):
+    syscalls = []
+    for root, dirs, files in os.walk(syscalls_path):
+        dirs[:] = [d for d in dirs if d.startswith("sys_enter_")]
+        for file in files:
+            if file == 'format':
+                file_path = os.path.join(root, file)
+                syscall_info = parse_syscall_format(file_path)
+                syscalls.append(syscall_info)
+
+    return syscalls
+
+
+def main():
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL) # for things like: ./syscallargs | head
+
+    parser = argparse.ArgumentParser(description='List kernel system calls and their arguments from Linux debugfs.')
+    parser.add_argument('-l', '--newlines', action='store_true', help='Print each system call and its arguments on a new line')
+    parser.add_argument('-t', '--typeinfo', action='store_true', help='Include type information for syscall arguments in the output')
+    parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit') 
+    parser.add_argument('--path', type=str, default=DEFAULT_PATH, help=f'Path to the debugfs syscalls directory: {DEFAULT_PATH}')
+
+    args = parser.parse_args()
+    syscalls_path = args.syscalls_path
+    #syscalls_path = '/sys/kernel/debug/tracing/events/syscalls'
+    syscalls = list_syscalls(syscalls_path)
+    
+    for syscall in syscalls:
+        print(f"{syscall['name']}", end="\n" if args.newlines else "(")
+
+        args_list = []
+        for index, (arg_type, arg_name) in enumerate(syscall['args'][1:]):
+            if args.typeinfo:
+                argout = f"({arg_type}) {arg_name}"
+            else:
+                argout = arg_name
+            if args.newlines:
+                print(f"  {index}: {argout}")
+            else:
+                args_list.append(argout)
+        if not args.newlines:
+            print(", ".join(args_list), end="")
+
+
+        print("" if args.newlines else ");")
+
+if __name__ == "__main__":
+    main()
+
+
