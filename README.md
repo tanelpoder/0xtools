@@ -38,9 +38,9 @@ Sampling /proc/syscall, stat, wchan for 5 seconds... finished.
 **Usage info** and more details here:
 * https://0x.tools
 
-Twitter:
+**Twitter:**
 * https://twitter.com/0xtools
 
-Author:
-* https://tanelpoder.com/about
+**Author:**
+* https://tanelpoder.com
 
