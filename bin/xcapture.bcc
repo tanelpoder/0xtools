@@ -1,8 +1,8 @@
 /*
- *  0x.Tools xcapture.bcc v0.4 beta
+ *  0x.Tools xcapture.bcc v0.5 beta
  *  Sample Linux thread activity using eBPF [0x.tools]
  *
- *  Copyright 2019-2023 Tanel Poder
+ *  Copyright 2019-2024 Tanel Poder
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -125,61 +125,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_exit) {
     tsa.update(&tid, t);
 
     return 0;
-}
-
-
-// kprobe:schedule - thread requests going off CPU
-// by the time schedule() is called, the caller has set the new task state
-//int update_offcpu_schedule(struct pt_regs *ctx) {
-//
-//    u32 tid = bpf_get_current_pid_tgid() & 0xffffffff;
-//    u32 pid = bpf_get_current_pid_tgid() >> 32;
-//    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
-//
-//    struct thread_state_t t_empty = {};
-//    struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
-//    if (!t) return 0;
-//
-//    t->probe = 3; // "offcpu_schedule";
-//    t->tid = tid;
-//    t->pid = pid;
-//    bpf_get_current_comm(&t->comm, sizeof(t->comm));
-//    t->state = curtask->__state;
-//    t->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-//    t->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-//
-//    tsa.update(&tid, t);
-//
-//    return 0;
-//};
-
-// kprobe:finish_task_switch* - thread has been put back on CPU by scheduler
-// newer kernels have the "isra" version of this function name, thus the * wildcard
-// int update_offcpu_finish_task_switch(struct pt_regs *ctx, struct task_struct *prevtask) {
-// int update_offcpu_finish_task_switch(struct pt_regs *ctx) {
-// 
-//     struct task_struct *prevtask = (struct task_struct *)ctx;
-// 
-//     pid_t prev_tid = prevtask->pid; 
-//     pid_t prev_pid = prevtask->tgid;
-//     u32 prev_state = prevtask->__state;
-// 
-//     // bpf_probe_read_kernel(&prev_tid, sizeof(prevtask->pid), &prevtask->pid);
-//     // bpf_probe_read_kernel(&prev_pid, sizeof(prevtask->tgid), &prevtask->tgid);
-// 
-//     struct thread_state_t t_empty = {};
-//     struct thread_state_t *t = tsa.lookup_or_try_init(&prev_tid, &t_empty);
-//     if (!t) return 0;
-// 
-//     //t->probe = 4; // "offcpu_finish_task_switch";
-//     t->tid = prev_tid;  // prev_tid;
-//     t->pid = prev_pid; // prev_pid;
-//     t->state = prev_state;
-// 
-//     tsa.update(&prev_tid, t);
-// 
-//     return 0;
-// };
+} // raw_syscalls:sys_exit
 
 
 // sampled profiling of on-CPU threads - profile:hz:1
@@ -251,7 +197,7 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     return 0;
 }
 
-// target is about to be put on CPU
+// "next" is about to be put on CPU, "prev" goes off-CPU
 RAW_TRACEPOINT_PROBE(sched_switch) {
 
     s32 prev_tid; // task
@@ -282,16 +228,18 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     struct thread_state_t t_empty_prev = {};
     struct thread_state_t t_empty_next = {};
 
-    // we don't want to capture/report the previous cpuidle state during actual task wakeups
+    // we don't want to capture/report the previous cpuidle state during actual task wakeups (tid 0)
     if (prev_tid) {
         struct thread_state_t *t_prev = tsa.lookup_or_try_init(&prev_tid, &t_empty_prev);
         if (!t_prev) return 0;
 
-        t_prev->probe_before = t_prev->probe;
-        t_prev->probe = 8; // "sched_switch(prev)";
         t_prev->tid = prev_tid;
         t_prev->pid = prev_pid;
         t_prev->in_sched_wakeup = 0;
+        bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm); // BCC allows this syntax
+        // debug
+        t_prev->probe_before = t_prev->probe;
+        t_prev->probe = 8; // "sched_switch(prev)";
         t_prev->state = prev_state; // prev_state passed in as an arg to sched_switch probe
         t_prev->err = err;
 
@@ -301,16 +249,18 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         tsa.update(&prev_tid, t_prev);
     }
 
-    // we don't want to capture/report kernel state when CPU goes to cpuidle
+    // we don't want to capture/report kernel state when CPU goes to cpuidle (tid 0)
     if (next_tid) {
         struct thread_state_t *t_next = tsa.lookup_or_try_init(&next_tid, &t_empty_next);
         if (!t_next) return 0;
 
-        t_next->probe_before = t_next->probe;
-        t_next->probe = 9; // "sched_switch(next)";
         t_next->tid = next_tid;
         t_next->pid = next_pid;
+        bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm); // BCC allows this syntax
         t_next->in_sched_wakeup = 0;
+        // debug
+        t_next->probe_before = t_next->probe;
+        t_next->probe = 9; // "sched_switch(next)";
         t_next->state = next->__state;
         t_next->err = err;
 
@@ -341,6 +291,8 @@ TRACEPOINT_PROBE(sched, sched_kthread_stop) {
 
 // random stuff and junk
 
+// bpf_get_current_comm(&t->comm, sizeof(t->comm));
+
 // periodic sampling
 // int emit_periodic_sample() {
 //     u64 ts = bpf_ktime_get_ns();
@@ -351,5 +303,61 @@ TRACEPOINT_PROBE(sched, sched_kthread_stop) {
 // BPF_F_USER_STACK       Collect a user space stack instead of a kernel stack.
 // BPF_F_FAST_STACK_CMP   Compare stacks by hash only.
 // BPF_F_REUSE_STACKID    If two different stacks hash into the same stackid, discard the old one.
+
+// kprobe:schedule - thread requests going off CPU
+// by the time schedule() is called, the caller has set the new task state
+//int update_offcpu_schedule(struct pt_regs *ctx) {
+//
+//    u32 tid = bpf_get_current_pid_tgid() & 0xffffffff;
+//    u32 pid = bpf_get_current_pid_tgid() >> 32;
+//    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
+//
+//    struct thread_state_t t_empty = {};
+//    struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
+//    if (!t) return 0;
+//
+//    t->probe = 3; // "offcpu_schedule";
+//    t->tid = tid;
+//    t->pid = pid;
+//    bpf_get_current_comm(&t->comm, sizeof(t->comm));
+//    t->state = curtask->__state;
+//    t->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+//    t->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+//
+//    tsa.update(&tid, t);
+//
+//    return 0;
+//};
+
+// kprobe:finish_task_switch* - thread has been put back on CPU by scheduler
+// newer kernels have the "isra" version of this function name, thus the * wildcard
+// int update_offcpu_finish_task_switch(struct pt_regs *ctx, struct task_struct *prevtask) {
+// int update_offcpu_finish_task_switch(struct pt_regs *ctx) {
+// 
+//     struct task_struct *prevtask = (struct task_struct *)ctx;
+// 
+//     pid_t prev_tid = prevtask->pid; 
+//     pid_t prev_pid = prevtask->tgid;
+//     u32 prev_state = prevtask->__state;
+// 
+//     // bpf_probe_read_kernel(&prev_tid, sizeof(prevtask->pid), &prevtask->pid);
+//     // bpf_probe_read_kernel(&prev_pid, sizeof(prevtask->tgid), &prevtask->tgid);
+// 
+//     struct thread_state_t t_empty = {};
+//     struct thread_state_t *t = tsa.lookup_or_try_init(&prev_tid, &t_empty);
+//     if (!t) return 0;
+// 
+//     //t->probe = 4; // "offcpu_finish_task_switch";
+//     t->tid = prev_tid;  // prev_tid;
+//     t->pid = prev_pid; // prev_pid;
+//     t->state = prev_state;
+// 
+//     tsa.update(&prev_tid, t);
+// 
+//     return 0;
+// };
+
+
+
 
 // vim:syntax=c
