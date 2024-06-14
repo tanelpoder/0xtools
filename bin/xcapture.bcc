@@ -25,7 +25,6 @@
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/types.h>
-#include <linux/uidgid.h>
 #include <linux/cred.h>
 
 #ifdef BCC_SEC
@@ -42,7 +41,7 @@ struct thread_state_t {
     u32 pid;  // the process ID (thread group leader ID)
 
     u32 effective_uid;
-    s32 login_uid; // using s32 as __kuid_val() returns -1 on lookup failure
+    u32 login_uid;
 
     char cmdline[64]; // just first bytes for now
     char comm[TASK_COMM_LEN];
@@ -259,8 +258,8 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->pid = next_pid;
         bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm); // BCC allows this syntax
         t_next->in_sched_wakeup = 0;
-        t_next->login_uid = next->loginuid.val; //__kuid_val(next->loginuid);
-        t_next->effective_uid = __kuid_val(next->cred->euid);
+        t_next->login_uid = next->loginuid.val;
+        t_next->effective_uid = next->cred->euid.val; //  __kuid_val(next->cred->euid);
 
         // debug
         t_next->probe_before = t_next->probe;
