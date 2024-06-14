@@ -28,7 +28,7 @@
 #
 # Or check psnproc.py to see how psn reads it from /usr/include/.../unistd.h files
 
-import os, argparse, signal
+import os, sys, argparse, signal
 
 __version__     = "1.0"
 __author__      = "Tanel Poder"
@@ -77,6 +77,13 @@ def list_syscalls(syscalls_path):
                 syscall_info = parse_syscall_format(file_path)
                 syscalls.append(syscall_info)
 
+    if not syscalls:
+        if os.geteuid() != 0:
+            print("Error: No syscalls found. Please run this as root or mount the debugfs with proper permissions.")
+        else:
+            print(f"Error: No syscalls found in the specified path {syscalls_path}")
+        sys.exit(1)
+
     return syscalls
 
 
@@ -92,7 +99,7 @@ def main():
     args = parser.parse_args()
     syscalls_path = args.path
     syscalls = list_syscalls(syscalls_path)
-    
+
     for syscall in syscalls:
         print(f"{syscall['name']}", end="\n" if args.newlines else "(")
 
