@@ -4,7 +4,7 @@
 
 **0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or clever metric-voodoo tricks with traditional system-level statistics.
 
-An example of _one of_ the tools `psn` is here:
+**An example** of one of the tools `psn` is here:
 
 ```
 $ sudo psn -p "mysqld|kwork" -G syscall,wchan
@@ -35,7 +35,7 @@ Sampling /proc/syscall, stat, wchan for 5 seconds... finished.
        1 |        0.12 | (mysqld)      | Running (ON CPU)       | fsync     | submit_bio_wait              
        1 |        0.12 | (mysqld)      | Running (ON CPU)       | futex     | futex_wait_queue_me
 ```
-Usage info and more details here:
+**Usage info** and more details here:
 * https://0x.tools
 
 Twitter:
