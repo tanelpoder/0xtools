@@ -33,21 +33,18 @@
 
 BPF_STACK_TRACE(kstackmap, 131072);
 BPF_STACK_TRACE(ustackmap, 131072);
-BPF_PERF_OUTPUT(events);
+//BPF_PERF_OUTPUT(events);
 
 struct thread_state_t {
     u32 state;
     u32 tid;  // thread (task) ID 
     u32 pid;  // the process ID (thread group leader ID)
-    //u32 uid;
-    //u32 gid;
-    //char cmdline[64]; // just first bytes for now
+    u32 uid;
+
+    char cmdline[64]; // just first bytes for now
     char comm[TASK_COMM_LEN];
 
-    int  syscall_id;
-    long offcpu_ustack; 
-    long offcpu_kstack; 
-    // consolidate these to a single struct or union for lower BPF map mem usage (?)
+    u16 syscall_id; // unsigned as we switch the value to negative once the syscall is done, to see the last syscall
     unsigned long syscall_arg0;
     unsigned long syscall_arg1;
     unsigned long syscall_arg2;
@@ -55,24 +52,29 @@ struct thread_state_t {
     unsigned long syscall_arg4;
     unsigned long syscall_arg5;
 
-    long profile_ustack;
-    long profile_kstack;
-    long syscall_ustack;
-    int  in_sched_wakeup;
-    //long sched_waker_kstack;
-    //long sched_waker_ustack;
-    //u32 oracle_wait_event;
-    int syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't use syscall_id
+    s32 offcpu_ustack; 
+    s32 offcpu_kstack; 
+    s32 profile_ustack;
+    s32 profile_kstack;
+    s32 syscall_ustack;
+    //s32 sched_waker_kstack;
+    //s32 sched_waker_ustack;
 
-    // debug
-    int probe;
-    int probe_before;
-    int err;
+    bool in_sched_wakeup;
+
+    // app-specific context
+    //s32 oracle_wait_event;
+
+    // debug and internal use by python frontend
+    bool syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't use syscall_id
+    s16 probe;
+    s16 probe_before;
+    s16 err;
 };
 
 
 // not using BPF_F_NO_PREALLOC here for now, trading some kernel memory for better performance
-BPF_HASH(tsa, u32, struct thread_state_t, 65536);
+BPF_HASH(tsa, u32, struct thread_state_t, 16384);
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     struct thread_state_t t_empty = {};
@@ -212,18 +214,18 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     struct task_struct *next = (struct task_struct *)ctx->args[2];
     unsigned int prev_state; // = (unsigned int)ctx->args[3];
     
-    // prev_tid = prev->pid;
-    // prev_pid = prev->tgid;
-    // next_tid = next->pid;
-    // next_pid = next->tgid;
+    prev_tid = prev->pid;
+    prev_pid = prev->tgid;
+    next_tid = next->pid;
+    next_pid = next->tgid;
+    prev_state = ctx->args[3];
 
-    int err = 0;
-
-    err += bpf_probe_read_kernel(&prev_tid, sizeof(prev->pid), &prev->pid);
-    err += bpf_probe_read_kernel(&prev_pid, sizeof(prev->tgid), &prev->tgid);
-    err += bpf_probe_read_kernel(&next_tid, sizeof(next->pid), &next->pid);
-    err += bpf_probe_read_kernel(&next_pid, sizeof(next->tgid), &next->tgid);
-    err += bpf_probe_read_kernel(&prev_state, sizeof(prev_state), &ctx->args[3]); // 4th arg (arg3) is prev_state
+    int err = 0; // debug
+    // err += bpf_probe_read_kernel(&prev_tid, sizeof(prev->pid), &prev->pid);
+    // err += bpf_probe_read_kernel(&prev_pid, sizeof(prev->tgid), &prev->tgid);
+    // err += bpf_probe_read_kernel(&next_tid, sizeof(next->pid), &next->pid);
+    // err += bpf_probe_read_kernel(&next_pid, sizeof(next->tgid), &next->tgid);
+    // err += bpf_probe_read_kernel(&prev_state, sizeof(prev_state), &ctx->args[3]); // 4th arg (arg3) is prev_state
 
     struct thread_state_t t_empty_prev = {};
     struct thread_state_t t_empty_next = {};
@@ -287,77 +289,6 @@ TRACEPOINT_PROBE(sched, sched_kthread_stop) {
 
     return 0;
 }
-
-
-// random stuff and junk
-
-// bpf_get_current_comm(&t->comm, sizeof(t->comm));
-
-// periodic sampling
-// int emit_periodic_sample() {
-//     u64 ts = bpf_ktime_get_ns();
-//     return 0;
-// }
-
-// BPF_F_SKIP_FIELD_MASK. The next bits can be used to set a combination of the following flags:
-// BPF_F_USER_STACK       Collect a user space stack instead of a kernel stack.
-// BPF_F_FAST_STACK_CMP   Compare stacks by hash only.
-// BPF_F_REUSE_STACKID    If two different stacks hash into the same stackid, discard the old one.
-
-// kprobe:schedule - thread requests going off CPU
-// by the time schedule() is called, the caller has set the new task state
-//int update_offcpu_schedule(struct pt_regs *ctx) {
-//
-//    u32 tid = bpf_get_current_pid_tgid() & 0xffffffff;
-//    u32 pid = bpf_get_current_pid_tgid() >> 32;
-//    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
-//
-//    struct thread_state_t t_empty = {};
-//    struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
-//    if (!t) return 0;
-//
-//    t->probe = 3; // "offcpu_schedule";
-//    t->tid = tid;
-//    t->pid = pid;
-//    bpf_get_current_comm(&t->comm, sizeof(t->comm));
-//    t->state = curtask->__state;
-//    t->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-//    t->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-//
-//    tsa.update(&tid, t);
-//
-//    return 0;
-//};
-
-// kprobe:finish_task_switch* - thread has been put back on CPU by scheduler
-// newer kernels have the "isra" version of this function name, thus the * wildcard
-// int update_offcpu_finish_task_switch(struct pt_regs *ctx, struct task_struct *prevtask) {
-// int update_offcpu_finish_task_switch(struct pt_regs *ctx) {
-// 
-//     struct task_struct *prevtask = (struct task_struct *)ctx;
-// 
-//     pid_t prev_tid = prevtask->pid; 
-//     pid_t prev_pid = prevtask->tgid;
-//     u32 prev_state = prevtask->__state;
-// 
-//     // bpf_probe_read_kernel(&prev_tid, sizeof(prevtask->pid), &prevtask->pid);
-//     // bpf_probe_read_kernel(&prev_pid, sizeof(prevtask->tgid), &prevtask->tgid);
-// 
-//     struct thread_state_t t_empty = {};
-//     struct thread_state_t *t = tsa.lookup_or_try_init(&prev_tid, &t_empty);
-//     if (!t) return 0;
-// 
-//     //t->probe = 4; // "offcpu_finish_task_switch";
-//     t->tid = prev_tid;  // prev_tid;
-//     t->pid = prev_pid; // prev_pid;
-//     t->state = prev_state;
-// 
-//     tsa.update(&prev_tid, t);
-// 
-//     return 0;
-// };
-
-
 
 
 // vim:syntax=c
