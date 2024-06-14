@@ -384,6 +384,17 @@ const struct_sysent sysent0[] = {
 /* gap */
 [ 437] = {"common", "openat2"},
 [ 438] = {"common", "pidfd_getfd"},
+[ 439] = {"common", "faccessat2"},
+[ 440] = {"common", "process_madvise"},
+[ 441] = {"common", "epoll_pwait2"},
+[ 442] = {"common", "mount_setattr"},
+[ 443] = {"common", "quotactl_fd"},
+[ 444] = {"common", "landlock_create_ruleset"},
+[ 445] = {"common", "landlock_add_rule"},
+[ 446] = {"common", "landlock_restrict_self"},
+[ 447] = {"common", "memfd_secret"},
+[ 448] = {"common", "process_mrelease"},
+[ 449] = {"common", "futex_waitv"},
 /* gap */
 [ 512] = {"x32", "rt_sigaction"},
 [ 513] = {"x32", "rt_sigreturn"},
