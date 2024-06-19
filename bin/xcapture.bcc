@@ -1,6 +1,6 @@
 /*
  *  0x.Tools xcapture.bcc v0.5 beta
- *  Sample Linux thread activity using eBPF [0x.tools]
+ *  Sample Linux task activity using eBPF [0x.tools]
  *
  *  Copyright 2019-2024 Tanel Poder
  *
@@ -25,7 +25,7 @@
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/types.h>
-#include <linux/cred.h>
+#include <linux/syscalls.h>
 
 #ifdef BCC_SEC
 #define __BCC__
@@ -37,43 +37,32 @@ BPF_STACK_TRACE(ustackmap, 131072);
 
 struct thread_state_t {
     u32 state;
-    u32 tid;  // thread (task) ID 
-    u32 pid;  // the process ID (thread group leader ID)
-
-    u32 effective_uid;
-    u32 login_uid;
-
-    char cmdline[64]; // just first bytes for now
+    u32 tid;
+    u32 pid;
+    u32 uid;
     char comm[TASK_COMM_LEN];
+    char orig_comm[TASK_COMM_LEN];
 
-    u16 syscall_id; // unsigned as we switch the value to negative once the syscall is done, to see the last syscall
-    unsigned long syscall_arg0;
-    unsigned long syscall_arg1;
-    unsigned long syscall_arg2;
-    unsigned long syscall_arg3;
-    unsigned long syscall_arg4;
-    unsigned long syscall_arg5;
+    u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
+    unsigned long syscall_args[6];
 
     s32 offcpu_ustack; 
     s32 offcpu_kstack; 
     s32 profile_ustack;
     s32 profile_kstack;
     s32 syscall_ustack;
-    //s32 sched_waking_kstack;
-    //s32 sched_waking_ustack;
 
+    s32 waker_tid; // who invoked the waking of the target task
     bool in_sched_waking; // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
     bool in_sched_wakeup; // actual wakeup on target CPU starts
     bool running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
-
-    s32 waker_tid; // who invoked the waking of the target task
+    s16 sched_waking_syscall;
+    s32 sched_waking_ustack;
 
     //s32 oracle_wait_event;
 
-    // debug and internal use by python frontend
-    bool syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't use syscall_id
-    s16 probe;
-    s16 probe_before;
+    // internal use by python frontend
+    bool syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't print syscall_id 0
 };
 
 
@@ -81,6 +70,9 @@ struct thread_state_t {
 BPF_HASH(tsa, u32, struct thread_state_t, 16384);
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
+    if (args->id ==  __NR_poll || args->id == __NR_getrusage)
+        return 0;
+
     struct thread_state_t t_empty = {};
 
     u32 tid = bpf_get_current_pid_tgid() & 0xffffffff;
@@ -90,21 +82,18 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
     if (!t) return 0;
 
-    t->probe = 1; // "sys_enter"
-    t->tid = tid;
-    t->pid = pid;
-    bpf_get_current_comm(&t->comm, sizeof(t->comm));
-    t->state = curtask->__state;
+    if (!t->syscall_set) t->syscall_set  = 1;
 
-    t->syscall_set  = 1;
-    t->syscall_id   = args->id,
-    t->syscall_arg0 = args->args[0];
-    t->syscall_arg1 = args->args[1];
-    t->syscall_arg2 = args->args[2];
-    t->syscall_arg3 = args->args[3];
-    t->syscall_arg4 = args->args[4];
-    t->syscall_arg5 = args->args[5];
-    t->syscall_ustack = ustackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+    t->syscall_id   = args->id;
+
+    // use a conditional copy(len(args))
+    // t->syscall_arg0 = args->args[0];
+    // t->syscall_arg1 = args->args[1];
+    // t->syscall_arg2 = args->args[2];
+    // t->syscall_arg3 = args->args[3];
+    // t->syscall_arg4 = args->args[4];
+    // t->syscall_arg5 = args->args[5];
+    // t->syscall_ustack = ustackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
     tsa.update(&tid, t);
     return 0;
@@ -121,19 +110,13 @@ TRACEPOINT_PROBE(raw_syscalls, sys_exit) {
     struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
     if (!t) return 0;
 
-    t->probe = 2; // "sys_exit";
-    t->tid = tid;
-    t->pid = pid;
-    bpf_get_current_comm(&t->comm, sizeof(t->comm));
-    t->state = curtask->__state;
-    t->syscall_id = t->syscall_id * -1; // switch the syscall_id to its negative value on exit
-    t->syscall_ustack = t->syscall_ustack * -1; 
+    // t->syscall_id = t->syscall_id * -1; // switch the syscall_id to its negative value on exit
+    // t->syscall_ustack = t->syscall_ustack * -1; 
 
     tsa.update(&tid, t);
 
     return 0;
 } // raw_syscalls:sys_exit
-
 
 // sampling profiling of on-CPU threads (python frontend uses perf event with freq=1)
 // update the stack id of threads currently running on (any) CPU
@@ -150,9 +133,9 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
         if (!t) return 0;
 
-        t->probe = 4; // "cpu_stack_profile";
         t->tid = tid;
         t->pid = pid;
+        t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
         t->state = curtask->__state;
 
         t->profile_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
@@ -180,32 +163,30 @@ TRACEPOINT_PROBE(sched, sched_waking) {
     t_being_waked_up->tid = tid_woken;          // this guy is being woken up
     t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up
 
-    t_being_waked_up->probe = 5;                // debug: "sched_waking";
     tsa.update(&tid_woken, t_being_waked_up);
 
     return 0;
 }
 
 // Context enrichment example (kernel): woken up task waiting in the CPU runqueue
-TRACEPOINT_PROBE(sched, sched_wakeup) {
-
-    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
-    struct thread_state_t t_empty = {};
-
-    u32 tid_woken = args->pid;
- 
-    struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
-    if (!t_being_waked_up) return 0;
-
-    t_being_waked_up->in_sched_waking = 0;
-    t_being_waked_up->in_sched_wakeup = 1;
-    t_being_waked_up->tid = tid_woken;          // this guy is being woken up
-    
-    t_being_waked_up->probe = 6;                // debug: "sched_wakeup";
-    tsa.update(&tid_woken, t_being_waked_up);
-
-    return 0;
-}
+// TRACEPOINT_PROBE(sched, sched_wakeup) {
+// 
+//     struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
+//     struct thread_state_t t_empty = {};
+// 
+//     u32 tid_woken = args->pid;
+//  
+//     struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
+//     if (!t_being_waked_up) return 0;
+// 
+//     t_being_waked_up->in_sched_waking = 0;
+//     t_being_waked_up->in_sched_wakeup = 1;
+//     t_being_waked_up->tid = tid_woken;          // this guy is being woken up
+//     
+//     tsa.update(&tid_woken, t_being_waked_up);
+// 
+//     return 0;
+// }
 
 // newly started task woken up
 TRACEPOINT_PROBE(sched, sched_wakeup_new) {
@@ -214,16 +195,17 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     u32 tid_woken = args->pid;
 
     struct thread_state_t t_empty = {};
-    struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
-    if (!t_being_waked_up) return 0;
+    struct thread_state_t *t_new = tsa.lookup_or_try_init(&tid_woken, &t_empty);
+    if (!t_new) return 0;
 
-    t_being_waked_up->in_sched_waking = 0;      // todo: verify if this is even needed here
-    t_being_waked_up->in_sched_wakeup = 1;
-    t_being_waked_up->tid = tid_woken;          // this guy is being woken up
-    //t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here)
+    t_new->in_sched_waking = 0;      // todo: verify if this is even needed here
+    t_new->in_sched_wakeup = 1;
+    t_new->tid = tid_woken;          // this guy is being woken up
+    t_new->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here?)
 
-    t_being_waked_up->probe = 7;                // "sched_wakeup_new";
-    tsa.update(&tid_woken, t_being_waked_up);
+    bpf_probe_read_str(t_new->comm, sizeof(t_new->comm), args->comm); // the app may change its comm
+
+    tsa.update(&tid_woken, t_new);
 
     return 0;
 }
@@ -237,10 +219,10 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     s32 next_pid; // tgid
 
     // from https://github.com/torvalds/linux/blob/master/include/trace/events/sched.h (sched_switch trace event)
-    bool *preempt; // = (bool)ctx->args[0];
+    bool *preempt = (bool *)ctx->args[0]; // todo: check if this is correct
     struct task_struct *prev = (struct task_struct *)ctx->args[1];
     struct task_struct *next = (struct task_struct *)ctx->args[2];
-    unsigned int prev_state; // = (unsigned int)ctx->args[3];
+    unsigned int prev_state;
     
     prev_tid = prev->pid;
     prev_pid = prev->tgid;
@@ -267,11 +249,6 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
-        // debug
-        t_prev->probe_before = t_prev->probe;
-        t_prev->probe = 8; // "sched_switch(prev)";
-
-        
         tsa.update(&prev_tid, t_prev);
     }
 
@@ -288,12 +265,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->running_on_cpu = 1;
         t_next->in_sched_wakeup = 0;
 
-        t_next->login_uid = next->loginuid.val;
-        t_next->effective_uid = next->cred->euid.val; //  __kuid_val(next->cred->euid);
-
-        // debug
-        t_next->probe_before = t_next->probe;
-        t_next->probe = 9; // "sched_switch(next)";
+        t_next->uid = next->cred->euid.val;
 
         tsa.update(&next_tid, t_next);
     }
@@ -301,31 +273,23 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     return 0;
 }
 
-// remove the hashmap element on user thread exit
+
+// remove hashmap elements on task exit
+static inline int cleanup_tid(u32 tid_exiting) {
+    tsa.delete(&tid_exiting);
+    return 0;
+}
+
 TRACEPOINT_PROBE(sched, sched_process_exit) {
-
-    u32 tid_exiting = args->pid;
-    tsa.delete(&tid_exiting);
-
-    return 0;
+    return cleanup_tid(args->pid);
 }
 
-// remove the hashmap element on task (not using the _exit probe as the task may stay around as a zombie)
 TRACEPOINT_PROBE(sched, sched_process_free) {
-
-    u32 tid_exiting = args->pid;
-    tsa.delete(&tid_exiting);
-
-    return 0;
+    return cleanup_tid(args->pid);
 }
 
-// remove the hashmap element on kthread exit (should really wait until sched_kthread_stop_ret)
 TRACEPOINT_PROBE(sched, sched_kthread_stop) {
-
-    u32 tid_exiting = args->pid;
-    tsa.delete(&tid_exiting);
-
-    return 0;
+    return cleanup_tid(args->pid);
 }
 
 // vim:syntax=c
