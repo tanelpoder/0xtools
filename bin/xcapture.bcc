@@ -59,13 +59,15 @@ struct thread_state_t {
     s32 profile_ustack;
     s32 profile_kstack;
     s32 syscall_ustack;
-    //s32 sched_waker_kstack;
-    //s32 sched_waker_ustack;
+    //s32 sched_waking_kstack;
+    //s32 sched_waking_ustack;
 
-    bool in_sched_wakeup;
-    u32 waker_tid;
+    bool in_sched_waking; // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
+    bool in_sched_wakeup; // actual wakeup on target CPU starts
+    bool running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
 
-    // app-specific context
+    s32 waker_tid; // who invoked the waking of the target task
+
     //s32 oracle_wait_event;
 
     // debug and internal use by python frontend
@@ -125,6 +127,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_exit) {
     bpf_get_current_comm(&t->comm, sizeof(t->comm));
     t->state = curtask->__state;
     t->syscall_id = t->syscall_id * -1; // switch the syscall_id to its negative value on exit
+    t->syscall_ustack = t->syscall_ustack * -1; 
 
     tsa.update(&tid, t);
 
@@ -147,7 +150,7 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
         if (!t) return 0;
 
-        t->probe = 5; // "cpu_stack_profile";
+        t->probe = 4; // "cpu_stack_profile";
         t->tid = tid;
         t->pid = pid;
         t->state = curtask->__state;
@@ -162,8 +165,28 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
 };
 
 
-// Context enrichment example (kernel): tasks waiting in the CPU runqueue
-// tracepoint:sched:sched_wakeup,sched_wakeup_new (will add sched_waker at some point too)
+// Context enrichment example (kernel): who (curtask->pid) woke a wakee (args->pid) up?
+TRACEPOINT_PROBE(sched, sched_waking) {
+
+    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
+    struct thread_state_t t_empty = {};
+
+    u32 tid_woken = args->pid;
+ 
+    struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
+    if (!t_being_waked_up) return 0;
+
+    t_being_waked_up->in_sched_waking = 1;
+    t_being_waked_up->tid = tid_woken;          // this guy is being woken up
+    t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up
+
+    t_being_waked_up->probe = 5;                // debug: "sched_waking";
+    tsa.update(&tid_woken, t_being_waked_up);
+
+    return 0;
+}
+
+// Context enrichment example (kernel): woken up task waiting in the CPU runqueue
 TRACEPOINT_PROBE(sched, sched_wakeup) {
 
     struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
@@ -174,17 +197,17 @@ TRACEPOINT_PROBE(sched, sched_wakeup) {
     struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
     if (!t_being_waked_up) return 0;
 
-    t_being_waked_up->probe = 6; // "sched_wakeup";
+    t_being_waked_up->in_sched_waking = 0;
     t_being_waked_up->in_sched_wakeup = 1;
     t_being_waked_up->tid = tid_woken;          // this guy is being woken up
-    t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up
-
+    
+    t_being_waked_up->probe = 6;                // debug: "sched_wakeup";
     tsa.update(&tid_woken, t_being_waked_up);
 
     return 0;
 }
 
-// duplicate function (can be fixed in python code with attach_tracepoint)
+// newly started task woken up
 TRACEPOINT_PROBE(sched, sched_wakeup_new) {
 
     struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
@@ -194,11 +217,12 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
     if (!t_being_waked_up) return 0;
 
-    t_being_waked_up->probe = 7; // "sched_wakeup_new";
+    t_being_waked_up->in_sched_waking = 0;      // todo: verify if this is even needed here
     t_being_waked_up->in_sched_wakeup = 1;
     t_being_waked_up->tid = tid_woken;          // this guy is being woken up
-    t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up
+    //t_being_waked_up->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here)
 
+    t_being_waked_up->probe = 7;                // "sched_wakeup_new";
     tsa.update(&tid_woken, t_being_waked_up);
 
     return 0;
@@ -234,8 +258,11 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
         t_prev->tid = prev_tid;
         t_prev->pid = prev_pid;
-        t_prev->in_sched_wakeup = 0;
         bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm); // BCC allows this syntax
+
+        t_prev->running_on_cpu = 0;
+        t_prev->in_sched_wakeup = 0;
+        t_prev->state = prev_state; // prev_state passed in as an arg to sched_switch probe
 
         t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
@@ -243,7 +270,6 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         // debug
         t_prev->probe_before = t_prev->probe;
         t_prev->probe = 8; // "sched_switch(prev)";
-        t_prev->state = prev_state; // prev_state passed in as an arg to sched_switch probe
 
         
         tsa.update(&prev_tid, t_prev);
@@ -257,14 +283,17 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->tid = next_tid;
         t_next->pid = next_pid;
         bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm); // BCC allows this syntax
+
+        t_next->state = next->__state;
+        t_next->running_on_cpu = 1;
         t_next->in_sched_wakeup = 0;
+
         t_next->login_uid = next->loginuid.val;
         t_next->effective_uid = next->cred->euid.val; //  __kuid_val(next->cred->euid);
 
         // debug
         t_next->probe_before = t_next->probe;
         t_next->probe = 9; // "sched_switch(next)";
-        t_next->state = next->__state;
 
         tsa.update(&next_tid, t_next);
     }
@@ -274,6 +303,15 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
 // remove the hashmap element on user thread exit
 TRACEPOINT_PROBE(sched, sched_process_exit) {
+
+    u32 tid_exiting = args->pid;
+    tsa.delete(&tid_exiting);
+
+    return 0;
+}
+
+// remove the hashmap element on task (not using the _exit probe as the task may stay around as a zombie)
+TRACEPOINT_PROBE(sched, sched_process_free) {
 
     u32 tid_exiting = args->pid;
     tsa.delete(&tid_exiting);

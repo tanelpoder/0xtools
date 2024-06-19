@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
 
-from bcc import BPF, PerfType, PerfSWConfig
-from time import sleep
 import os
+import pwd
+import time
 import ctypes
 import platform
 
+from bcc import BPF, PerfType, PerfSWConfig
+from datetime import datetime
+
+
+
 ### syscall ###
 def extract_system_call_ids(unistd_64_fh):
-    syscall_id_to_name = {'running': '[running]', '-1': '[kernel_direct]', 'kernel_thread':'[kernel_thread]'}
+    syscall_id_to_name = {}
 
     # examples from a unistd.h file
     #  #define __NR_mount 40
     #  #define __NR3264_truncate 45
 
+    # strip 3264bit prefixes from syscall names
     for name_prefix in ['__NR_', '__NR3264_']:
         for line in unistd_64_fh.readlines():
             tokens = line.split()
             if tokens and len(tokens) == 3 and tokens[0] == '#define':
                 _, s_name, s_id = tokens
+                s_id = int(s_id)
                 if s_name.startswith(name_prefix):
                     s_name = s_name[len(name_prefix):]
                     syscall_id_to_name[s_id] = s_name
@@ -51,6 +58,7 @@ def get_system_call_names():
 # syscall lookup table
 syscall_id_to_name = get_system_call_names()
 
+# task states
 TASK_RUNNING           =   0x00000000
 TASK_INTERRUPTIBLE     =   0x00000001
 TASK_UNINTERRUPTIBLE   =   0x00000002
@@ -73,28 +81,95 @@ TASK_FREEZABLE         =   0x00002000
 TASK_FROZEN            =   0x00008000
 TASK_STATE_MAX         =   0x00010000
 
-def return_task_state(s):
-    if s & TASK_NOLOAD:          return 'I' # kthread idle (usually 0x402)
-    if s == TASK_RUNNING:        return 'R'
-    if s & TASK_INTERRUPTIBLE:   return 'S'
-    if s & TASK_UNINTERRUPTIBLE: return 'D'
-    if s & TASK_STOPPED:         return 'T'
-    if s & TASK_TRACED:          return 't'
-    # TODO add other states too
-    return '{:x}'.format(s)
+##define TASK_STATE_TO_CHAR_STR "RSDTtXZxKWPN"
 
+task_states = {
+    0x00000000: "R", # "RUNNING",
+    0x00000001: "S", # "INTERRUPTIBLE",
+    0x00000002: "D", # UNINTERRUPTIBLE",
+    0x00000004: "T", # "STOPPED",
+    0x00000008: "t", # "TRACED",
+    0x00000010: "X", # "EXIT_DEAD",
+    0x00000020: "Z", # "EXIT_ZOMBIE",
+    0x00000040: "P", # "PARKED",
+    0x00000080: "dd",# "DEAD",
+    0x00000100: "wk",# "WAKEKILL",
+    0x00000200: "wg",# "WAKING",
+    0x00000400: "I", # "NOLOAD",
+    0x00000800: "N", # "NEW",
+    0x00001000: "rt",# "RTLOCK_WAIT",
+    0x00002000: "fe",# "FREEZABLE",
+    0x00004000: "fu",# "__TASK_FREEZABLE_UNSAFE = (0x00004000 * IS_ENABLED(CONFIG_LOCKDEP))"
+    0x00008000: "fo",# "FROZEN"
+}
+
+
+def get_task_state_name(task_state):
+    if task_state == 0:
+        return "R"
+    if task_state & TASK_NOLOAD: # idle kthread waiting for work
+        return "I"
+
+    names = []
+    for state, name in task_states.items():
+        if task_state & state:
+            names.append(name)
+
+    return "+".join(names)
+    
+
+# translate uid to username
+def get_username(uid):
+    try:
+        username = pwd.getpwuid(uid).pw_name
+        return username
+    except KeyError:
+        return str(uid)
+
+def print_header(fieldlist):
+    print('TIMESTAMP,' + ','.join(fieldlist).upper())
+
+def print_fields(ts, f, fieldlist, states = ['R','D']):
+    out = ts[:-3]
+    current_syscall = syscall_id_to_name.get(f['syscall_id'], '-')
+    in_sched_wakeup = f['in_sched_wakeup']
+    running_on_cpu = f['running_on_cpu']
+
+    for fn in fieldlist:
+        if fn == 'state':
+            state = get_task_state_name(f[fn])
+            # for scheduling latency/preempted tasks (RQ)
+            if state == 'R' and not running_on_cpu:
+                state += 'Q' 
+            if state in states or current_syscall == 'io_getevents': # for async io demo
+                out += "," + state
+            else:
+                return
+        elif fn == 'syscall':
+            out += "," + current_syscall
+        elif fn == 'username':
+            out += "," + get_username(f['effective_uid'])
+        else:
+            val = f[fn]
+            if isinstance(val, bytes):
+                out += "," + str(val, 'utf-8')
+            else:
+                out += "," + str(val)
+
+    if out: print(out)
+
+
+# main()
 with open('xcapture.bcc', 'r') as file:
     bpf_text = file.read()
 
 b = BPF(text=bpf_text)
 
-# b.attach_kprobe(event="schedule", fn_name="update_offcpu_schedule")
-# b.attach_kprobe(event_re="finish_task_switch.*", fn_name="update_offcpu_finish_task_switch")
-
-# Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events are not available,
-# but software clocks often don't measure what happens when CPUs are in critical sections when most interrupts are disabled
-b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK, fn_name="update_cpu_stack_profile", sample_freq=1)
-
+# Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events 
+# are not available but software clocks don't measure what happens when CPUs are in 
+# critical sections when most interrupts are disabled
+b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
+                    , fn_name="update_cpu_stack_profile", sample_freq=1)
 
 # get own pid so to not display it in output
 mypid = os.getpid()
@@ -104,109 +179,138 @@ print(f"mypid={mypid}")
 print("Working...")                 
 tsa = b.get_table("tsa")
 
-while True:
-    sleep(1)
+output_fields = [ 'state', 'tid', 'pid', 'username', 'comm', 'syscall'
+                 ,'syscall_ustack', 'offcpu_ustack', 'offcpu_kstack'
+                 ,'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
 
-    # map of stack_ids seen 
+while True:
+    start_time = time.time()
+
+    # map of stack_ids seen so far
     output_kstack = {}
     output_ustack = {}
 
     # print header
-    out = "\n"
+    print_header(output_fields)
+
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
     i = tsa.items()[0]
 
-    for f in i[1]._fields_:
-        fieldname = f[0]
-        if fieldname[0:5] != "__pad":
-            value = getattr(i[1], fieldname, '-')
-            if isinstance(value, bytes):
-                out += "%-20s " % fieldname.upper()
-            else:
-                out += "%-18s " % fieldname.upper()
+    for i in tsa.items():
+        # extract python values from BPF ctypes, return '-' if there's no match
+        fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
+        print_fields(ts, fields_dict, output_fields, ['R', 'RQ',  'D', 'Z'])
 
-    print(out)
+
+# def return_task_state(s):
+#     if s & TASK_NOLOAD:          return 'I' # kthread idle (usually 0x402)
+#     if s == TASK_RUNNING:        return 'R'
+#     if s & TASK_INTERRUPTIBLE:   return 'S'
+#     if s & TASK_UNINTERRUPTIBLE: return 'D'
+#     if s & TASK_STOPPED:         return 'T'
+#     if s & TASK_TRACED:          return 't'
+#     # TODO add other states too
+#     return '{:x}'.format(s)
+
+    #for f in i[1]._fields_:
+    #    fieldname = f[0]
+    #    if fieldname[0:5] != "__pad":
+    #        value = getattr(i[1], fieldname, '-')
+    #        if isinstance(value, bytes):
+    #            out += "%-20s " % fieldname.upper()
+    #        else:
+    #            out += "%-18s " % fieldname.upper()
+
+    #print(out)
+
  
-    # print data
-    for i in tsa.items(): 
+    ## print data
+    #for i in tsa.items():
 
-        out = ""
-        for f in i[1]._fields_:
-            fieldname = f[0]
-            if fieldname[0:5] != "__pad":
-                value = getattr(i[1], fieldname, '-')
-               
-                if fieldname == "state":
-                    state = return_task_state(int(value))
-                    if state in ['R','D']:
-                        out += "%-1s %-17x" % (state, int(value))
-                    else:
-                        break
-                elif isinstance(value, bytes):
-                    out += "%-20s " % (str(value, 'utf-8'))
-                else:
-                    if fieldname == "syscall_id":
-                        if getattr(i[1], "syscall_set"):
-                            out += "%-19s" % syscall_id_to_name.get(str(value), '-')
-                        else:
-                            out += "%-19s" % '-'
-                    else:
-                        if abs(value) >= 2**31-1:
-                            out += "0x%-16x " % (value)
-                        else:
-                            out += "%-16d   " % (value)
-                    
-                    if fieldname.endswith("_kstack"):
-                        output_kstack[value] = True
+    #    out = ""
+    #    for f in i[1]._fields_:
+    #        fieldname = f[0]
+    #        if fieldname[0:5] != "__pad":
+    #            value = getattr(i[1], fieldname, '-')
+    #           
+    #            if fieldname == "state":
+    #                state = return_task_state(int(value))
+    #                if state in ['R','D']:
+    #                    out += "%-1s %-17x" % (state, int(value))
+    #                else:
+    #                    break
+    #            elif isinstance(value, bytes):
+    #                out += "%-20s " % (str(value, 'utf-8'))
+    #            else:
+    #                if fieldname == "syscall_id":
+    #                    if getattr(i[1], "syscall_set"):
+    #                        out += "%-19s" % syscall_id_to_name.get(str(value), '-')
+    #                    else:
+    #                        out += "%-19s" % '-'
+    #                else:
+    #                    if abs(value) >= 2**31-1:
+    #                        out += "0x%-16x " % (value)
+    #                    else:
+    #                        out += "%-16d   " % (value)
+    #                
+    #                if fieldname.endswith("_kstack"):
+    #                    output_kstack[value] = True
 
-                    # this is used in a later iteration for _ustack fields below
-                    if fieldname == "pid":
-                        pid = value
+    #                # this is used in a later iteration for _ustack fields below
+    #                if fieldname == "pid":
+    #                    pid = value
 
-                    if fieldname.endswith("_ustack"):
-                        # stackid, pid
-                        output_ustack[value, pid] = True
+    #                if fieldname.endswith("_ustack"):
+    #                    # stackid, pid
+    #                    output_ustack[value, pid] = True
 
-        if state in ['R','D']: print(out)
+    #    if state in ['R','D']: print(out)
 
-    continue
+    ## bail out here if don't want stack traces in the output
+    ## continue
 
-    # print stack traces
-    class Data(ctypes.Structure):
-        _fields_ = [
-            ("stack_id", ctypes.c_int),
-            ("pid", ctypes.c_ulong),
-        ]
+    ## print stack traces
+    #class Data(ctypes.Structure):
+    #    _fields_ = [
+    #        ("stack_id", ctypes.c_int),
+    #        ("pid", ctypes.c_ulong),
+    #    ]
 
-    kstack_traces = b.get_table("kstackmap")
-    exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call', 'ret_from_fork_asm', 'ret_from_fork']
+    #kstack_traces = b.get_table("kstackmap")
+    #exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call', 'ret_from_fork_asm', 'ret_from_fork']
+
+    #print()
+    #ustack_traces = b.get_table("ustackmap")
+
+    #for stack_id, pid in output_ustack:
+    #    if stack_id > 0:
+    #        print(f"ustack {stack_id:7} ", end="")
+    #        stack = list(ustack_traces.walk(stack_id))
+    #        line = ""
+    #        for addr in reversed(stack):
+    #            func = b.sym(addr, pid).decode('utf-8', 'replace')
+    #            line += "->" + (func if func != '[unknown]' else '{:x}'.format(addr))
+
+    #        print(line)
+ 
+    #print()
+    #for k, v in kstack_traces.items():
+    #    stack_id = k.value
+    #    if stack_id in output_kstack:
+    #        print(f"kstack {stack_id:7} ", end="")
+    #        if stack_id >= 0:
+    #            stack = list(kstack_traces.walk(stack_id))
+    #            line = ""
+    #            for addr in reversed(stack):
+    #                func = b.ksym(addr).decode('utf-8', 'replace')
+    #                if func not in exclusions:
+    #                    line += "->" + b.ksym(addr).decode('utf-8', 'replace')
+
+    #            print(line)
 
     print()
-    ustack_traces = b.get_table("ustackmap")
-
-    for stack_id, pid in output_ustack:
-        if stack_id > 0:
-            print(f"ustack {stack_id:7} ", end="")
-            stack = list(ustack_traces.walk(stack_id))
-            line = ""
-            for addr in reversed(stack):
-                func = b.sym(addr, pid).decode('utf-8', 'replace')
-                line += "->" + (func if func != '[unknown]' else '{:x}'.format(addr))
-
-            print(line)
- 
-    print()
-    for k, v in kstack_traces.items():
-        stack_id = k.value
-        if stack_id in output_kstack:
-            print(f"kstack {stack_id:7} ", end="")
-            if stack_id >= 0:
-                stack = list(kstack_traces.walk(stack_id))
-                line = ""
-                for addr in reversed(stack):
-                    func = b.ksym(addr).decode('utf-8', 'replace')
-                    if func not in exclusions:
-                        line += "->" + b.ksym(addr).decode('utf-8', 'replace')
-
-                print(line)
+    elapsed_time = time.time() - start_time
+    sleep_time = max(0, 5 - elapsed_time)
+    time.sleep(sleep_time)
 
 # That's all, folks!
