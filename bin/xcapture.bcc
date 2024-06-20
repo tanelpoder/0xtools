@@ -37,6 +37,7 @@ BPF_STACK_TRACE(ustackmap, 131072);
 
 struct thread_state_t {
     u32 state;
+    u32 flags; // PF_ flags
     u32 tid;
     u32 pid;
     u32 uid;
@@ -222,16 +223,16 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     bool *preempt = (bool *)ctx->args[0]; // todo: check if this is correct
     struct task_struct *prev = (struct task_struct *)ctx->args[1];
     struct task_struct *next = (struct task_struct *)ctx->args[2];
-    unsigned int prev_state;
+    unsigned int prev_state = ctx->args[3];
     
     prev_tid = prev->pid;
     prev_pid = prev->tgid;
+
     next_tid = next->pid;
     next_pid = next->tgid;
-    prev_state = ctx->args[3];
 
-    struct thread_state_t t_empty_prev = {};
-    struct thread_state_t t_empty_next = {};
+    struct thread_state_t t_empty_prev = {0};
+    struct thread_state_t t_empty_next = {0};
 
     // we don't want to capture/report the previous cpuidle "task" during actual task wakeups (tid 0)
     if (prev_tid) {
@@ -240,14 +241,19 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
         t_prev->tid = prev_tid;
         t_prev->pid = prev_pid;
+        t_prev->flags = prev->flags;
         bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm); // BCC allows this syntax
 
-        t_prev->running_on_cpu = 0;
+        // switch finished, clear waking/wakeup flags
+        t_prev->running_on_cpu  = 0;
+        t_prev->in_sched_waking = 0;
         t_prev->in_sched_wakeup = 0;
-        t_prev->state = prev_state; // prev_state passed in as an arg to sched_switch probe
+        t_prev->state = prev_state; // prev_state is passed in as an arg to sched_switch probe
 
-        // kernel tasks don't have an userspace stack
-        if (prev->mm) 
+        if (prev->flags & PF_KTHREAD) // kernel thread
+            t_prev->offcpu_ustack = t_prev->offcpu_ustack * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
+        else
+            // t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK);
             t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
@@ -262,6 +268,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
         t_next->tid = next_tid;
         t_next->pid = next_pid;
+        t_next->flags = next->flags;
         bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm); // BCC allows this syntax
 
         t_next->state = next->__state;

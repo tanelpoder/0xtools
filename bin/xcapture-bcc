@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 
-import os
-import pwd
-import time
-import ctypes
-import platform
-
+import os, pwd, time, ctypes, platform, re
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
 # default output fields
-output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall' 
+output_fields = [ 'timestamp', 'st', 'flags', 'tid', 'pid', 'username', 'comm', 'syscall' 
                  , 'offcpu_ustack', 'offcpu_kstack', 'profile_ustack', 'profile_kstack' 
                  , 'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
 
@@ -139,7 +134,7 @@ def print_fields(rows, columns):
     header1 = "=== Active Threads "
     header2 = " | ".join(f"{col:<{col_widths[col]}}" for col in columns)
 
-    print(header1 + "=" * (len(header2) - len(header1)) + "\n")
+    print("\n" + header1 + "=" * (len(header2) - len(header1)) + "\n")
     print(header2)
     print("-" * len(header2))
 
@@ -156,34 +151,39 @@ class Data(ctypes.Structure):
         ("pid", ctypes.c_ulong),
     ]
 
-def get_ustack_traces(ustack_traces):
+def get_ustack_traces(ustack_traces, strip_args=True):
+    exclusions = ['__GI___clone3']
     lines = []
 
     for stack_id, pid in output_ustack:
         if stack_id > 0:
-            line = f"ustack {stack_id:7}: ->"
+            line = f"ustack {stack_id} ->"
             stack = list(ustack_traces.walk(stack_id))
             for addr in reversed(stack):
                 func = b.sym(addr, pid).decode('utf-8', 'replace')
-                line += "->" + (func if func != '[unknown]' else '{:x}'.format(addr))
+                if func not in exclusions:
+                    if strip_args:
+                        func = re.split('[<(]', func)[0]
+                    line += "->" + (func if func != '[unknown]' else '{:x}'.format(addr))
 
             lines.append(line)
 
     return lines
 
 def get_kstack_traces(kstack_traces):
-    exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call', 'ret_from_fork_asm', 'ret_from_fork']
+    exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call', 'ret_from_fork_asm', 'ret_from_fork'
+                 , '__bpf_trace_sched_switch', '__traceiter_sched_switch']
     lines = []
  
     for k, v in kstack_traces.items():
         stack_id = k.value
         if stack_id in output_kstack:
-            line = f"kstack {stack_id:7}: ->"
+            line = f"kstack {stack_id:7} ->"
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
                 for addr in reversed(stack):
                     func = b.ksym(addr).decode('utf-8', 'replace')
-                    if func not in exclusions:
+                    if func not in exclusions and not func.startswith('bpf_'):
                         line += "->" + b.ksym(addr).decode('utf-8', 'replace')
 
                 lines.append(line)
@@ -219,9 +219,108 @@ def print_side_by_side_with_wrapping(traces, max_columns=1):
         pivoted_traces = pivot_stack_traces(subset_traces)
         max_length = max(len(part) for trace in pivoted_traces for part in trace)
         
+        print("-" * 131)
         for row in zip(*pivoted_traces):
             print(" | ".join(f"{part:<{max_length}}" for part in row))
-        print("-" * 131)
+
+
+def calculate_columns(pivoted_traces, max_line_length):
+    max_length = max(len(part) for trace in pivoted_traces for part in trace)
+    return max(1, max_line_length // (max_length + 3))
+
+def print_pivoted_dynamic(traces, max_line_length):
+    num_traces = len(traces)
+    start = 0
+    
+    while start < num_traces:
+        end = start + 1
+        while end <= num_traces:
+            subset_traces = traces[start:end]
+            pivoted_traces = pivot_stack_traces(subset_traces)
+            num_columns = calculate_columns(pivoted_traces, max_line_length)
+            
+            if num_columns < end - start:
+                break
+            
+            end += 1
+
+        end -= 1
+        subset_traces = traces[start:end]
+        pivoted_traces = pivot_stack_traces(subset_traces)
+        
+        max_length = max(len(part) for trace in pivoted_traces for part in trace)
+        
+        print("-" * max_line_length)
+        for row in zip(*pivoted_traces):
+            print(" | ".join(f"{part:<{max_length}}" for part in row) + ' |')
+        
+        start = end
+
+# def calculate_columns(pivoted_traces, max_line_length):
+#     max_length = max(len(part) for trace in pivoted_traces for part in trace)
+#     return max(1, max_line_length // (max_length + 3))
+# 
+# def print_pivoted_dynamic(traces, max_line_length):
+#     num_traces = len(traces)
+#     start = 0
+#     
+#     while start < num_traces:
+#         # Get the pivoted traces for the remaining stack traces
+#         pivoted_traces = pivot_stack_traces(traces[start:])
+#         num_columns = calculate_columns(pivoted_traces, max_line_length)
+#         
+#         # Ensure at least one column
+#         if num_columns == 0:
+#             num_columns = 1
+#         
+#         end = min(start + num_columns, num_traces)
+#         subset_traces = traces[start:end]
+#         pivoted_traces = pivot_stack_traces(subset_traces)
+#         
+#         for row in zip(*pivoted_traces):
+#             max_length = max(len(part) for part in row)
+#             print(" | ".join(f"{part:<{max_length}}" for part in row))
+#         
+#         print("\n" + "-" * max_line_length + "\n")
+#         start = end
+
+# THIS is ok
+
+# calculates the number of columns that fit max output line lenght for each output section
+# def print_pivoted_dynamic(traces, max_line_length=130):
+#     pivoted_traces = pivot_stack_traces(traces)
+#     max_length = max(len(part) for trace in pivoted_traces for part in trace)
+#     num_columns = max(1, max_line_length // (max_length + 3)) 
+# 
+#     num_traces = len(traces)
+#     for start in range(0, num_traces, num_columns):
+#         end = min(start + num_columns, num_traces)
+#         subset_traces = traces[start:end]
+#         pivoted_traces = pivot_stack_traces(subset_traces)
+# 
+#         # recalculate max columns for the current subset
+#         max_length = max(len(part) for trace in pivoted_traces for part in trace)
+#         num_columns = max(1, max_line_length // (max_length + 3))
+# 
+#         for row in zip(*pivoted_traces):
+#             print(" | ".join(f"{part:<{max_length}}" for part in row))
+#         print("\n" + "-"*max_line_length + "\n")
+
+
+# def print_pivoted_dynamic(traces, max_line_length=130):
+#     pivoted_traces = pivot_stack_traces(traces)
+#     max_length = max(len(part) for trace in pivoted_traces for part in trace)
+#     num_columns = max(1, max_line_length // (max_length + 3))  # Calculate number of columns that fit within the max_line_length
+# 
+#     num_traces = len(traces)
+#     for start in range(0, num_traces, num_columns):
+#         end = min(start + num_columns, num_traces)
+#         subset_traces = traces[start:end]
+#         pivoted_traces = pivot_stack_traces(subset_traces)
+#         
+#         for row in zip(*pivoted_traces):
+#             print(" | ".join(f"{part:<{max_length}}" for part in row))
+#         print("\n" + "-"*max_line_length + "\n")
 
 
 
@@ -311,7 +410,8 @@ while True:
             elif field_name.endswith("_ustack"):
                 val = fields_dict[field_name]
                 outv = val if val else '-'
-                output_ustack[val, fields_dict['tid']] = True  # stackid, pid
+                #output_ustack[val, fields_dict['tid']] = True  # stackid, pid # todo
+                output_ustack[val, fields_dict['pid']] = True  # stackid, pid
 
             else:
                 val = fields_dict[field_name]
@@ -325,21 +425,24 @@ while True:
         if save_record:
             output_records.append(enriched_fields)
 
-    print_fields(output_records, output_fields)
+    if output_records:
+        print_fields(output_records, output_fields)
+    print()
     print()
 
     #for s in get_kstack_traces(kstackmap): 
     #    print(s)
-    print_side_by_side_with_wrapping(get_kstack_traces(kstackmap), 3)
+    #print_side_by_side_with_wrapping(get_kstack_traces(kstackmap), 3)
+    print_pivoted_dynamic(get_kstack_traces(kstackmap), max_line_length=150)
     print()
 
     #for s in get_ustack_traces(ustackmap):
     #    print(s)
-    print_side_by_side_with_wrapping(get_ustack_traces(ustackmap), 2)
+    print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=150)
     print()
 
     elapsed_time = time.time() - start_time
-    sleep_time = max(0, 5 - elapsed_time)
+    sleep_time = max(0, 1 - elapsed_time)
     time.sleep(sleep_time)
 
 # That's all, folks!
