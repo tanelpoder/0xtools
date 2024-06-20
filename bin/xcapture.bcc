@@ -56,8 +56,8 @@ struct thread_state_t {
     bool in_sched_waking; // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
     bool in_sched_wakeup; // actual wakeup on target CPU starts
     bool running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
-    s16 sched_waking_syscall;
-    s32 sched_waking_ustack;
+    s16 waking_syscall;
+    s32 waking_ustack;
 
     //s32 oracle_wait_event;
 
@@ -246,7 +246,10 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->in_sched_wakeup = 0;
         t_prev->state = prev_state; // prev_state passed in as an arg to sched_switch probe
 
-        t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        // kernel tasks don't have an userspace stack
+        if (prev->mm) 
+            t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+
         t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&prev_tid, t_prev);

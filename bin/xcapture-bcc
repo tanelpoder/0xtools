@@ -10,10 +10,9 @@ from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
 # default output fields
-output_fields = [ 'timestamp', 'state', 'tid', 'pid', 'username', 'comm', 'syscall'
-                 ,'syscall_ustack', 'offcpu_ustack', 'offcpu_kstack'
-                 ,'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
-
+output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall' 
+                 , 'offcpu_ustack', 'offcpu_kstack','in_sched_waking'
+                 , 'in_sched_wakeup', 'waker_tid' ]
 
 # syscall id to name translation 
 def extract_system_call_ids(unistd_64_fh):
@@ -36,7 +35,7 @@ def get_system_call_names():
     psn_dir=os.path.dirname(os.path.realpath(__file__))
     kernel_ver=platform.release().split('-')[0]
 
-    # this probably needds to be improved for better platform support
+    # this probably needs to be improved for better platform support
     if platform.machine() == 'aarch64':
         unistd_64_paths = ['/usr/include/asm-generic/unistd.h']
     else:
@@ -126,8 +125,6 @@ def get_username(uid):
     except KeyError:
         return str(uid)
 
-def print_header(fieldlist):
-    print('TIMESTAMP,' + ','.join(fieldlist).upper())
 
 
 def print_fields(rows, columns):
@@ -139,10 +136,12 @@ def print_fields(rows, columns):
         max_value_length = max((len(str(row[col])) for row in rows if col in row), default=0)
         col_widths[col] = max(col_length, max_value_length)
 
-    header = "=== Active Threads ==================================================\n\n"
-    header += " | ".join(f"{col:<{col_widths[col]}}" for col in columns)
-    print(header)
-    print("-" * len(header))
+    header1 = "=== Active Threads "
+    header2 = " | ".join(f"{col:<{col_widths[col]}}" for col in columns)
+
+    print(header1 + "=" * (len(header2) - len(header1)) + "\n")
+    print(header2)
+    print("-" * len(header2))
 
     # Print the rows
     for row in rows:
@@ -186,7 +185,13 @@ while True:
         save_record = True
         # extract python values from BPF ctypes, return '-' if there's no match
         fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
-        
+
+        # additional fields for human readable info population
+        fields_dict['st'] = ''
+        fields_dict['state_flags'] = '' # full scheduler state bitmap
+        fields_dict['username'] = ''
+        fields_dict['syscall'] = '' 
+ 
         current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
         in_sched_wakeup = fields_dict['in_sched_wakeup']
         running_on_cpu  = fields_dict['running_on_cpu']
@@ -196,14 +201,14 @@ while True:
         for field_name in fields_dict:
             outv = None # enriched value
 
-            # for now the field enrichment and record filtering logic is combined here as it's simple enough
-            if field_name == 'state':
+            if field_name in ['state', 'st']:
                 state_suffix = ''
-                state = get_task_state_name(fields_dict[field_name])
+                state = get_task_state_name(fields_dict['state'])
                 # for scheduling latency/preempted tasks (RQ)
                 if state == 'R' and not running_on_cpu:
                     state_suffix = 'Q'
-                if state in ['R', 'D'] or current_syscall == 'io_getevents': # for async io demo
+                if state in ['R', 'D'] or current_syscall == 'io_getevents':
+                      # or current_syscall == 'semtimedop' and str(fields_dict['comm'], 'utf-8').startswith('oracle'): # oracle example
                     outv = state + state_suffix
                 else:
                     save_record = False
@@ -212,7 +217,10 @@ while True:
             elif field_name == 'syscall':
                 outv = current_syscall
             elif field_name == 'username':
-                outv = get_username(f['uid'])
+                outv = get_username(fields_dict['uid']) 
+            elif field_name.endswith('stack'):
+                val = fields_dict[field_name]
+                outv = val if val else '-'
             else:
                 val = fields_dict[field_name]
                 if isinstance(val, bytes):
@@ -227,63 +235,9 @@ while True:
 
     print_fields(output_records, output_fields)
 
+    
+    # platform.release().split('-')[0] + " Linux " + platform.machine() + " " 
 
-# print_fields(ts, fields_dict, output_fields, ['R', 'RQ',  'D', 'Z'])
-# for r in output_records: print(r)
-
-# def print_fields(ts, f, fieldlist, states = ['R','D']):
-#     out = ts[:-3]
-#     current_syscall = syscall_id_to_name.get(f['syscall_id'], '-') if f['syscall_set'] else '-'
-#     in_sched_wakeup = f['in_sched_wakeup']
-#     running_on_cpu = f['running_on_cpu']
-# 
-#     for fn in fieldlist:
-#         if fn == 'state':
-#             state = get_task_state_name(f[fn])
-#             # for scheduling latency/preempted tasks (RQ)
-#             if state == 'R' and not running_on_cpu:
-#                 state += 'Q' 
-#             if state in states or current_syscall == 'io_getevents': # for async io demo
-#                 out += "," + state
-#             else:
-#                 return
-#         elif fn == 'syscall':
-#             out += "," + current_syscall
-#         elif fn == 'username':
-#             out += "," + get_username(f['uid'])
-#         else:
-#             val = f[fn]
-#             if isinstance(val, bytes):
-#                 out += "," + str(val, 'utf-8')
-#             else:
-#                 out += "," + str(val)
-# 
-#     if out: print(out)
-
-
-
-# def return_task_state(s):
-#     if s & TASK_NOLOAD:          return 'I' # kthread idle (usually 0x402)
-#     if s == TASK_RUNNING:        return 'R'
-#     if s & TASK_INTERRUPTIBLE:   return 'S'
-#     if s & TASK_UNINTERRUPTIBLE: return 'D'
-#     if s & TASK_STOPPED:         return 'T'
-#     if s & TASK_TRACED:          return 't'
-#     # TODO add other states too
-#     return '{:x}'.format(s)
-
-    #for f in i[1]._fields_:
-    #    fieldname = f[0]
-    #    if fieldname[0:5] != "__pad":
-    #        value = getattr(i[1], fieldname, '-')
-    #        if isinstance(value, bytes):
-    #            out += "%-20s " % fieldname.upper()
-    #        else:
-    #            out += "%-18s " % fieldname.upper()
-
-    #print(out)
-
- 
     ## print data
     #for i in tsa.items():
 
@@ -367,6 +321,10 @@ while True:
     #                    line += "->" + b.ksym(addr).decode('utf-8', 'replace')
 
     #            print(line)
+
+
+    # def print_header(fieldlist):
+    #     print('TIMESTAMP,' + ','.join(fieldlist).upper())
 
     print()
     elapsed_time = time.time() - start_time
