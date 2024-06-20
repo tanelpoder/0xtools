@@ -6,18 +6,18 @@ import time
 import ctypes
 import platform
 
-from bcc import BPF, PerfType, PerfSWConfig
 from datetime import datetime
+from bcc import BPF, PerfType, PerfSWConfig
+
+# default output fields
+output_fields = [ 'timestamp', 'state', 'tid', 'pid', 'username', 'comm', 'syscall'
+                 ,'syscall_ustack', 'offcpu_ustack', 'offcpu_kstack'
+                 ,'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
 
 
-
-### syscall ###
+# syscall id to name translation 
 def extract_system_call_ids(unistd_64_fh):
     syscall_id_to_name = {}
-
-    # examples from a unistd.h file
-    #  #define __NR_mount 40
-    #  #define __NR3264_truncate 45
 
     # strip 3264bit prefixes from syscall names
     for name_prefix in ['__NR_', '__NR3264_']:
@@ -32,7 +32,6 @@ def extract_system_call_ids(unistd_64_fh):
 
     return syscall_id_to_name
 
-# syscall id to name translation 
 def get_system_call_names():
     psn_dir=os.path.dirname(os.path.realpath(__file__))
     kernel_ver=platform.release().split('-')[0]
@@ -53,10 +52,11 @@ def get_system_call_names():
             pass
 
     raise Exception('unistd_64.h not found in' + ' or '.join(unistd_64_paths) + '.\n' +
-                    '           You may need to "yum install kernel-headers" or "apt-get install libc6-dev"\n') 
+                    '           You may need to "dnf install kernel-headers" or "apt-get install libc6-dev"\n') 
 
 # syscall lookup table
 syscall_id_to_name = get_system_call_names()
+
 
 # task states
 TASK_RUNNING           =   0x00000000
@@ -77,7 +77,7 @@ TASK_NOLOAD            =   0x00000400
 TASK_NEW               =   0x00000800
 TASK_RTLOCK_WAIT       =   0x00001000
 TASK_FREEZABLE         =   0x00002000
-#__TASK_FREEZABLE_UNSAFE=   (0x00004000 * IS_ENABLED(CONFIG_LOCKDEP))
+TASK_FREEZABLE_UNSAFE  =   0x00004000 # depends on: IS_ENABLED(CONFIG_LOCKDEP)
 TASK_FROZEN            =   0x00008000
 TASK_STATE_MAX         =   0x00010000
 
@@ -129,40 +129,32 @@ def get_username(uid):
 def print_header(fieldlist):
     print('TIMESTAMP,' + ','.join(fieldlist).upper())
 
-def print_fields(ts, f, fieldlist, states = ['R','D']):
-    out = ts[:-3]
-    current_syscall = syscall_id_to_name.get(f['syscall_id'], '-')
-    in_sched_wakeup = f['in_sched_wakeup']
-    running_on_cpu = f['running_on_cpu']
 
-    for fn in fieldlist:
-        if fn == 'state':
-            state = get_task_state_name(f[fn])
-            # for scheduling latency/preempted tasks (RQ)
-            if state == 'R' and not running_on_cpu:
-                state += 'Q' 
-            if state in states or current_syscall == 'io_getevents': # for async io demo
-                out += "," + state
-            else:
-                return
-        elif fn == 'syscall':
-            out += "," + current_syscall
-        elif fn == 'username':
-            out += "," + get_username(f['effective_uid'])
-        else:
-            val = f[fn]
-            if isinstance(val, bytes):
-                out += "," + str(val, 'utf-8')
-            else:
-                out += "," + str(val)
+def print_fields(rows, columns):
+    columns = [col.rstrip() for col in columns]
+    col_widths = {}
+    # column width auto-sizing
+    for col in columns:
+        col_length = len(col)
+        max_value_length = max((len(str(row[col])) for row in rows if col in row), default=0)
+        col_widths[col] = max(col_length, max_value_length)
 
-    if out: print(out)
+    header = "=== Active Threads ==================================================\n\n"
+    header += " | ".join(f"{col:<{col_widths[col]}}" for col in columns)
+    print(header)
+    print("-" * len(header))
+
+    # Print the rows
+    for row in rows:
+        line = " | ".join(f"{str(row[col]):<{col_widths[col]}}" if col in row else ' ' * col_widths[col] for col in columns)
+        print(line)
 
 
 # main()
 with open('xcapture.bcc', 'r') as file:
     bpf_text = file.read()
 
+print('Loading BPF...')
 b = BPF(text=bpf_text)
 
 # Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events 
@@ -173,33 +165,101 @@ b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
 
 # get own pid so to not display it in output
 mypid = os.getpid()
-print(f"mypid={mypid}")
+print(f"Ready (mypid={mypid})")
 
-# start sampling the Thread State Array
-print("Working...")                 
+
+#### main ###
+time.sleep(1.1)
+# start sampling the Task State Array
 tsa = b.get_table("tsa")
-
-output_fields = [ 'state', 'tid', 'pid', 'username', 'comm', 'syscall'
-                 ,'syscall_ustack', 'offcpu_ustack', 'offcpu_kstack'
-                 ,'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
 
 while True:
     start_time = time.time()
-
-    # map of stack_ids seen so far
-    output_kstack = {}
+    output_kstack = {} # map of stack_ids seen so far
     output_ustack = {}
-
-    # print header
-    print_header(output_fields)
+    output_records = []
 
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
     i = tsa.items()[0]
 
     for i in tsa.items():
+        save_record = True
         # extract python values from BPF ctypes, return '-' if there's no match
         fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
-        print_fields(ts, fields_dict, output_fields, ['R', 'RQ',  'D', 'Z'])
+        
+        current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
+        in_sched_wakeup = fields_dict['in_sched_wakeup']
+        running_on_cpu  = fields_dict['running_on_cpu']
+
+        enriched_fields = {"timestamp": ts[:-3]}
+
+        for field_name in fields_dict:
+            outv = None # enriched value
+
+            # for now the field enrichment and record filtering logic is combined here as it's simple enough
+            if field_name == 'state':
+                state_suffix = ''
+                state = get_task_state_name(fields_dict[field_name])
+                # for scheduling latency/preempted tasks (RQ)
+                if state == 'R' and not running_on_cpu:
+                    state_suffix = 'Q'
+                if state in ['R', 'D'] or current_syscall == 'io_getevents': # for async io demo
+                    outv = state + state_suffix
+                else:
+                    save_record = False
+                    break
+
+            elif field_name == 'syscall':
+                outv = current_syscall
+            elif field_name == 'username':
+                outv = get_username(f['uid'])
+            else:
+                val = fields_dict[field_name]
+                if isinstance(val, bytes):
+                    outv = str(val, 'utf-8')
+                else:
+                    outv = str(val)
+                
+            enriched_fields[field_name] = outv
+
+        if save_record:
+            output_records.append(enriched_fields)
+
+    print_fields(output_records, output_fields)
+
+
+# print_fields(ts, fields_dict, output_fields, ['R', 'RQ',  'D', 'Z'])
+# for r in output_records: print(r)
+
+# def print_fields(ts, f, fieldlist, states = ['R','D']):
+#     out = ts[:-3]
+#     current_syscall = syscall_id_to_name.get(f['syscall_id'], '-') if f['syscall_set'] else '-'
+#     in_sched_wakeup = f['in_sched_wakeup']
+#     running_on_cpu = f['running_on_cpu']
+# 
+#     for fn in fieldlist:
+#         if fn == 'state':
+#             state = get_task_state_name(f[fn])
+#             # for scheduling latency/preempted tasks (RQ)
+#             if state == 'R' and not running_on_cpu:
+#                 state += 'Q' 
+#             if state in states or current_syscall == 'io_getevents': # for async io demo
+#                 out += "," + state
+#             else:
+#                 return
+#         elif fn == 'syscall':
+#             out += "," + current_syscall
+#         elif fn == 'username':
+#             out += "," + get_username(f['uid'])
+#         else:
+#             val = f[fn]
+#             if isinstance(val, bytes):
+#                 out += "," + str(val, 'utf-8')
+#             else:
+#                 out += "," + str(val)
+# 
+#     if out: print(out)
+
 
 
 # def return_task_state(s):

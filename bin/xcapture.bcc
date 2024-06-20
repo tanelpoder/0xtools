@@ -44,7 +44,7 @@ struct thread_state_t {
     char orig_comm[TASK_COMM_LEN];
 
     u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
-    unsigned long syscall_args[6];
+    // unsigned long syscall_args[6];
 
     s32 offcpu_ustack; 
     s32 offcpu_kstack; 
