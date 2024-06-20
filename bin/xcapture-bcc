@@ -11,8 +11,8 @@ from bcc import BPF, PerfType, PerfSWConfig
 
 # default output fields
 output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall' 
-                 , 'offcpu_ustack', 'offcpu_kstack','in_sched_waking'
-                 , 'in_sched_wakeup', 'waker_tid' ]
+                 , 'offcpu_ustack', 'offcpu_kstack', 'profile_ustack', 'profile_kstack' 
+                 , 'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
 
 # syscall id to name translation 
 def extract_system_call_ids(unistd_64_fh):
@@ -149,6 +149,82 @@ def print_fields(rows, columns):
         print(line)
 
 
+# for stack trace extraction from BPF struct
+class Data(ctypes.Structure):
+    _fields_ = [
+        ("stack_id", ctypes.c_int),
+        ("pid", ctypes.c_ulong),
+    ]
+
+def get_ustack_traces(ustack_traces):
+    lines = []
+
+    for stack_id, pid in output_ustack:
+        if stack_id > 0:
+            line = f"ustack {stack_id:7}: ->"
+            stack = list(ustack_traces.walk(stack_id))
+            for addr in reversed(stack):
+                func = b.sym(addr, pid).decode('utf-8', 'replace')
+                line += "->" + (func if func != '[unknown]' else '{:x}'.format(addr))
+
+            lines.append(line)
+
+    return lines
+
+def get_kstack_traces(kstack_traces):
+    exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call', 'ret_from_fork_asm', 'ret_from_fork']
+    lines = []
+ 
+    for k, v in kstack_traces.items():
+        stack_id = k.value
+        if stack_id in output_kstack:
+            line = f"kstack {stack_id:7}: ->"
+            if stack_id >= 0:
+                stack = list(kstack_traces.walk(stack_id))
+                for addr in reversed(stack):
+                    func = b.ksym(addr).decode('utf-8', 'replace')
+                    if func not in exclusions:
+                        line += "->" + b.ksym(addr).decode('utf-8', 'replace')
+
+                lines.append(line)
+        
+    return lines
+
+
+def pivot_stack_traces(traces):
+    pivoted_traces = []
+    for trace in traces:
+        parts = trace.split("->")
+        pivoted_traces.append(parts)
+    
+    max_length = max(len(trace) for trace in pivoted_traces)
+    for trace in pivoted_traces:
+        while len(trace) < max_length:
+            trace.append("")
+    
+    return pivoted_traces
+
+def print_side_by_side(traces, max_columns=1):
+    pivoted_traces = pivot_stack_traces(traces[:max_columns])
+    max_length = max(len(part) for trace in pivoted_traces for part in trace)
+    
+    for row in zip(*pivoted_traces):
+        print(" | ".join(f"{part:<{max_length}}" for part in row))
+
+def print_side_by_side_with_wrapping(traces, max_columns=1):
+    num_traces = len(traces)
+    for start in range(0, num_traces, max_columns):
+        end = min(start + max_columns, num_traces)
+        subset_traces = traces[start:end]
+        pivoted_traces = pivot_stack_traces(subset_traces)
+        max_length = max(len(part) for trace in pivoted_traces for part in trace)
+        
+        for row in zip(*pivoted_traces):
+            print(" | ".join(f"{part:<{max_length}}" for part in row))
+        print("-" * 131)
+
+
+
 # main()
 with open('xcapture.bcc', 'r') as file:
     bpf_text = file.read()
@@ -171,6 +247,10 @@ print(f"Ready (mypid={mypid})")
 time.sleep(1.1)
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
+ustackmap = b.get_table("ustackmap")
+kstackmap = b.get_table("kstackmap")
+
+
 
 while True:
     start_time = time.time()
@@ -186,7 +266,10 @@ while True:
         # extract python values from BPF ctypes, return '-' if there's no match
         fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
 
-        # additional fields for human readable info population
+        if fields_dict['tid'] == mypid:
+            continue
+
+        # additional fields for adding human readable info
         fields_dict['st'] = ''
         fields_dict['state_flags'] = '' # full scheduler state bitmap
         fields_dict['username'] = ''
@@ -216,11 +299,20 @@ while True:
 
             elif field_name == 'syscall':
                 outv = current_syscall
+
             elif field_name == 'username':
                 outv = get_username(fields_dict['uid']) 
-            elif field_name.endswith('stack'):
+
+            elif field_name.endswith('_kstack'):
                 val = fields_dict[field_name]
                 outv = val if val else '-'
+                output_kstack[val] = True
+
+            elif field_name.endswith("_ustack"):
+                val = fields_dict[field_name]
+                outv = val if val else '-'
+                output_ustack[val, fields_dict['tid']] = True  # stackid, pid
+
             else:
                 val = fields_dict[field_name]
                 if isinstance(val, bytes):
@@ -234,101 +326,26 @@ while True:
             output_records.append(enriched_fields)
 
     print_fields(output_records, output_fields)
-
-    
-    # platform.release().split('-')[0] + " Linux " + platform.machine() + " " 
-
-    ## print data
-    #for i in tsa.items():
-
-    #    out = ""
-    #    for f in i[1]._fields_:
-    #        fieldname = f[0]
-    #        if fieldname[0:5] != "__pad":
-    #            value = getattr(i[1], fieldname, '-')
-    #           
-    #            if fieldname == "state":
-    #                state = return_task_state(int(value))
-    #                if state in ['R','D']:
-    #                    out += "%-1s %-17x" % (state, int(value))
-    #                else:
-    #                    break
-    #            elif isinstance(value, bytes):
-    #                out += "%-20s " % (str(value, 'utf-8'))
-    #            else:
-    #                if fieldname == "syscall_id":
-    #                    if getattr(i[1], "syscall_set"):
-    #                        out += "%-19s" % syscall_id_to_name.get(str(value), '-')
-    #                    else:
-    #                        out += "%-19s" % '-'
-    #                else:
-    #                    if abs(value) >= 2**31-1:
-    #                        out += "0x%-16x " % (value)
-    #                    else:
-    #                        out += "%-16d   " % (value)
-    #                
-    #                if fieldname.endswith("_kstack"):
-    #                    output_kstack[value] = True
-
-    #                # this is used in a later iteration for _ustack fields below
-    #                if fieldname == "pid":
-    #                    pid = value
-
-    #                if fieldname.endswith("_ustack"):
-    #                    # stackid, pid
-    #                    output_ustack[value, pid] = True
-
-    #    if state in ['R','D']: print(out)
-
-    ## bail out here if don't want stack traces in the output
-    ## continue
-
-    ## print stack traces
-    #class Data(ctypes.Structure):
-    #    _fields_ = [
-    #        ("stack_id", ctypes.c_int),
-    #        ("pid", ctypes.c_ulong),
-    #    ]
-
-    #kstack_traces = b.get_table("kstackmap")
-    #exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call', 'ret_from_fork_asm', 'ret_from_fork']
-
-    #print()
-    #ustack_traces = b.get_table("ustackmap")
-
-    #for stack_id, pid in output_ustack:
-    #    if stack_id > 0:
-    #        print(f"ustack {stack_id:7} ", end="")
-    #        stack = list(ustack_traces.walk(stack_id))
-    #        line = ""
-    #        for addr in reversed(stack):
-    #            func = b.sym(addr, pid).decode('utf-8', 'replace')
-    #            line += "->" + (func if func != '[unknown]' else '{:x}'.format(addr))
-
-    #        print(line)
- 
-    #print()
-    #for k, v in kstack_traces.items():
-    #    stack_id = k.value
-    #    if stack_id in output_kstack:
-    #        print(f"kstack {stack_id:7} ", end="")
-    #        if stack_id >= 0:
-    #            stack = list(kstack_traces.walk(stack_id))
-    #            line = ""
-    #            for addr in reversed(stack):
-    #                func = b.ksym(addr).decode('utf-8', 'replace')
-    #                if func not in exclusions:
-    #                    line += "->" + b.ksym(addr).decode('utf-8', 'replace')
-
-    #            print(line)
-
-
-    # def print_header(fieldlist):
-    #     print('TIMESTAMP,' + ','.join(fieldlist).upper())
-
     print()
+
+    #for s in get_kstack_traces(kstackmap): 
+    #    print(s)
+    print_side_by_side_with_wrapping(get_kstack_traces(kstackmap), 3)
+    print()
+
+    #for s in get_ustack_traces(ustackmap):
+    #    print(s)
+    print_side_by_side_with_wrapping(get_ustack_traces(ustackmap), 2)
+    print()
+
     elapsed_time = time.time() - start_time
     sleep_time = max(0, 5 - elapsed_time)
     time.sleep(sleep_time)
 
 # That's all, folks!
+
+
+# platform.release().split('-')[0] + " Linux " + platform.machine() + " " 
+
+# def print_header(fieldlist):
+#     print('TIMESTAMP,' + ','.join(fieldlist).upper())
