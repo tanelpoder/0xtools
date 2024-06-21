@@ -178,7 +178,7 @@ def get_kstack_traces(kstack_traces):
     for k, v in kstack_traces.items():
         stack_id = k.value
         if stack_id in output_kstack:
-            line = f"kstack {stack_id:7} ->"
+            line = f"kstack {stack_id} ->"
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
                 for addr in reversed(stack):
