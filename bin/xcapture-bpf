@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, pwd, time, ctypes, platform, re
+import os, pwd, time, ctypes, platform, re, shutil
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
@@ -427,8 +427,8 @@ while True:
 
     if output_records:
         print_fields(output_records, output_fields)
-    print()
-    print()
+        print()
+        print()
 
     #for s in get_kstack_traces(kstackmap): 
     #    print(s)
@@ -438,7 +438,9 @@ while True:
 
     #for s in get_ustack_traces(ustackmap):
     #    print(s)
-    print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=150)
+
+    (term_width, term_height) = shutil.get_terminal_size()
+    print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=term_width)
     print()
 
     elapsed_time = time.time() - start_time
@@ -449,6 +451,5 @@ while True:
 
 
 # platform.release().split('-')[0] + " Linux " + platform.machine() + " " 
-
 # def print_header(fieldlist):
 #     print('TIMESTAMP,' + ','.join(fieldlist).upper())
