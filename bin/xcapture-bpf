@@ -440,14 +440,8 @@ while True:
         print()
         print()
 
-    #for s in get_kstack_traces(kstackmap): 
-    #    print(s)
-    #print_side_by_side_with_wrapping(get_kstack_traces(kstackmap), 3)
-
-
-    #for s in get_ustack_traces(ustackmap):
-    #    print(s)
-
+    #for s in get_kstack_traces(kstackmap): print(s)
+    #for s in get_ustack_traces(ustackmap): print(s)
 
     elapsed_time = time.time() - start_time
     sleep_time = max(0, 5 - elapsed_time)
