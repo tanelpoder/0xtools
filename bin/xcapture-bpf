@@ -425,11 +425,14 @@ while True:
         if save_record:
             output_records.append(enriched_fields)
 
+
     # printing stack postiles first, so the task state info is in the bottom of terminal output
-    print_pivoted_dynamic(get_kstack_traces(kstackmap), max_line_length=150)
+    (term_width, term_height) = shutil.get_terminal_size()
+
+    print_pivoted_dynamic(get_kstack_traces(kstackmap), max_line_length=term_width)
     print()
 
-    print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=150)
+    print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=term_width)
     print()
 
     if output_records:
@@ -445,7 +448,6 @@ while True:
     #for s in get_ustack_traces(ustackmap):
     #    print(s)
 
-    # (term_width, term_height) = shutil.get_terminal_size()
 
     elapsed_time = time.time() - start_time
     sleep_time = max(0, 5 - elapsed_time)

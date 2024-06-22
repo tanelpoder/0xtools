@@ -197,4 +197,5 @@ END {
 // storing each thread's complete state in a single thread state "array", under a single TID key.
 // This should reduce any timing & "read consistency" issues when sampling/emitting records too.
 //
-//# vi:syntax=c
+/* vi:syntax=c */
+/* vi:filetype=c */
