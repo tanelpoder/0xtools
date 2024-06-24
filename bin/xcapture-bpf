@@ -124,11 +124,11 @@ def get_username(uid):
 
 
 def print_fields(rows, columns):
-    columns = [col.rstrip() for col in columns]
+    columns = [col.rstrip() for col in columns] # strip as colname might have extra spaces passed in for width/formatting
     col_widths = {}
     # column width auto-sizing
     for col in columns:
-        col_length = len(col)
+        col_length = len(col) # the col may have extra trailing spaces as a formatting directive
         max_value_length = max((len(str(row[col])) for row in rows if col in row), default=0)
         col_widths[col] = max(col_length, max_value_length)
 
@@ -141,7 +141,7 @@ def print_fields(rows, columns):
 
     for row in rows:
         line = " | ".join(
-            f"{str(row[col]):>{col_widths[col]}}" if col in ["samples", "avg_threads"] else f"{str(row[col]):<{col_widths[col]}}"
+            f"{row[col]:>{col_widths[col]}.2f}" if col in ["samples", "avg_threads"] else f"{str(row[col]):<{col_widths[col]}}"
             if col in row else ' ' * col_widths[col] for col in columns
         )
         print(line)
@@ -436,6 +436,7 @@ while True:
         print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=term_width)
         print()
 
+        # regular nerd mode
         #for s in get_kstack_traces(kstackmap): print(s)
         #for s in get_ustack_traces(ustackmap): print(s)
 
