@@ -320,7 +320,7 @@ def group_by(records, column_names):
 
 
 # main()
-with open('xcapture.bcc', 'r') as file:
+with open('xcapture-bpf.c', 'r') as file:
     bpf_text = file.read()
 
 print('Loading BPF...')
