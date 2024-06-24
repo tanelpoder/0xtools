@@ -36,7 +36,7 @@ BPF_STACK_TRACE(kstackmap, 131072);
 BPF_STACK_TRACE(ustackmap, 131072);
 
 struct thread_state_t {
-    u32 state;
+    u32 state; // scheduler state
     u32 flags; // PF_ flags
     u32 tid;
     u32 pid;
@@ -45,7 +45,7 @@ struct thread_state_t {
     char orig_comm[TASK_COMM_LEN];
 
     u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
-    // unsigned long syscall_args[6];
+    // unsigned long syscall_args[6]; // IBM s390x port has only 5 syscall args
 
     s32 offcpu_ustack; 
     s32 offcpu_kstack; 
