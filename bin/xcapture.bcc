@@ -111,8 +111,8 @@ TRACEPOINT_PROBE(raw_syscalls, sys_exit) {
     struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
     if (!t) return 0;
 
-    // t->syscall_id = t->syscall_id * -1; // switch the syscall_id to its negative value on exit
-    // t->syscall_ustack = t->syscall_ustack * -1; 
+    t->syscall_id = t->syscall_id * -1; // switch the syscall_id to its negative value on exit
+    t->syscall_ustack = t->syscall_ustack * -1; 
 
     tsa.update(&tid, t);
 
