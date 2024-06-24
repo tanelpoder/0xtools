@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os, pwd, time, ctypes, platform, re, shutil
+from collections import defaultdict
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
@@ -323,6 +324,18 @@ def print_pivoted_dynamic(traces, max_line_length):
 #         print("\n" + "-"*max_line_length + "\n")
 
 
+# group by for reporting
+def group_by(records, column_names):
+    grouped_data = defaultdict(lambda: {'count': 0})
+
+    for record in records:
+        key = tuple(record[col] for col in column_names)
+        if key not in grouped_data:
+            grouped_data[key].update({col: record[col] for col in column_names})
+        grouped_data[key]['count'] += 1
+
+    return list(grouped_data.values())
+
 
 # main()
 with open('xcapture.bcc', 'r') as file:
@@ -425,7 +438,6 @@ while True:
         if save_record:
             output_records.append(enriched_fields)
 
-
     # printing stack postiles first, so the task state info is in the bottom of terminal output
     (term_width, term_height) = shutil.get_terminal_size()
 
@@ -436,7 +448,14 @@ while True:
     print()
 
     if output_records:
-        print_fields(output_records, output_fields)
+        #print_fields(group_by(output_records, output_fields), ['count'] + output_fields)
+        groupby_fields = ['st', 'username', 'comm', 'syscall'
+                          , 'offcpu_ustack', 'offcpu_kstack' ]
+
+        grouped_list = group_by(output_records, groupby_fields) # a new field "count" shows up
+        ordered_aggr = sorted(grouped_list, key=lambda x: x['count'], reverse=True)
+        print_fields(ordered_aggr, ['count'] + groupby_fields)
+        
         print()
         print()
 
