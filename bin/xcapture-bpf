@@ -139,18 +139,14 @@ def print_fields(rows, columns):
     print(header2)
     print("-" * len(header2))
 
-    # Print the rows
     for row in rows:
-        line = " | ".join(f"{str(row[col]):<{col_widths[col]}}" if col in row else ' ' * col_widths[col] for col in columns)
+        line = " | ".join(
+            f"{str(row[col]):>{col_widths[col]}}" if col in ["samples", "avg_threads"] else f"{str(row[col]):<{col_widths[col]}}"
+            if col in row else ' ' * col_widths[col] for col in columns
+        )
         print(line)
 
 
-# for stack trace extraction from BPF struct
-class Data(ctypes.Structure):
-    _fields_ = [
-        ("stack_id", ctypes.c_int),
-        ("pid", ctypes.c_ulong),
-    ]
 
 def get_ustack_traces(ustack_traces, strip_args=True):
     exclusions = ['__GI___clone3']
@@ -204,26 +200,6 @@ def pivot_stack_traces(traces):
             trace.append("")
     
     return pivoted_traces
-
-def print_side_by_side(traces, max_columns=1):
-    pivoted_traces = pivot_stack_traces(traces[:max_columns])
-    max_length = max(len(part) for trace in pivoted_traces for part in trace)
-    
-    for row in zip(*pivoted_traces):
-        print(" | ".join(f"{part:<{max_length}}" for part in row))
-
-def print_side_by_side_with_wrapping(traces, max_columns=1):
-    num_traces = len(traces)
-    for start in range(0, num_traces, max_columns):
-        end = min(start + max_columns, num_traces)
-        subset_traces = traces[start:end]
-        pivoted_traces = pivot_stack_traces(subset_traces)
-        max_length = max(len(part) for trace in pivoted_traces for part in trace)
-        
-        print("-" * 131)
-        for row in zip(*pivoted_traces):
-            print(" | ".join(f"{part:<{max_length}}" for part in row))
-
 
 def calculate_columns(pivoted_traces, max_line_length):
     max_length = max(len(part) for trace in pivoted_traces for part in trace)
