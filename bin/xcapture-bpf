@@ -326,15 +326,21 @@ def print_pivoted_dynamic(traces, max_line_length):
 
 # group by for reporting
 def group_by(records, column_names):
-    grouped_data = defaultdict(lambda: {'count': 0})
+    grouped_data = defaultdict(lambda: {'samples': 0})
 
     for record in records:
         key = tuple(record[col] for col in column_names)
         if key not in grouped_data:
             grouped_data[key].update({col: record[col] for col in column_names})
-        grouped_data[key]['count'] += 1
+        grouped_data[key]['samples'] += 1
 
-    return list(grouped_data.values())
+    total_records = len(records)
+    grouped_list = list(grouped_data.values())
+
+    for item in grouped_list:
+        item['avg_threads'] = round(item['samples'] / total_records, 2)
+
+    return grouped_list
 
 
 # main()
@@ -365,106 +371,107 @@ kstackmap = b.get_table("kstackmap")
 
 
 while True:
-    start_time = time.time()
     output_kstack = {} # map of stack_ids seen so far
     output_ustack = {}
     output_records = []
+    sample_time = time.time()
 
-    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-    i = tsa.items()[0]
+    for sample_count in range(1,10): 
 
-    for i in tsa.items():
-        save_record = True
-        # extract python values from BPF ctypes, return '-' if there's no match
-        fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        i = tsa.items()[0]
 
-        if fields_dict['tid'] == mypid:
-            continue
+        for i in tsa.items():
+            save_record = True
+            # extract python values from BPF ctypes, return '-' if there's no match
+            fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
 
-        # additional fields for adding human readable info
-        fields_dict['st'] = ''
-        fields_dict['state_flags'] = '' # full scheduler state bitmap
-        fields_dict['username'] = ''
-        fields_dict['syscall'] = '' 
+            if fields_dict['tid'] == mypid:
+                continue
+
+            # additional fields for adding human readable info
+            fields_dict['st'] = ''
+            fields_dict['state_flags'] = '' # full scheduler state bitmap
+            fields_dict['username'] = ''
+            fields_dict['syscall'] = '' 
  
-        current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
-        in_sched_wakeup = fields_dict['in_sched_wakeup']
-        running_on_cpu  = fields_dict['running_on_cpu']
+            current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
+            in_sched_wakeup = fields_dict['in_sched_wakeup']
+            running_on_cpu  = fields_dict['running_on_cpu']
 
-        enriched_fields = {"timestamp": ts[:-3]}
+            enriched_fields = {"timestamp": ts[:-3]}
 
-        for field_name in fields_dict:
-            outv = None # enriched value
+            for field_name in fields_dict:
+                outv = None # enriched value
 
-            if field_name in ['state', 'st']:
-                state_suffix = ''
-                state = get_task_state_name(fields_dict['state'])
-                # for scheduling latency/preempted tasks (RQ)
-                if state == 'R' and not running_on_cpu:
-                    state_suffix = 'Q'
-                if state in ['R', 'D'] or current_syscall == 'io_getevents':
-                      # or current_syscall == 'semtimedop' and str(fields_dict['comm'], 'utf-8').startswith('oracle'): # oracle example
-                    outv = state + state_suffix
+                if field_name in ['state', 'st']:
+                    state_suffix = ''
+                    state = get_task_state_name(fields_dict['state'])
+                    # for scheduling latency/preempted tasks (RQ)
+                    if state == 'R' and not running_on_cpu:
+                        state_suffix = 'Q'
+                    if state in ['R', 'D'] or current_syscall == 'io_getevents':
+                          # or current_syscall == 'semtimedop' and str(fields_dict['comm'], 'utf-8').startswith('oracle'): # oracle example
+                        outv = state + state_suffix
+                    else:
+                        save_record = False
+                        break
+
+                elif field_name == 'syscall':
+                    outv = current_syscall
+
+                elif field_name == 'username':
+                    outv = get_username(fields_dict['uid']) 
+
+                elif field_name.endswith('_kstack'):
+                    val = fields_dict[field_name]
+                    outv = val if val else '-'
+                    output_kstack[val] = True
+
+                elif field_name.endswith("_ustack"):
+                    val = fields_dict[field_name]
+                    outv = val if val else '-'
+                    output_ustack[val, fields_dict['pid']] = True  # stackid, pid
+
                 else:
-                    save_record = False
-                    break
+                    val = fields_dict[field_name]
+                    if isinstance(val, bytes):
+                        outv = str(val, 'utf-8')
+                    else:
+                        outv = str(val)
+                    
+                enriched_fields[field_name] = outv
 
-            elif field_name == 'syscall':
-                outv = current_syscall
+            if save_record:
+                output_records.append(enriched_fields)
 
-            elif field_name == 'username':
-                outv = get_username(fields_dict['uid']) 
+        elapsed_time = time.time() - sample_time
+        sleep_time = max(0, 5 - elapsed_time)
+        time.sleep(sleep_time)
 
-            elif field_name.endswith('_kstack'):
-                val = fields_dict[field_name]
-                outv = val if val else '-'
-                output_kstack[val] = True
-
-            elif field_name.endswith("_ustack"):
-                val = fields_dict[field_name]
-                outv = val if val else '-'
-                #output_ustack[val, fields_dict['tid']] = True  # stackid, pid # todo
-                output_ustack[val, fields_dict['pid']] = True  # stackid, pid
-
-            else:
-                val = fields_dict[field_name]
-                if isinstance(val, bytes):
-                    outv = str(val, 'utf-8')
-                else:
-                    outv = str(val)
-                
-            enriched_fields[field_name] = outv
-
-        if save_record:
-            output_records.append(enriched_fields)
-
-    # printing stack postiles first, so the task state info is in the bottom of terminal output
-    (term_width, term_height) = shutil.get_terminal_size()
-
-    print_pivoted_dynamic(get_kstack_traces(kstackmap), max_line_length=term_width)
-    print()
-
-    print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=term_width)
-    print()
 
     if output_records:
-        #print_fields(group_by(output_records, output_fields), ['count'] + output_fields)
-        groupby_fields = ['st', 'username', 'comm', 'syscall'
-                          , 'offcpu_ustack', 'offcpu_kstack' ]
+        # printing stacktiles first, so the task state info is in the bottom of terminal output
+        (term_width, term_height) = shutil.get_terminal_size()
 
-        grouped_list = group_by(output_records, groupby_fields) # a new field "count" shows up
-        ordered_aggr = sorted(grouped_list, key=lambda x: x['count'], reverse=True)
-        print_fields(ordered_aggr, ['count'] + groupby_fields)
+        print_pivoted_dynamic(get_kstack_traces(kstackmap), max_line_length=term_width)
+        print()
+
+        print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=term_width)
+        print()
+
+        #for s in get_kstack_traces(kstackmap): print(s)
+        #for s in get_ustack_traces(ustackmap): print(s)
+
+        groupby_fields = ['st', 'username', 'comm', 'syscall', 'offcpu_ustack', 'offcpu_kstack' ]
+
+        grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
+        ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
+        print_fields(ordered_aggr, ['samples', 'avg_threads'] + groupby_fields)
         
         print()
         print()
 
-    #for s in get_kstack_traces(kstackmap): print(s)
-    #for s in get_ustack_traces(ustackmap): print(s)
-
-    elapsed_time = time.time() - start_time
-    sleep_time = max(0, 5 - elapsed_time)
-    time.sleep(sleep_time)
 
 # That's all, folks!
 
