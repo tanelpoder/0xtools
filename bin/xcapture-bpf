@@ -345,6 +345,9 @@ time.sleep(1.1)
 tsa = b.get_table("tsa")
 stackmap = b.get_table("stackmap")
 
+# replace digits in "comm" for better reporting/grouping
+trim_comm = re.compile('\d+')
+
 
 while True:
     output_kstack = {} # map of stack_ids seen so far
@@ -395,6 +398,15 @@ while True:
                     else:
                         save_record = False
                         break
+
+                elif field_name == 'comm':
+                    val = fields_dict[field_name]
+                    if isinstance(val, bytes):
+                        outv = str(val, DECODE_CHARSET)
+                    else:
+                        outv = str(val)
+
+                    outv = re.sub(trim_comm, '*', outv) 
 
                 elif field_name == 'syscall':
                     outv = current_syscall
