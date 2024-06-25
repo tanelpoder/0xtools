@@ -185,8 +185,7 @@ def get_ustack_traces(ustack_traces, strip_args=True):
 
     for stack_id, pid in output_ustack:
         if stack_id and stack_id >= 0:   # todo: find why we have Null/none stackids in this map
-            print("stack_id")
-            line = f"ustack {stack_id} ->"
+            line = f"ustack {stack_id:6} "
             stack = list(ustack_traces.walk(stack_id))
             for addr in reversed(stack):
                 func = b.sym(addr, pid).decode(DECODE_CHARSET, 'replace')
@@ -207,7 +206,7 @@ def get_kstack_traces(kstack_traces):
     for k, v in kstack_traces.items():
         stack_id = k.value
         if stack_id in output_kstack:
-            line = f"kstack {stack_id} ->"
+            line = f"kstack {stack_id:6} "
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
                 for addr in reversed(stack):
@@ -499,23 +498,25 @@ while True:
 
 
     if output_records:
-        # printing stacktiles first, so the task state info is in the bottom of terminal output
-        (term_width, term_height) = shutil.get_terminal_size()
+        if args.giant_nerd_mode:
+            # printing stacktiles first, so the task state info is in the bottom of terminal output
+            (term_width, term_height) = shutil.get_terminal_size()
 
-        print_pivoted_dynamic(get_kstack_traces(stackmap), max_line_length=term_width)
-        print()
+            print_pivoted_dynamic(get_kstack_traces(stackmap), max_line_length=term_width)
+            print()
 
-        print_pivoted_dynamic(get_ustack_traces(stackmap), max_line_length=term_width)
-        print()
+            print_pivoted_dynamic(get_ustack_traces(stackmap), max_line_length=term_width)
+            print()
 
-        # regular nerd mode
-        #for s in get_kstack_traces(stackmap): print(s)
-        #for s in get_ustack_traces(stackmap): print(s)
+        if args.nerd_mode:
+            # print stack as long line traces
+            for s in get_kstack_traces(stackmap): print(s)
+            for s in get_ustack_traces(stackmap): print(s)
 
-
-        grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
-        ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
-        print_fields(ordered_aggr, ['samples', 'avg_threads'] + groupby_fields)
+        if args.xtop:
+            grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
+            ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
+            print_fields(ordered_aggr, ['samples', 'avg_threads'] + groupby_fields)
         
         print()
         print()
