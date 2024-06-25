@@ -345,7 +345,7 @@ def group_by(records, column_names):
     grouped_list = list(grouped_data.values())
 
     for item in grouped_list:
-        item['avg_threads'] = round(item['samples'] / total_records, 2)
+        item['avg_threads'] = round(item['samples'] / (args.report_seconds * args.sample_hz), 2) # todo: div by "samples actually taken" cound
 
     return grouped_list
 
@@ -356,6 +356,8 @@ signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 # args 
 parser = argparse.ArgumentParser(description=__description__)
 parser.add_argument('-x', '--xtop', action='store_true', help='Run in aggregated top-thread-activity (xtop) mode')
+parser.add_argument('-d', dest="report_seconds", metavar='report_seconds', type=int, default=5, help='xtop report printing interval (default: %(default)ds)')
+parser.add_argument('-f', '--sample-hz', default=20, type=int, help='sampling frequency in Hz (default: %(default)d)')
 parser.add_argument('-g', '--group-by', metavar='csv-columns', default=DEFAULT_GROUP_BY, help='Full column list what to group by')
 parser.add_argument('-G', '--append-group-by', metavar='append-csv-columns', default=None, help='List of additional columns to default cols what to group by')
 parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out relevant stack traces as wide output lines')
@@ -402,6 +404,7 @@ b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
 mypid = os.getpid()
 print(f"Ready (mypid={mypid})")
 
+# wait a bit for ebpf (cpu profile) probes to populate the state array
 time.sleep(1.1)
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
@@ -412,9 +415,10 @@ while True:
     output_kstack = {} # map of stack_ids seen so far
     output_ustack = {}
     output_records = []
-    sample_time = time.time()
+    sample_start = time.time()
+    sample_until = sample_start + args.report_seconds
 
-    for sample_count in range(1,10): 
+    while time.time() < sample_until:
 
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         i = tsa.items()[0]
@@ -492,9 +496,7 @@ while True:
             if save_record:
                 output_records.append(enriched_fields)
 
-        elapsed_time = time.time() - sample_time
-        sleep_time = max(0, 5 - elapsed_time)
-        time.sleep(sleep_time)
+        time.sleep(1 / args.sample_hz)
 
 
     if output_records:
@@ -520,6 +522,10 @@ while True:
         
         print()
         print()
+
+    elapsed_time = time.time() - sample_start
+    #sleep_time = max(0, 5 - elapsed_time)
+    #time.sleep(sleep_time)
 
 
 # That's all, folks!
