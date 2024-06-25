@@ -264,72 +264,6 @@ def print_pivoted_dynamic(traces, max_line_length):
         
         start = end
 
-# def calculate_columns(pivoted_traces, max_line_length):
-#     max_length = max(len(part) for trace in pivoted_traces for part in trace)
-#     return max(1, max_line_length // (max_length + 3))
-# 
-# def print_pivoted_dynamic(traces, max_line_length):
-#     num_traces = len(traces)
-#     start = 0
-#     
-#     while start < num_traces:
-#         # Get the pivoted traces for the remaining stack traces
-#         pivoted_traces = pivot_stack_traces(traces[start:])
-#         num_columns = calculate_columns(pivoted_traces, max_line_length)
-#         
-#         # Ensure at least one column
-#         if num_columns == 0:
-#             num_columns = 1
-#         
-#         end = min(start + num_columns, num_traces)
-#         subset_traces = traces[start:end]
-#         pivoted_traces = pivot_stack_traces(subset_traces)
-#         
-#         for row in zip(*pivoted_traces):
-#             max_length = max(len(part) for part in row)
-#             print(" | ".join(f"{part:<{max_length}}" for part in row))
-#         
-#         print("\n" + "-" * max_line_length + "\n")
-#         start = end
-
-# THIS is ok
-
-# calculates the number of columns that fit max output line lenght for each output section
-# def print_pivoted_dynamic(traces, max_line_length=130):
-#     pivoted_traces = pivot_stack_traces(traces)
-#     max_length = max(len(part) for trace in pivoted_traces for part in trace)
-#     num_columns = max(1, max_line_length // (max_length + 3)) 
-# 
-#     num_traces = len(traces)
-#     for start in range(0, num_traces, num_columns):
-#         end = min(start + num_columns, num_traces)
-#         subset_traces = traces[start:end]
-#         pivoted_traces = pivot_stack_traces(subset_traces)
-# 
-#         # recalculate max columns for the current subset
-#         max_length = max(len(part) for trace in pivoted_traces for part in trace)
-#         num_columns = max(1, max_line_length // (max_length + 3))
-# 
-#         for row in zip(*pivoted_traces):
-#             print(" | ".join(f"{part:<{max_length}}" for part in row))
-#         print("\n" + "-"*max_line_length + "\n")
-
-
-# def print_pivoted_dynamic(traces, max_line_length=130):
-#     pivoted_traces = pivot_stack_traces(traces)
-#     max_length = max(len(part) for trace in pivoted_traces for part in trace)
-#     num_columns = max(1, max_line_length // (max_length + 3))  # Calculate number of columns that fit within the max_line_length
-# 
-#     num_traces = len(traces)
-#     for start in range(0, num_traces, num_columns):
-#         end = min(start + num_columns, num_traces)
-#         subset_traces = traces[start:end]
-#         pivoted_traces = pivot_stack_traces(subset_traces)
-#         
-#         for row in zip(*pivoted_traces):
-#             print(" | ".join(f"{part:<{max_length}}" for part in row))
-#         print("\n" + "-"*max_line_length + "\n")
-
 
 # group by for reporting
 def group_by(records, column_names):
@@ -362,7 +296,8 @@ parser.add_argument('-g', '--group-by', metavar='csv-columns', default=DEFAULT_G
 parser.add_argument('-G', '--append-group-by', metavar='append-csv-columns', default=None, help='List of additional columns to default cols what to group by')
 parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out relevant stack traces as wide output lines')
 parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stack-tiles')
-parser.add_argument('-r', '--refresh', action='store_true', help='Clear screen before printing next output')
+parser.add_argument('-r', '--refresh', action='store_true', help='Clear screen before printing next output (TODO)')
+parser.add_argument('-w', '--wide', action='store_true', help='Wide raw formatted output of all samples and their fields')
 parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit')
 parser.add_argument('-o', '--output-dir', type=str, default=DEFAULT_PATH, help=f'Directory path where to write the output CSV files, default is {DEFAULT_PATH}')
 parser.add_argument('-l', '--list', default=None, action='store_true', help='list all available columns for display and grouping')
@@ -416,7 +351,7 @@ while True:
     output_ustack = {}
     output_records = []
     sample_start = time.time()
-    sample_until = sample_start + args.report_seconds
+    sample_until = sample_start + (args.report_seconds if args.xtop else 1) # todo: 1 Hz for raw/csv output for now
 
     while time.time() < sample_until:
 
@@ -496,7 +431,7 @@ while True:
             if save_record:
                 output_records.append(enriched_fields)
 
-        time.sleep(1 / args.sample_hz)
+        time.sleep(1 / (args.sample_hz if args.xtop else 1))
 
 
     if output_records:
@@ -519,18 +454,11 @@ while True:
             grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
             ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
             print_fields(ordered_aggr, ['samples', 'avg_threads'] + groupby_fields)
+        else: # wide raw output
+            print_fields(output_records, output_fields) 
         
         print()
         print()
 
-    elapsed_time = time.time() - sample_start
-    #sleep_time = max(0, 5 - elapsed_time)
-    #time.sleep(sleep_time)
-
 
 # That's all, folks!
-
-
-# platform.release().split('-')[0] + " Linux " + platform.machine() + " " 
-# def print_header(fieldlist):
-#     print('TIMESTAMP,' + ','.join(fieldlist).upper())
