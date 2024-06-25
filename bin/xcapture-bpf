@@ -184,7 +184,8 @@ def get_ustack_traces(ustack_traces, strip_args=True):
     lines = []
 
     for stack_id, pid in output_ustack:
-        if stack_id > 0:
+        if stack_id and stack_id >= 0:   # todo: find why we have Null/none stackids in this map
+            print("stack_id")
             line = f"ustack {stack_id} ->"
             stack = list(ustack_traces.walk(stack_id))
             for addr in reversed(stack):
@@ -464,14 +465,15 @@ while True:
                     outv = get_username(fields_dict['uid']) 
 
                 elif field_name.endswith('_kstack'):
-                    val = fields_dict[field_name]
+                    val = fields_dict[field_name] # <0 == kernel stack
                     outv = val if val else '-'
                     output_kstack[val] = True
 
                 elif field_name.endswith("_ustack"):
                     val = fields_dict[field_name]
                     outv = val if val else '-'
-                    output_ustack[val, fields_dict['pid']] = True  # stackid, pid
+                    # using pid/tgid here, address space is same for all threads in a process
+                    output_ustack[val, fields_dict['pid']] = True  
 
                 elif field_name == 'sch': 
                     # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
