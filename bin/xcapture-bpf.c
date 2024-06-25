@@ -46,18 +46,18 @@ struct thread_state_t {
     u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
     // unsigned long syscall_args[6]; // IBM s390x port has only 5 syscall args
 
-    s32 offcpu_ustack; 
-    s32 offcpu_kstack; 
-    s32 profile_ustack;
-    s32 profile_kstack;
-    s32 syscall_ustack;
+    s32 offcpu_u;   // offcpu ustack
+    s32 offcpu_k;   // offcpu kstack
+    s32 oncpu_u;    // cpu-profile ustack
+    s32 oncpu_k;    // cpu-profile kstack
+    s32 syscall_u;
 
     s32 waker_tid; // who invoked the waking of the target task
     bool in_sched_waking; // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
     bool in_sched_wakeup; // actual wakeup on target CPU starts
     bool is_running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
     s16 waking_syscall;
-    s32 waking_ustack;
+    s32 waking_u;
 
     //s32 oracle_wait_event;
 
@@ -93,7 +93,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     // t->syscall_arg3 = args->args[3];
     // t->syscall_arg4 = args->args[4];
     // t->syscall_arg5 = args->args[5];
-    // t->syscall_ustack = stackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+    // t->syscall_u = stackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
     tsa.update(&tid, t);
     return 0;
@@ -111,7 +111,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_exit) {
     if (!t) return 0;
 
     t->syscall_id = t->syscall_id * -1; // switch the syscall_id to its negative value on exit
-    t->syscall_ustack = t->syscall_ustack * -1; 
+    t->syscall_u = t->syscall_u * -1; 
 
     tsa.update(&tid, t);
 
@@ -138,8 +138,8 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
         t->state = curtask->__state;
 
-        t->profile_ustack = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-        t->profile_kstack = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t->oncpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&tid, t);
     }
@@ -245,11 +245,11 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->state = prev_state; // prev_state is passed in as an arg to sched_switch probe
 
         if (prev->flags & PF_KTHREAD) // kernel thread
-            t_prev->offcpu_ustack = t_prev->offcpu_ustack * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
+            t_prev->offcpu_u = t_prev->offcpu_u * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
         else
-            t_prev->offcpu_ustack = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
-        t_prev->offcpu_kstack = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t_prev->offcpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&prev_tid, t_prev);
     }

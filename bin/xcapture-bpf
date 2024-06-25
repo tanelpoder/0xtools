@@ -37,7 +37,7 @@ from bcc import BPF, PerfType, PerfSWConfig
 
 # default output fields for ungrouped full detail output
 output_fields = [ 'timestamp', 'st', 'flags', 'tid', 'pid', 'username', 'comm', 'syscall' 
-                 , 'offcpu_ustack', 'offcpu_kstack', 'profile_ustack', 'profile_kstack' 
+                 , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k' 
                  , 'in_sched_waking', 'in_sched_wakeup', 'waker_tid', 'sch' ]
 
 
@@ -464,12 +464,12 @@ while True:
                 elif field_name == 'username':
                     outv = get_username(fields_dict['uid']) 
 
-                elif field_name.endswith('_kstack'):
-                    val = fields_dict[field_name] # <0 == kernel stack
+                elif field_name.endswith('_k'):   # kstack id
+                    val = fields_dict[field_name]
                     outv = val if val else '-'
                     output_kstack[val] = True
 
-                elif field_name.endswith("_ustack"):
+                elif field_name.endswith("_u"):   # ustack id
                     val = fields_dict[field_name]
                     outv = val if val else '-'
                     # using pid/tgid here, address space is same for all threads in a process
