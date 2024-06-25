@@ -346,7 +346,7 @@ tsa = b.get_table("tsa")
 stackmap = b.get_table("stackmap")
 
 # replace digits in "comm" for better reporting/grouping
-trim_comm = re.compile('\d+')
+trim_comm = re.compile(r'\d+')
 
 
 while True:
