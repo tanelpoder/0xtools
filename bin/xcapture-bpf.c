@@ -56,7 +56,7 @@ struct thread_state_t {
     s32 waker_tid; // who invoked the waking of the target task
     bool in_sched_waking; // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
     bool in_sched_wakeup; // actual wakeup on target CPU starts
-    bool running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
+    bool is_running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
     s16 waking_syscall;
     s32 waking_ustack;
 
@@ -170,24 +170,24 @@ TRACEPOINT_PROBE(sched, sched_waking) {
 }
 
 // Context enrichment example (kernel): woken up task waiting in the CPU runqueue
-// TRACEPOINT_PROBE(sched, sched_wakeup) {
-// 
-//     struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
-//     struct thread_state_t t_empty = {};
-// 
-//     u32 tid_woken = args->pid;
-//  
-//     struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
-//     if (!t_being_waked_up) return 0;
-// 
-//     t_being_waked_up->in_sched_waking = 0;
-//     t_being_waked_up->in_sched_wakeup = 1;
-//     t_being_waked_up->tid = tid_woken;          // this guy is being woken up
-//     
-//     tsa.update(&tid_woken, t_being_waked_up);
-// 
-//     return 0;
-// }
+TRACEPOINT_PROBE(sched, sched_wakeup) {
+
+    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
+    struct thread_state_t t_empty = {};
+
+    u32 tid_woken = args->pid;
+ 
+    struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
+    if (!t_being_waked_up) return 0;
+
+    t_being_waked_up->in_sched_waking = 0;
+    t_being_waked_up->in_sched_wakeup = 1;
+    t_being_waked_up->tid = tid_woken;          // this guy is being woken up
+    
+    tsa.update(&tid_woken, t_being_waked_up);
+
+    return 0;
+}
 
 // newly started task woken up
 TRACEPOINT_PROBE(sched, sched_wakeup_new) {
@@ -231,8 +231,8 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     next_tid = next->pid;
     next_pid = next->tgid;
 
-    struct thread_state_t t_empty_prev = {0};
-    struct thread_state_t t_empty_next = {0};
+    struct thread_state_t t_empty_prev;
+    struct thread_state_t t_empty_next;
 
     // we don't want to capture/report the previous cpuidle "task" during actual task wakeups (tid 0)
     if (prev_tid) {
@@ -245,7 +245,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm); // BCC allows this syntax
 
         // switch finished, clear waking/wakeup flags
-        t_prev->running_on_cpu  = 0;
+        t_prev->is_running_on_cpu = 0;
         t_prev->in_sched_waking = 0;
         t_prev->in_sched_wakeup = 0;
         t_prev->state = prev_state; // prev_state is passed in as an arg to sched_switch probe
@@ -272,7 +272,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm); // BCC allows this syntax
 
         t_next->state = next->__state;
-        t_next->running_on_cpu = 1;
+        t_next->is_running_on_cpu = 1;
         t_next->in_sched_wakeup = 0;
 
         t_next->uid = next->cred->euid.val;

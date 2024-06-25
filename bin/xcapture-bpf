@@ -439,7 +439,7 @@ while True:
  
             current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
             in_sched_wakeup = fields_dict['in_sched_wakeup']
-            running_on_cpu  = fields_dict['running_on_cpu']
+            is_running_on_cpu  = fields_dict['is_running_on_cpu']
 
             enriched_fields = {"timestamp": ts[:-3]}
 
@@ -450,7 +450,7 @@ while True:
                     state_suffix = ''
                     state = get_task_state_name(fields_dict['state'])
                     # for scheduling latency/preempted tasks (RQ)
-                    if state == 'R' and not running_on_cpu:
+                    if state == 'R' and not is_running_on_cpu:
                         state_suffix = 'Q'
                     if state in ['R', 'D'] or current_syscall == 'io_getevents':
                           # or current_syscall == 'semtimedop' and str(fields_dict['comm'], 'utf-8').startswith('oracle'): # oracle example
