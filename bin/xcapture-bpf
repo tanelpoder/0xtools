@@ -49,7 +49,7 @@ def extract_system_call_ids(unistd_64_fh):
     for name_prefix in ['__NR_', '__NR3264_']:
         for line in unistd_64_fh.readlines():
             tokens = line.split()
-	    if tokens and len(tokens) == 3 and tokens[0] == '#define' and tokens[2].isnumeric() is True:
+            if tokens and len(tokens) == 3 and tokens[0] == '#define' and tokens[2].isnumeric() is True:
                 _, s_name, s_id = tokens
                 s_id = int(s_id)
                 if s_name.startswith(name_prefix):
