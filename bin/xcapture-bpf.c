@@ -31,7 +31,7 @@
 #define __BCC__
 #endif
 
-
+// need to consolidate & optimize these with BPF_HASH maps & 32bit stack_ids
 BPF_STACK_TRACE(kstackmap, 131072);
 BPF_STACK_TRACE(ustackmap, 131072);
 
