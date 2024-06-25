@@ -231,8 +231,8 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     next_tid = next->pid;
     next_pid = next->tgid;
 
-    struct thread_state_t t_empty_prev;
-    struct thread_state_t t_empty_next;
+    struct thread_state_t t_empty_prev = {0};
+    struct thread_state_t t_empty_next = {0};
 
     // we don't want to capture/report the previous cpuidle "task" during actual task wakeups (tid 0)
     if (prev_tid) {

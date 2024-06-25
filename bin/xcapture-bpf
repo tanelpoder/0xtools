@@ -27,7 +27,7 @@ __url__          = "https://0x.tools"
 
 DEFAULT_PATH     = "." # where to write xcapture -o output files
 DEFAULT_GROUP_BY = "st,username,comm" # for xtop mode
-
+DECODE_CHARSET   = "ascii"
 
 
 import os, sys, pwd, time, ctypes, platform, re, shutil, argparse, signal
@@ -38,7 +38,7 @@ from bcc import BPF, PerfType, PerfSWConfig
 # default output fields for ungrouped full detail output
 output_fields = [ 'timestamp', 'st', 'flags', 'tid', 'pid', 'username', 'comm', 'syscall' 
                  , 'offcpu_ustack', 'offcpu_kstack', 'profile_ustack', 'profile_kstack' 
-                 , 'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
+                 , 'in_sched_waking', 'in_sched_wakeup', 'waker_tid', 'sch' ]
 
 
 # syscall id to name translation (todo: fix aarch64 include file lookup)
@@ -188,7 +188,7 @@ def get_ustack_traces(ustack_traces, strip_args=True):
             line = f"ustack {stack_id} ->"
             stack = list(ustack_traces.walk(stack_id))
             for addr in reversed(stack):
-                func = b.sym(addr, pid).decode('utf-8', 'replace')
+                func = b.sym(addr, pid).decode(DECODE_CHARSET, 'replace')
                 if func not in exclusions:
                     if strip_args:
                         func = re.split('[<(]', func)[0]
@@ -210,9 +210,9 @@ def get_kstack_traces(kstack_traces):
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
                 for addr in reversed(stack):
-                    func = b.ksym(addr).decode('utf-8', 'replace')
+                    func = b.ksym(addr).decode(DECODE_CHARSET, 'replace')
                     if func not in exclusions and not func.startswith('bpf_'):
-                        line += "->" + b.ksym(addr).decode('utf-8', 'replace')
+                        line += "->" + b.ksym(addr).decode(DECODE_CHARSET, 'replace')
 
                 lines.append(line)
         
@@ -433,12 +433,14 @@ while True:
 
             # additional fields for adding human readable info
             fields_dict['st'] = ''
+            fields_dict['sch'] = '' # for scheduler nerds
             fields_dict['state_flags'] = '' # full scheduler state bitmap
             fields_dict['username'] = ''
             fields_dict['syscall'] = '' 
  
             current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
             in_sched_wakeup = fields_dict['in_sched_wakeup']
+            in_sched_waking = fields_dict['in_sched_waking']
             is_running_on_cpu  = fields_dict['is_running_on_cpu']
 
             enriched_fields = {"timestamp": ts[:-3]}
@@ -453,7 +455,7 @@ while True:
                     if state == 'R' and not is_running_on_cpu:
                         state_suffix = 'Q'
                     if state in ['R', 'D'] or current_syscall == 'io_getevents':
-                          # or current_syscall == 'semtimedop' and str(fields_dict['comm'], 'utf-8').startswith('oracle'): # oracle example
+                          # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
                         outv = state + state_suffix
                     else:
                         save_record = False
@@ -475,10 +477,16 @@ while True:
                     outv = val if val else '-'
                     output_ustack[val, fields_dict['pid']] = True  # stackid, pid
 
+                elif field_name == 'sch': 
+                    # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
+                    outv  = '-' if in_sched_waking else '_'
+                    outv += '-' if in_sched_wakeup else '_'
+                    outv += '-' if is_running_on_cpu else '_'
+
                 else:
                     val = fields_dict[field_name]
                     if isinstance(val, bytes):
-                        outv = str(val, 'utf-8')
+                        outv = str(val, DECODE_CHARSET)
                     else:
                         outv = str(val)
                     
