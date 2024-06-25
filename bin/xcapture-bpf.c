@@ -32,7 +32,7 @@
 #endif
 
 // need to optimize this with BPF_HASH maps & 32bit stack_ids to reduce mem usage and hash collisions
-BPF_STACK_TRACE(stackmap, 131072);
+BPF_STACK_TRACE(stackmap, 65536);
 
 struct thread_state_t {
     u32 state; // scheduler state
