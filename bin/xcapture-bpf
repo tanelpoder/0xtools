@@ -402,14 +402,10 @@ b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
 mypid = os.getpid()
 print(f"Ready (mypid={mypid})")
 
-
-
 time.sleep(1.1)
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
-ustackmap = b.get_table("ustackmap")
-kstackmap = b.get_table("kstackmap")
-
+stackmap = b.get_table("stackmap")
 
 
 while True:
@@ -504,15 +500,15 @@ while True:
         # printing stacktiles first, so the task state info is in the bottom of terminal output
         (term_width, term_height) = shutil.get_terminal_size()
 
-        print_pivoted_dynamic(get_kstack_traces(kstackmap), max_line_length=term_width)
+        print_pivoted_dynamic(get_kstack_traces(stackmap), max_line_length=term_width)
         print()
 
-        print_pivoted_dynamic(get_ustack_traces(ustackmap), max_line_length=term_width)
+        print_pivoted_dynamic(get_ustack_traces(stackmap), max_line_length=term_width)
         print()
 
         # regular nerd mode
-        #for s in get_kstack_traces(kstackmap): print(s)
-        #for s in get_ustack_traces(ustackmap): print(s)
+        #for s in get_kstack_traces(stackmap): print(s)
+        #for s in get_ustack_traces(stackmap): print(s)
 
 
         grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))

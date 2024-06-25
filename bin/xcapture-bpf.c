@@ -31,9 +31,8 @@
 #define __BCC__
 #endif
 
-// need to consolidate & optimize these with BPF_HASH maps & 32bit stack_ids
-BPF_STACK_TRACE(kstackmap, 131072);
-BPF_STACK_TRACE(ustackmap, 131072);
+// need to optimize this with BPF_HASH maps & 32bit stack_ids to reduce mem usage and hash collisions
+BPF_STACK_TRACE(stackmap, 131072);
 
 struct thread_state_t {
     u32 state; // scheduler state
@@ -94,7 +93,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     // t->syscall_arg3 = args->args[3];
     // t->syscall_arg4 = args->args[4];
     // t->syscall_arg5 = args->args[5];
-    // t->syscall_ustack = ustackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+    // t->syscall_ustack = stackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
     tsa.update(&tid, t);
     return 0;
@@ -139,8 +138,8 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
         t->state = curtask->__state;
 
-        t->profile_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-        t->profile_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t->profile_ustack = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t->profile_kstack = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&tid, t);
     }
@@ -248,9 +247,9 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         if (prev->flags & PF_KTHREAD) // kernel thread
             t_prev->offcpu_ustack = t_prev->offcpu_ustack * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
         else
-            t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+            t_prev->offcpu_ustack = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
-        t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t_prev->offcpu_kstack = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&prev_tid, t_prev);
     }
