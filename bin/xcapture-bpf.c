@@ -87,7 +87,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
 
     t->syscall_id   = args->id;
 
-    // use a conditional copy(len(args))
+    // use a conditional copy(len(args))?
     // t->syscall_arg0 = args->args[0];
     // t->syscall_arg1 = args->args[1];
     // t->syscall_arg2 = args->args[2];
@@ -193,9 +193,10 @@ TRACEPOINT_PROBE(sched, sched_wakeup) {
 TRACEPOINT_PROBE(sched, sched_wakeup_new) {
 
     struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
+    struct thread_state_t t_empty = {};
+
     u32 tid_woken = args->pid;
 
-    struct thread_state_t t_empty = {};
     struct thread_state_t *t_new = tsa.lookup_or_try_init(&tid_woken, &t_empty);
     if (!t_new) return 0;
 
