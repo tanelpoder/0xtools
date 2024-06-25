@@ -389,7 +389,7 @@ while True:
                     # for scheduling latency/preempted tasks (RQ)
                     if state == 'R' and not is_running_on_cpu:
                         state_suffix = 'Q'
-                    if state in ['R', 'D'] or current_syscall == 'io_getevents':
+                    if state in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
                           # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
                         outv = state + state_suffix
                     else:
