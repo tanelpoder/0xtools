@@ -1,16 +1,47 @@
 #!/usr/bin/env python3
 
-import os, pwd, time, ctypes, platform, re, shutil
+#  xcapture-bpf -- Always-on profiling of Linux thread activity, by Tanel Poder [https://tanelpoder.com]
+#  Copyright 2024 Tanel Poder
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License along
+#  with this program; if not, write to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+#  SPDX-License-Identifier: GPL-2.0-or-later
+
+__version__      = "2.0.0"
+__author__       = "Tanel Poder"
+__date__         = "2024-06-25"
+__description__  = "Always-on profiling of Linux thread activity using eBPF."
+__url__          = "https://0x.tools"
+
+DEFAULT_PATH     = "." # where to write xcapture -o output files
+DEFAULT_GROUP_BY = "st,username,comm" # for xtop mode
+
+
+
+import os, sys, pwd, time, ctypes, platform, re, shutil, argparse, signal
 from collections import defaultdict
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
-# default output fields
+# default output fields for ungrouped full detail output
 output_fields = [ 'timestamp', 'st', 'flags', 'tid', 'pid', 'username', 'comm', 'syscall' 
                  , 'offcpu_ustack', 'offcpu_kstack', 'profile_ustack', 'profile_kstack' 
                  , 'in_sched_waking', 'in_sched_wakeup', 'waker_tid' ]
 
-# syscall id to name translation 
+
+# syscall id to name translation (todo: fix aarch64 include file lookup)
 def extract_system_call_ids(unistd_64_fh):
     syscall_id_to_name = {}
 
@@ -74,7 +105,7 @@ TASK_RTLOCK_WAIT       =   0x00001000
 TASK_FREEZABLE         =   0x00002000
 TASK_FREEZABLE_UNSAFE  =   0x00004000 # depends on: IS_ENABLED(CONFIG_LOCKDEP)
 TASK_FROZEN            =   0x00008000
-TASK_STATE_MAX         =   0x00010000
+TASK_STATE_MAX         =   0x00010000 # as of linux kernel 6.9
 
 ##define TASK_STATE_TO_CHAR_STR "RSDTtXZxKWPN"
 
@@ -320,6 +351,41 @@ def group_by(records, column_names):
 
 
 # main()
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+# args 
+parser = argparse.ArgumentParser(description=__description__)
+parser.add_argument('-x', '--xtop', action='store_true', help='Run in aggregated top-thread-activity (xtop) mode')
+parser.add_argument('-g', '--group-by', metavar='csv-columns', default=DEFAULT_GROUP_BY, help='Full column list what to group by')
+parser.add_argument('-G', '--append-group-by', metavar='append-csv-columns', default=None, help='List of additional columns to default cols what to group by')
+parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out relevant stack traces as wide output lines')
+parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stack-tiles')
+parser.add_argument('-r', '--refresh', action='store_true', help='Clear screen before printing next output')
+parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit')
+parser.add_argument('-o', '--output-dir', type=str, default=DEFAULT_PATH, help=f'Directory path where to write the output CSV files, default is {DEFAULT_PATH}')
+parser.add_argument('-l', '--list', default=None, action='store_true', help='list all available columns for display and grouping')
+
+args = parser.parse_args()
+
+if args.list:
+    for f in output_fields:
+        print(f)
+    sys.exit(0)
+
+# handle -g and -G
+groupby_fields = args.group_by.split(',')
+groupby_fields = groupby_fields + args.append_group_by.split(',') if args.append_group_by else groupby_fields
+
+if set(groupby_fields) - set(output_fields):
+    print("Error: incorrect group by field name specified, use --list option see allowed columns")
+    exit(1)
+
+# eBPF programs have be loaded as root
+if os.geteuid() != 0:
+    print("Error: you need to run this command as root")
+    sys.exit(1)
+
+
 with open('xcapture-bpf.c', 'r') as file:
     bpf_text = file.read()
 
@@ -327,7 +393,7 @@ print('Loading BPF...')
 b = BPF(text=bpf_text)
 
 # Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events 
-# are not available but software clocks don't measure what happens when CPUs are in 
+# are not available, but software clocks don't measure what happens when CPUs are in 
 # critical sections when most interrupts are disabled
 b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
                     , fn_name="update_cpu_stack_profile", sample_freq=1)
@@ -337,7 +403,7 @@ mypid = os.getpid()
 print(f"Ready (mypid={mypid})")
 
 
-#### main ###
+
 time.sleep(1.1)
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
@@ -440,7 +506,6 @@ while True:
         #for s in get_kstack_traces(kstackmap): print(s)
         #for s in get_ustack_traces(ustackmap): print(s)
 
-        groupby_fields = ['st', 'username', 'comm', 'syscall', 'offcpu_ustack', 'offcpu_kstack' ]
 
         grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
         ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
