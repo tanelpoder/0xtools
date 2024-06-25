@@ -215,22 +215,16 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
 // "next" is about to be put on CPU, "prev" goes off-CPU
 RAW_TRACEPOINT_PROBE(sched_switch) {
 
-    s32 prev_tid; // task
-    s32 prev_pid; // tgid
-    s32 next_tid; // task
-    s32 next_pid; // tgid
-
     // from https://github.com/torvalds/linux/blob/master/include/trace/events/sched.h (sched_switch trace event)
     bool *preempt = (bool *)ctx->args[0]; // todo: check if this is correct
     struct task_struct *prev = (struct task_struct *)ctx->args[1];
     struct task_struct *next = (struct task_struct *)ctx->args[2];
     unsigned int prev_state = ctx->args[3];
     
-    prev_tid = prev->pid;
-    prev_pid = prev->tgid;
-
-    next_tid = next->pid;
-    next_pid = next->tgid;
+    s32 prev_tid = prev->pid;  // task (tid in user tools)
+    s32 prev_pid = prev->tgid; // tgid (pid in user tools)
+    s32 next_tid = next->pid;  // task
+    s32 next_pid = next->tgid; // tgid
 
     struct thread_state_t t_empty_prev = {0};
     struct thread_state_t t_empty_next = {0};
@@ -254,7 +248,6 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         if (prev->flags & PF_KTHREAD) // kernel thread
             t_prev->offcpu_ustack = t_prev->offcpu_ustack * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
         else
-            // t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK);
             t_prev->offcpu_ustack = ustackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         t_prev->offcpu_kstack = kstackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
