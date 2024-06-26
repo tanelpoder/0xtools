@@ -70,7 +70,11 @@ struct thread_state_t {
 BPF_HASH(tsa, u32, struct thread_state_t, 16384);
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
+#if defined(__x86_64__)
     if (args->id ==  __NR_poll || args->id == __NR_getrusage)
+#elif defined(__aarch64__)
+    if (args->id == __NR_getrusage)
+#endif
         return 0;
 
     struct thread_state_t t_empty = {};
