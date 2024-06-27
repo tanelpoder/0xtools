@@ -36,9 +36,8 @@ from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
 # default output fields for ungrouped full detail output
-output_fields = [ 'timestamp', 'st', 'flags', 'tid', 'pid', 'username', 'comm', 'syscall' 
-                 , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k' 
-                 , 'in_sched_waking', 'in_sched_wakeup', 'waker_tid', 'sch' ]
+output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall' 
+                 , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k', 'waker_tid', 'sch' ]
 
 
 # syscall id to name translation (todo: fix aarch64 include file lookup)
