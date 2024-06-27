@@ -71,7 +71,7 @@ struct thread_state_t {
 BPF_HASH(tsa, u32, struct thread_state_t, 16384);
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
-// a rudimentary way for ignoring some syscalls we do not care about (this list will change)
+// a rudimentary way for ignoring some syscalls we do not care about (this whole thing will change before GA release)
 #if defined(__x86_64__)
     if (args->id ==  __NR_poll || args->id == __NR_getrusage)
 #elif defined(__aarch64__)
@@ -100,10 +100,6 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     // t->syscall_arg4 = args->args[4];
     // t->syscall_arg5 = args->args[5];
     // t->syscall_u = stackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-
-    // got a bug
-    // if (args->id == __NR_prctl) // someone may be changing their process argv0/cmdline
-    //     bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
     tsa.update(&tid, t);
     return 0;
