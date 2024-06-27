@@ -1,5 +1,5 @@
 /*
- *  0x.Tools xcapture.bcc v0.5 beta
+ *  0x.Tools xcapture-bpf v2.0 beta
  *  Sample Linux task activity using eBPF [0x.tools]
  *
  *  Copyright 2019-2024 Tanel Poder
@@ -101,8 +101,9 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     // t->syscall_arg5 = args->args[5];
     // t->syscall_u = stackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
-    if (args->id == __NR_prctl) // someone may be changing their process argv0/cmdline
-        bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
+    // got a bug
+    // if (args->id == __NR_prctl) // someone may be changing their process argv0/cmdline
+    //     bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
     tsa.update(&tid, t);
     return 0;
