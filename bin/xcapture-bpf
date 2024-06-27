@@ -34,6 +34,11 @@ from collections import defaultdict
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
+# all available fields (if you add more fields to thread_state_t in C, add them here)
+available_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'comm2', 'syscall'
+                   , 'cmdline', 'cmdline2', 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k'
+                   , 'waker_tid', 'sch' ]
+
 # default output fields for ungrouped full detail output
 output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall', 'cmdline'
                  , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k', 'waker_tid', 'sch' ]
@@ -326,7 +331,7 @@ parser.add_argument('-l', '--list', default=None, action='store_true', help='lis
 args = parser.parse_args()
 
 if args.list:
-    for f in output_fields:
+    for f in available_fields:
         print(f)
     sys.exit(0)
 
@@ -334,7 +339,7 @@ if args.list:
 groupby_fields = args.group_by.split(',')
 groupby_fields = groupby_fields + args.append_group_by.split(',') if args.append_group_by else groupby_fields
 
-if set(groupby_fields) - set(output_fields):
+if set(groupby_fields) - set(available_fields):
     print("Error: incorrect group by field name specified, use --list option see allowed columns")
     exit(1)
 
@@ -400,12 +405,14 @@ while True:
             if fields_dict['tid'] == mypid:
                 continue
 
-            # additional fields for adding human readable info
-            fields_dict['st'] = ''
-            fields_dict['sch'] = '' # for scheduler nerds
+            # additional fields for adding human readable info (not using None as it would be printed out as "None")
+            fields_dict['st']          = ''
+            fields_dict['sch']         = '' # for scheduler nerds
             fields_dict['state_flags'] = '' # full scheduler state bitmap
-            fields_dict['username'] = ''
-            fields_dict['syscall'] = '' 
+            fields_dict['username']    = ''
+            fields_dict['syscall']     = ''
+            fields_dict['comm2']       = ''
+            fields_dict['cmdline2']    = ''
  
             current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
             in_sched_wakeup = fields_dict['in_sched_wakeup']
@@ -430,14 +437,23 @@ while True:
                         save_record = False
                         break
 
-                elif field_name == 'comm':
-                    val = fields_dict[field_name]
+                elif field_name.startswith('comm'):
+                    val = fields_dict['comm'] # source field is "comm" regardless of potential comm2 output field name
                     if isinstance(val, bytes):
                         outv = str(val, DECODE_CHARSET)
                     else:
                         outv = str(val)
+                    if field_name == 'comm':  # only trim "comm", but not comm2 that is the unaltered string
+                        outv = re.sub(trim_comm, '*', outv)
 
-                    outv = re.sub(trim_comm, '*', outv) 
+                elif field_name.startswith('cmdline'):
+                    val = fields_dict['cmdline']
+                    if isinstance(val, bytes):
+                        outv = str(val, DECODE_CHARSET)
+                    else:
+                        outv = str(val)
+                    if field_name == 'cmdline':
+                        outv = re.sub(trim_comm, '*', outv)
 
                 elif field_name == 'syscall':
                     outv = current_syscall
