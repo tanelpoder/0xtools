@@ -19,14 +19,14 @@
 #
 #  SPDX-License-Identifier: GPL-2.0-or-later
 
-__version__      = "2.0.1"
+__version__      = "2.0.2"
 __author__       = "Tanel Poder"
-__date__         = "2024-06-25"
+__date__         = "2024-06-27"
 __description__  = "Always-on profiling of Linux thread activity using eBPF."
 __url__          = "https://0x.tools"
 
 DEFAULT_PATH     = "." # where to write xcapture -o output files
-DEFAULT_GROUP_BY = "st,username,comm,syscall" # for xtop mode
+DEFAULT_GROUP_BY = "st,username,comm,syscall,cmdline" # for xtop mode
 DECODE_CHARSET   = "ascii"
 
 import os, sys, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
@@ -35,7 +35,7 @@ from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
 # default output fields for ungrouped full detail output
-output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall' 
+output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall', 'cmdline'
                  , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k', 'waker_tid', 'sch' ]
 
 

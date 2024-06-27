@@ -42,6 +42,7 @@ struct thread_state_t {
     u32 uid;
     char comm[TASK_COMM_LEN];
     char orig_comm[TASK_COMM_LEN];
+    char cmdline[64]; // task->mm->argv0 command executed, unless changed to something else, like Postgres does
 
     u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
     // unsigned long syscall_args[6]; // IBM s390x port has only 5 syscall args
@@ -70,6 +71,7 @@ struct thread_state_t {
 BPF_HASH(tsa, u32, struct thread_state_t, 16384);
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
+// a rudimentary way for ignoring some syscalls we do not care about (this list will change)
 #if defined(__x86_64__)
     if (args->id ==  __NR_poll || args->id == __NR_getrusage)
 #elif defined(__aarch64__)
@@ -98,6 +100,9 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     // t->syscall_arg4 = args->args[4];
     // t->syscall_arg5 = args->args[5];
     // t->syscall_u = stackmap.get_stackid(args, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+
+    if (args->id == __NR_prctl) // someone may be changing their process argv0/cmdline
+        bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
     tsa.update(&tid, t);
     return 0;
@@ -141,6 +146,13 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         t->pid = pid;
         t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
         t->state = curtask->__state;
+
+        if (!t->comm[0]) // if the first char is null, that tsa fields hasn't been populated yet
+	    bpf_probe_read_str(t->comm, sizeof(t->comm), (struct task_struct *)curtask->comm);
+
+        //if (!t->cmdline[0])
+	    bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
+
 
         t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t->oncpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
@@ -209,6 +221,7 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     t_new->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here?)
 
     bpf_probe_read_str(t_new->comm, sizeof(t_new->comm), args->comm); // the app may change its comm
+    // bpf_probe_read_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
     tsa.update(&tid_woken, t_new);
 
@@ -240,7 +253,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->tid = prev_tid;
         t_prev->pid = prev_pid;
         t_prev->flags = prev->flags;
-        bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm); // BCC allows this syntax
+        bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm);
 
         // switch finished, clear waking/wakeup flags
         t_prev->is_running_on_cpu = 0;
@@ -266,7 +279,12 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->tid = next_tid;
         t_next->pid = next_pid;
         t_next->flags = next->flags;
-        bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm); // BCC allows this syntax
+	
+	if (!t_next->comm[0]) // if the first char is null, it's probably not yet set
+            bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
+
+	//if (!t_next->cmdline[0]) // possibly too expensive to do here (at every event at least)
+        // bpf_probe_read_str(t_next->cmdline, sizeof(t_next->cmdline), (struct task_struct *)next->mm->arg_start);
 
         t_next->state = next->__state;
         t_next->is_running_on_cpu = 1;
