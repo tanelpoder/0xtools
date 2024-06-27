@@ -492,7 +492,7 @@ while True:
 
             print()
             print()
-            print(f'samples: {samples_attempted}')
+            print(f'sampled: {samples_attempted} times')
             print(f'start: {ts[:19]}, duration: {duration}s')
         else: # wide raw output
             print_fields(output_records, output_fields) 
