@@ -2,5 +2,5 @@
 
 CURDIR="$(dirname "$(realpath "$0")")"
 
-${CURDIR}/xcapture-bpf -x $*
+${CURDIR}/xcapture-bpf --xtop --clear-screen $*
 
