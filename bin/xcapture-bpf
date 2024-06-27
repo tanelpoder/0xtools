@@ -165,7 +165,7 @@ def print_fields(rows, columns, linelimit=0):
     header1 = "=== Active Threads "
     header2 = " | ".join(f"{col:<{col_widths[col]}}" for col in columns)
 
-    print("\n" + header1 + "=" * (len(header2) - len(header1)) + "\n")
+    print(header1 + "=" * (len(header2) - len(header1)) + "\n")
     print(header2)
     print("-" * len(header2))
 
@@ -300,7 +300,7 @@ parser.add_argument('-g', '--group-by', metavar='csv-columns', default=DEFAULT_G
 parser.add_argument('-G', '--append-group-by', metavar='append-csv-columns', default=None, help='List of additional columns to default cols what to group by')
 parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out relevant stack traces as wide output lines')
 parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stack-tiles')
-parser.add_argument('-r', '--refresh', action='store_true', help='Clear screen before printing next output (TODO)')
+parser.add_argument('-c', '--clear-screen', action='store_true', help='Clear screen before printing next output')
 parser.add_argument('-w', '--wide', action='store_true', help='Wide raw formatted output of all samples and their fields')
 parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit')
 parser.add_argument('-o', '--output-dir', type=str, default=DEFAULT_PATH, help=f'Directory path where to write the output CSV files, default is {DEFAULT_PATH}')
@@ -341,7 +341,7 @@ b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
 
 # get own pid so to not display it in output
 mypid = os.getpid()
-print(f"Ready (mypid={mypid})")
+print(f"Ready (mypid={mypid})\n")
 
 # wait a bit for ebpf (cpu profile) probes to populate the state array
 time.sleep(1.1)
@@ -451,6 +451,9 @@ while True:
 
 
     if output_records:
+        if args.clear_screen:
+            os.system('clear')
+ 
         if args.giant_nerd_mode:
             # printing stacktiles first, so the task state info is in the bottom of terminal output
             (term_width, term_height) = shutil.get_terminal_size()
@@ -470,6 +473,7 @@ while True:
             grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
             ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
             print_fields(ordered_aggr, ['samples', 'avg_threads'] + groupby_fields, linelimit=25)
+
         else: # wide raw output
             print_fields(output_records, output_fields) 
         
