@@ -268,9 +268,25 @@ def print_pivoted_dynamic(traces, max_line_length):
         
         start = end
 
+# stack printing and formatting choice driver function
+def print_stacks_if_nerdmode():
+    if args.giant_nerd_mode:
+        # printing stacktiles first, so the task state info is in the bottom of terminal output
+        (term_width, term_height) = shutil.get_terminal_size()
+
+        print_pivoted_dynamic(get_kstack_traces(stackmap), max_line_length=term_width)
+        print()
+
+        print_pivoted_dynamic(get_ustack_traces(stackmap), max_line_length=term_width)
+        print()
+
+    if args.nerd_mode:
+        # print stack as long line traces
+        for s in get_kstack_traces(stackmap): print(s)
+        for s in get_ustack_traces(stackmap): print(s)
 
 # group by for reporting
-def group_by(records, column_names):
+def group_by(records, column_names, sample_attempts_in_set, time_range_in_set):
     grouped_data = defaultdict(lambda: {'samples': 0})
 
     for record in records:
@@ -283,8 +299,8 @@ def group_by(records, column_names):
     grouped_list = list(grouped_data.values())
 
     for item in grouped_list:
-        item['avg_thr'] = round(item['samples'] / (args.report_seconds * args.sample_hz), 2) # todo: div by "samples actually taken" count
-        item['seconds'] = round(item['samples'] / args.sample_hz, 2) # 1 sample of 20Hz sampling represents 50ms of time
+        item['avg_thr'] = round(item['samples'] / sample_attempts_in_set, 2)
+        item['seconds'] = round(item['samples'] * (time_range_in_set / sample_attempts_in_set), 2)
 
     return grouped_list
 
@@ -331,7 +347,7 @@ if os.geteuid() != 0:
 progname = "xtop" if args.xtop else "xcapture-bpf"
 kernname = platform.release().split('-')[0]
 archname = platform.machine()
-print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distro.id().title()} {distro.version()} Linux {kernname} {archname}')
+print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distro.id().title()} Linux {distro.version()} {kernname} {archname}')
 
 # open and load the BPF instrumenter
 with open('xcapture-bpf.c', 'r') as file:
@@ -358,15 +374,21 @@ stackmap = b.get_table("stackmap")
 trim_comm = re.compile(r'\d+')
 
 
+first_report_printed = False # show first xtop report quicker
+
 while True:
     output_kstack = {} # map of stack_ids seen so far
     output_ustack = {}
     output_records = []
+
     sample_start = time.time()
-    sample_until = sample_start + (args.report_seconds if args.xtop else 1) # todo: 1 Hz for raw/csv output for now
+    duration = (args.report_seconds if args.xtop and first_report_printed else 1)
+    sample_end = sample_start + duration # todo: 1 Hz for raw/csv output for now
+    first_report_printed = True
+    samples_attempted = 0 # not all TSA samples contain active threads of interest, this tells us how many samples we really took
 
-    while time.time() < sample_until:
-
+    while time.time() < sample_end:
+        samples_attempted += 1
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         i = tsa.items()[0]
 
@@ -455,22 +477,6 @@ while True:
         time.sleep(1 / (args.sample_hz if args.xtop else 1))
 
 
-    def print_stacks_if_nerdmode():
-        if args.giant_nerd_mode:
-            # printing stacktiles first, so the task state info is in the bottom of terminal output
-            (term_width, term_height) = shutil.get_terminal_size()
-
-            print_pivoted_dynamic(get_kstack_traces(stackmap), max_line_length=term_width)
-            print()
-
-            print_pivoted_dynamic(get_ustack_traces(stackmap), max_line_length=term_width)
-            print()
-
-        if args.nerd_mode:
-            # print stack as long line traces
-            for s in get_kstack_traces(stackmap): print(s)
-            for s in get_ustack_traces(stackmap): print(s)
-
     if output_records:
         if args.clear_screen:
             os.system('clear')
@@ -479,10 +485,15 @@ while True:
             print()
  
         if args.xtop:
-            grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
+            # a new field "samples" shows up (count(*))
+            grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
             ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
             print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=25)
 
+            print()
+            print()
+            print(f'samples: {samples_attempted}')
+            print(f'start: {ts[:19]}, duration: {duration}s')
         else: # wide raw output
             print_fields(output_records, output_fields) 
         
