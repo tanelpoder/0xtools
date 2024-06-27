@@ -222,7 +222,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     bool *preempt = (bool *)ctx->args[0]; // todo: check if this is correct
     struct task_struct *prev = (struct task_struct *)ctx->args[1];
     struct task_struct *next = (struct task_struct *)ctx->args[2];
-    unsigned int prev_state = ctx->args[3];
+    unsigned int prev_state = prev->__state; // ctx->args[3] won't work in older configs due to breaking change in sched_switch tracepoint
     
     s32 prev_tid = prev->pid;  // task (tid in user tools)
     s32 prev_pid = prev->tgid; // tgid (pid in user tools)
