@@ -19,18 +19,17 @@
 #
 #  SPDX-License-Identifier: GPL-2.0-or-later
 
-__version__      = "2.0.0"
+__version__      = "2.0.1"
 __author__       = "Tanel Poder"
 __date__         = "2024-06-25"
 __description__  = "Always-on profiling of Linux thread activity using eBPF."
 __url__          = "https://0x.tools"
 
 DEFAULT_PATH     = "." # where to write xcapture -o output files
-DEFAULT_GROUP_BY = "st,username,comm" # for xtop mode
+DEFAULT_GROUP_BY = "st,username,comm,syscall" # for xtop mode
 DECODE_CHARSET   = "ascii"
 
-
-import os, sys, pwd, time, ctypes, platform, re, shutil, argparse, signal
+import os, sys, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
 from collections import defaultdict
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
@@ -172,7 +171,8 @@ def print_fields(rows, columns, linelimit=0):
     #for row in rows:
     for i, row in enumerate(rows):
         line = " | ".join(
-            f"{row[col]:>{col_widths[col]}.2f}" if col in ["samples", "avg_threads"] else f"{str(row[col]):<{col_widths[col]}}"
+            f"{row[col]:>{col_widths[col]}.2f}" if col in ["seconds", "samples", "avg_thr"] 
+                                                else f"{str(row[col]):<{col_widths[col]}}"
             if col in row else ' ' * col_widths[col] for col in columns
         )
         print(line)
@@ -283,7 +283,8 @@ def group_by(records, column_names):
     grouped_list = list(grouped_data.values())
 
     for item in grouped_list:
-        item['avg_threads'] = round(item['samples'] / (args.report_seconds * args.sample_hz), 2) # todo: div by "samples actually taken" cound
+        item['avg_thr'] = round(item['samples'] / (args.report_seconds * args.sample_hz), 2) # todo: div by "samples actually taken" count
+        item['seconds'] = round(item['samples'] / args.sample_hz, 2) # 1 sample of 20Hz sampling represents 50ms of time
 
     return grouped_list
 
@@ -299,8 +300,9 @@ parser.add_argument('-f', '--sample-hz', default=20, type=int, help='sampling fr
 parser.add_argument('-g', '--group-by', metavar='csv-columns', default=DEFAULT_GROUP_BY, help='Full column list what to group by')
 parser.add_argument('-G', '--append-group-by', metavar='append-csv-columns', default=None, help='List of additional columns to default cols what to group by')
 parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out relevant stack traces as wide output lines')
-parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stack-tiles')
+parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stacktiles')
 parser.add_argument('-c', '--clear-screen', action='store_true', help='Clear screen before printing next output')
+parser.add_argument('-b', '--batch', action='store_true', default=True, help='Print continuous output and do not clear screen in xtop mode')
 parser.add_argument('-w', '--wide', action='store_true', help='Wide raw formatted output of all samples and their fields')
 parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit')
 parser.add_argument('-o', '--output-dir', type=str, default=DEFAULT_PATH, help=f'Directory path where to write the output CSV files, default is {DEFAULT_PATH}')
@@ -312,6 +314,18 @@ if args.list:
     for f in output_fields:
         print(f)
     sys.exit(0)
+
+if args.batch and args.clear_screen:
+    print("Error: the --batch and --clear-screen (-b/-c) arguments are mutually exclusive")
+    sys.exit(1)
+
+# batch is True by default, if it's false here, it must have been explicitly specified on cmdline
+if args.xtop and args.batch is False:
+    args.clear_screen = True
+
+# xcapture defaults to continious "batch" output without clear-screen
+if args.xtop is False and args.clear_screen is True:
+    args.batch = False
 
 # handle -g and -G
 groupby_fields = args.group_by.split(',')
@@ -326,11 +340,17 @@ if os.geteuid() != 0:
     print("Error: you need to run this command as root")
     sys.exit(1)
 
+# ready to go
+progname = "xtop" if args.xtop else "xcapture-bpf"
+kernname = platform.release().split('-')[0]
+archname = platform.machine()
+print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distro.id().title()} {distro.version()} Linux {kernname} {archname}')
 
+# open and load the BPF instrumenter
 with open('xcapture-bpf.c', 'r') as file:
     bpf_text = file.read()
 
-print('Loading BPF...')
+print('===  Loading BPF...')
 b = BPF(text=bpf_text)
 
 # Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events 
@@ -341,15 +361,13 @@ b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
 
 # get own pid so to not display it in output
 mypid = os.getpid()
-print(f"Ready (mypid={mypid})\n")
+print(f"===  Ready (mypid {mypid})\n")
 
-# wait a bit for ebpf (cpu profile) probes to populate the state array
-time.sleep(1.1)
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
 stackmap = b.get_table("stackmap")
 
-# replace digits in "comm" for better reporting/grouping
+# replace digits in "comm" for better grouping and reporting
 trim_comm = re.compile(r'\d+')
 
 
@@ -450,10 +468,7 @@ while True:
         time.sleep(1 / (args.sample_hz if args.xtop else 1))
 
 
-    if output_records:
-        if args.clear_screen:
-            os.system('clear')
- 
+    def print_stacks_if_nerdmode():
         if args.giant_nerd_mode:
             # printing stacktiles first, so the task state info is in the bottom of terminal output
             (term_width, term_height) = shutil.get_terminal_size()
@@ -469,16 +484,25 @@ while True:
             for s in get_kstack_traces(stackmap): print(s)
             for s in get_ustack_traces(stackmap): print(s)
 
+    if output_records:
+        if args.clear_screen:
+            os.system('clear')
+        else:
+            print_stacks_if_nerdmode()
+            print()
+ 
         if args.xtop:
             grouped_list = group_by(output_records, groupby_fields) # a new field "samples" shows up (count(*))
             ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
-            print_fields(ordered_aggr, ['samples', 'avg_threads'] + groupby_fields, linelimit=25)
+            print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=25)
 
         else: # wide raw output
             print_fields(output_records, output_fields) 
         
-        print()
-        print()
-
+        if args.clear_screen:
+            print()
+            print_stacks_if_nerdmode() 
+        else:
+            print("\n")
 
 # That's all, folks!
