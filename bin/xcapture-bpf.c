@@ -32,7 +32,8 @@
 #endif
 
 // need to optimize this with BPF_HASH maps & 32bit stack_ids to reduce mem usage and hash collisions
-BPF_STACK_TRACE(stackmap, 65536);
+// BPF_STACK_TRACE(stackmap, 65536);
+BPF_STACK_TRACE_BUILDID(stackmap, 65536);
 
 struct thread_state_t {
     u32 state; // scheduler state
@@ -264,9 +265,10 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         if (prev->flags & PF_KTHREAD) // kernel thread
             t_prev->offcpu_u = t_prev->offcpu_u * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
         else
-            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+            // t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK);
 
-        t_prev->offcpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t_prev->offcpu_k = stackmap.get_stackid(ctx, 0); //, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&prev_tid, t_prev);
     }

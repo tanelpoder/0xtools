@@ -191,12 +191,14 @@ def get_ustack_traces(ustack_traces, strip_args=True):
         if stack_id and stack_id >= 0:   # todo: find why we have Null/none stackids in this map
             line = f"ustack {stack_id:6} "
             stack = list(ustack_traces.walk(stack_id))
-            for addr in reversed(stack):
-                func = b.sym(addr, pid).decode(DECODE_CHARSET, 'replace')
-                if func not in exclusions:
+            for stack_item in reversed(stack):
+                print("%x %x %d %d" % (stack_item.ip, stack_item.offset, pid, stack_id))
+                func_name = b.sym(stack_item.ip, pid).decode(DECODE_CHARSET, 'replace')
+                if func_name not in exclusions:
                     if strip_args:
-                        func = re.split('[<(]', func)[0]
-                    line += "->" + (func if func != '[unknown]' else '{:x}'.format(addr))
+                        func_name = re.split('[<(]', func_name)[0]
+                    line += "->" + (func_name if func_name != '[unknown]' else '{:x}'.format(stack_item.ip)) # ip - offset?
+                    #line += "->" + (func_name if func_name != '[unknown]' else '{:x}'.format(addr))
 
             lines.append(line)
 
@@ -355,6 +357,37 @@ with open('xcapture-bpf.c', 'r') as file:
 
 print('===  Loading BPF...')
 b = BPF(text=bpf_text)
+
+print('===  Loading modules...')
+b.add_module('/lib64/libc.so.6')
+b.add_module('/lib64/librt.so.1')
+b.add_module('/lib64/libaio.so.1')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/bin/oracle')
+b.add_module('/lib64/libdl.so.2')
+b.add_module('/lib64/libm.so.6')
+b.add_module('/lib64/libpthread.so.0')
+b.add_module('/lib64/libresolv.so.2')
+b.add_module('/lib64/libgcc_s.so.1')
+b.add_module('/lib64/libc.so.6')
+b.add_module('/lib/ld-linux-aarch64.so.1')
+b.add_module('/usr/lib64/libnuma.so.1')
+b.add_module('/lib64/libnss_files.so.2')
+
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libofs.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libcell19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libskgxp19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libskjcx19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libclsra19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libdbcfg19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libhasgen19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libskgxn2.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libocr19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libocrb19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libocrutl19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libons.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libshpkarm64neon19.so')
+b.add_module('/u01/app/oracle/product/19.0.0/dbhome_1/lib/libnque19.so')
+
 
 # Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events 
 # are not available, but software clocks don't measure what happens when CPUs are in 
