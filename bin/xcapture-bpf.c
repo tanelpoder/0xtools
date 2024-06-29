@@ -221,7 +221,7 @@ TRACEPOINT_PROBE(sched, sched_wakeup) {
 // newly started task woken up
 TRACEPOINT_PROBE(sched, sched_wakeup_new) {
 
-    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
+    struct task_struct *curtask = (struct task_struct *) bpf_get_current_task(); // curtask is who does the waking-up!
     struct thread_state_t t_empty = {};
 
     u32 tid_woken = args->pid;
