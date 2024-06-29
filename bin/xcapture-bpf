@@ -28,6 +28,8 @@ __url__          = "https://0x.tools"
 DEFAULT_PATH     = "." # where to write xcapture -o output files
 DEFAULT_GROUP_BY = "st,username,comm,syscall,cmdline" # for xtop mode
 DECODE_CHARSET   = "utf-8"
+XTOP_MAX_LINES   = 25 # how many top output lines to print
+
 
 import os, sys, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
 from collections import defaultdict
@@ -539,7 +541,7 @@ while True:
             # a new field "samples" shows up (count(*))
             grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
             ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
-            print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=25)
+            print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=XTOP_MAX_LINES)
 
             print()
             print()
@@ -549,9 +551,8 @@ while True:
             # terminal size may change over time 
             (term_width, term_height) = shutil.get_terminal_size()
 
-            for x in range(1, term_height - len(ordered_aggr) - 10): # header/footer lines
+            for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 10): # header/footer lines
                 print()
-
 
         else: # wide raw output
             print_fields(output_records, output_fields) 
