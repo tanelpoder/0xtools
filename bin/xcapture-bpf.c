@@ -234,7 +234,8 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     t_new->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here?)
 
     bpf_probe_read_str(t_new->comm, sizeof(t_new->comm), args->comm); // the app may change its comm
-    bpf_probe_read_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
+    // cause of a bug:
+    // bpf_probe_read_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
     tsa.update(&tid_woken, t_new);
 
