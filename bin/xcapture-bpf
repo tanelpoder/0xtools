@@ -196,9 +196,9 @@ def get_ustack_traces(ustack_traces, strip_args=True):
         if stack_id and stack_id >= 0:   # todo: find why we have Null/none stackids in this map
             line = f"ustack {stack_id:6} "
             stack = list(ustack_traces.walk(stack_id))
-            for stack_item in reversed(stack):
-                print("%x %x %d %d" % (stack_item.ip, stack_item.offset, pid, stack_id))
-                func_name = b.sym(stack_item.ip, pid).decode(DECODE_CHARSET, 'replace')
+            for stack_item in stack: # reversed(stack):
+                print("%d %x %x %d %d %s" % (stack_item.status, stack_item.ip, stack_item.offset, pid, stack_id, str(stack_item.build_id)))
+                func_name = b.sym(stack_item, pid).decode(DECODE_CHARSET, 'replace')
                 if func_name not in exclusions:
                     if strip_args:
                         func_name = re.split('[<(]', func_name)[0]

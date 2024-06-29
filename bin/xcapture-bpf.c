@@ -152,7 +152,7 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
 	    bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
 
-        t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK); // | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t->oncpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&tid, t);
@@ -263,7 +263,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
             t_prev->offcpu_u = t_prev->offcpu_u * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
         else
             // t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK);
+            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK); // BPF_F_STACK_BUILD_ID
 
         t_prev->offcpu_k = stackmap.get_stackid(ctx, 0); //, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
