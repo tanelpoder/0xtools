@@ -54,9 +54,10 @@ struct thread_state_t {
     s32 oncpu_k;    // cpu-profile kstack
     s32 syscall_u;
 
-    s32 waker_tid; // who invoked the waking of the target task
-    bool in_sched_waking; // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
-    bool in_sched_wakeup; // actual wakeup on target CPU starts
+    s32 waker_tid;           // who invoked the waking of the target task
+    bool in_sched_migrate;   // migrate to another CPU
+    bool in_sched_waking;    // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
+    bool in_sched_wakeup;    // actual wakeup on target CPU starts
     bool is_running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
     s16 waking_syscall;
     s32 waking_u;
@@ -162,6 +163,22 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
 };
 
 
+// scheduler (or someone) wants this task to migrate to another CPU
+TRACEPOINT_PROBE(sched, sched_migrate_task) {
+
+    struct thread_state_t t_empty = {};
+    u32 tid = args->pid;
+
+    struct thread_state_t *t = tsa.lookup_or_try_init(&tid, &t_empty);
+    if (!t) return 0;
+
+    t->in_sched_migrate = 1;
+
+    tsa.update(&tid, t);
+
+    return 0;
+}
+
 // Context enrichment example (kernel): who (curtask->pid) woke a wakee (args->pid) up?
 TRACEPOINT_PROBE(sched, sched_waking) {
 
@@ -193,7 +210,6 @@ TRACEPOINT_PROBE(sched, sched_wakeup) {
     struct thread_state_t *t_being_waked_up = tsa.lookup_or_try_init(&tid_woken, &t_empty);
     if (!t_being_waked_up) return 0;
 
-    t_being_waked_up->in_sched_waking = 0;
     t_being_waked_up->in_sched_wakeup = 1;
     t_being_waked_up->tid = tid_woken;          // this guy is being woken up
     
@@ -213,13 +229,12 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     struct thread_state_t *t_new = tsa.lookup_or_try_init(&tid_woken, &t_empty);
     if (!t_new) return 0;
 
-    t_new->in_sched_waking = 0;      // todo: verify if this is even needed here
     t_new->in_sched_wakeup = 1;
     t_new->tid = tid_woken;          // this guy is being woken up
     t_new->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here?)
 
     bpf_probe_read_str(t_new->comm, sizeof(t_new->comm), args->comm); // the app may change its comm
-    // bpf_probe_read_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
+    bpf_probe_read_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
     tsa.update(&tid_woken, t_new);
 
@@ -255,8 +270,9 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
         // switch finished, clear waking/wakeup flags
         t_prev->is_running_on_cpu = 0;
-        t_prev->in_sched_waking = 0;
-        t_prev->in_sched_wakeup = 0;
+        t_prev->in_sched_migrate  = 0; // todo: these 3 are probably not needed here
+        t_prev->in_sched_waking   = 0;
+        t_prev->in_sched_wakeup   = 0;
         t_prev->state = prev_state; // prev_state is passed in as an arg to sched_switch probe
 
         if (prev->flags & PF_KTHREAD) // kernel thread
@@ -286,8 +302,10 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         // bpf_probe_read_str(t_next->cmdline, sizeof(t_next->cmdline), (struct task_struct *)next->mm->arg_start);
 
         t_next->state = next->__state;
+        t_next->in_sched_migrate  = 0;
+        t_next->in_sched_waking   = 0;
+        t_next->in_sched_wakeup   = 0;
         t_next->is_running_on_cpu = 1;
-        t_next->in_sched_wakeup = 0;
 
         t_next->uid = next->cred->euid.val;
 

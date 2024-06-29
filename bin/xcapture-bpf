@@ -447,10 +447,11 @@ while True:
             fields_dict['comm2']       = ''
             fields_dict['cmdline2']    = ''
  
-            current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
-            in_sched_wakeup = fields_dict['in_sched_wakeup']
-            in_sched_waking = fields_dict['in_sched_waking']
-            is_running_on_cpu  = fields_dict['is_running_on_cpu']
+            current_syscall   = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
+            in_sched_migrate  = fields_dict['in_sched_migrate']
+            in_sched_wakeup   = fields_dict['in_sched_wakeup']
+            in_sched_waking   = fields_dict['in_sched_waking']
+            is_running_on_cpu = fields_dict['is_running_on_cpu']
 
             enriched_fields = {"timestamp": ts[:-3]}
 
@@ -507,8 +508,9 @@ while True:
 
                 elif field_name == 'sch': 
                     # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
-                    outv  = '-' if in_sched_waking else '_'
-                    outv += '-' if in_sched_wakeup else '_'
+                    outv  = '-' if in_sched_migrate  else '_'
+                    outv += '-' if in_sched_waking   else '_'
+                    outv += '-' if in_sched_wakeup   else '_'
                     outv += '-' if is_running_on_cpu else '_'
 
                 else:
