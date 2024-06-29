@@ -531,9 +531,9 @@ while True:
     if output_records:
         if args.clear_screen:
             os.system('clear')
-        else:
-            print_stacks_if_nerdmode()
-            print()
+
+        print_stacks_if_nerdmode()
+        print()
  
         if args.xtop:
             # a new field "samples" shows up (count(*))
@@ -548,10 +548,6 @@ while True:
         else: # wide raw output
             print_fields(output_records, output_fields) 
         
-        if args.clear_screen:
-            print()
-            print_stacks_if_nerdmode() 
-        else:
-            print("\n")
+        print("\n")
 
 # That's all, folks!
