@@ -27,7 +27,7 @@ __url__          = "https://0x.tools"
 
 DEFAULT_PATH     = "." # where to write xcapture -o output files
 DEFAULT_GROUP_BY = "st,username,comm,syscall,cmdline" # for xtop mode
-DECODE_CHARSET   = "ascii"
+DECODE_CHARSET   = "utf-8"
 
 import os, sys, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
 from collections import defaultdict
