@@ -27,7 +27,9 @@ __url__          = "https://0x.tools"
 
 DEFAULT_PATH     = "." # where to write xcapture -o output files
 DEFAULT_GROUP_BY = "st,username,comm,syscall,cmdline" # for xtop mode
-DECODE_CHARSET   = "ascii"
+DECODE_CHARSET   = "utf-8"
+XTOP_MAX_LINES   = 25 # how many top output lines to print
+
 
 import os, sys, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
 from collections import defaultdict
@@ -447,10 +449,11 @@ while True:
             fields_dict['comm2']       = ''
             fields_dict['cmdline2']    = ''
  
-            current_syscall = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
-            in_sched_wakeup = fields_dict['in_sched_wakeup']
-            in_sched_waking = fields_dict['in_sched_waking']
-            is_running_on_cpu  = fields_dict['is_running_on_cpu']
+            current_syscall   = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
+            in_sched_migrate  = fields_dict['in_sched_migrate']
+            in_sched_wakeup   = fields_dict['in_sched_wakeup']
+            in_sched_waking   = fields_dict['in_sched_waking']
+            is_running_on_cpu = fields_dict['is_running_on_cpu']
 
             enriched_fields = {"timestamp": ts[:-3]}
 
@@ -507,8 +510,9 @@ while True:
 
                 elif field_name == 'sch': 
                     # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
-                    outv  = '-' if in_sched_waking else '_'
-                    outv += '-' if in_sched_wakeup else '_'
+                    outv  = '-' if in_sched_migrate  else '_'
+                    outv += '-' if in_sched_waking   else '_'
+                    outv += '-' if in_sched_wakeup   else '_'
                     outv += '-' if is_running_on_cpu else '_'
 
                 else:
@@ -529,27 +533,30 @@ while True:
     if output_records:
         if args.clear_screen:
             os.system('clear')
-        else:
-            print_stacks_if_nerdmode()
-            print()
+
+        print_stacks_if_nerdmode()
+        print()
  
         if args.xtop:
             # a new field "samples" shows up (count(*))
             grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
             ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
-            print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=25)
+            print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=XTOP_MAX_LINES)
 
             print()
             print()
             print(f'sampled: {samples_attempted} times')
             print(f'start: {ts[:19]}, duration: {duration}s')
+       
+            # terminal size may change over time 
+            (term_width, term_height) = shutil.get_terminal_size()
+
+            for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 10): # header/footer lines
+                print()
+
         else: # wide raw output
             print_fields(output_records, output_fields) 
         
-        if args.clear_screen:
-            print()
-            print_stacks_if_nerdmode() 
-        else:
-            print("\n")
+        print("\n")
 
 # That's all, folks!
