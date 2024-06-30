@@ -22,10 +22,14 @@
  *
  */
 
+#include <linux/bpf.h>
+#include <uapi/linux/bpf.h>
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/types.h>
 #include <linux/syscalls.h>
+
+//#include <linux/bpf.h>
 
 #ifdef BCC_SEC
 #define __BCC__
@@ -151,8 +155,7 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         //if (!t->cmdline[0])
 	    bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
-
-        t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK); // | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t->oncpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
         tsa.update(&tid, t);
