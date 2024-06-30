@@ -199,8 +199,8 @@ def get_ustack_traces(ustack_traces, strip_args=True):
             line = f"ustack {stack_id:6} "
             stack = list(ustack_traces.walk(stack_id))
             for stack_item in stack: # reversed(stack):
-                #print("%d %x %x %d %d %s" % (stack_item.status, stack_item.ip, stack_item.offset, pid, stack_id, str(stack_item.build_id)))
-                func_name = b.sym(stack_item, pid).decode(DECODE_CHARSET, 'replace')
+                print("%d %x %x %d %d" % (stack_item.status, stack_item.ip, stack_item.offset, pid, stack_id))
+                func_name = b.sym(stack_item.ip, pid).decode(DECODE_CHARSET, 'replace')
                 if func_name not in exclusions:
                     if strip_args:
                         func_name = re.split('[<(]', func_name)[0]
@@ -222,7 +222,10 @@ def get_kstack_traces(kstack_traces):
             line = f"kstack {stack_id:6} "
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
+                #print(stack_id)
+               
                 for addr in reversed(stack):
+                    #print("  %x" % addr)
                     func = b.sym(addr, -1).decode(DECODE_CHARSET, 'replace')
                     if func not in exclusions and not func.startswith('bpf_'):
                         line += "->" + b.ksym(addr).decode(DECODE_CHARSET, 'replace')
@@ -283,7 +286,7 @@ def print_stacks_if_nerdmode():
         # printing stacktiles first, so the task state info is in the bottom of terminal output
         (term_width, term_height) = shutil.get_terminal_size()
 
-        print_pivoted_dynamic(get_kstack_traces(stackmap), max_line_length=term_width)
+        print_pivoted_dynamic(get_kstack_traces(kstackmap), max_line_length=term_width)
         print()
 
         print_pivoted_dynamic(get_ustack_traces(stackmap), max_line_length=term_width)
@@ -291,7 +294,7 @@ def print_stacks_if_nerdmode():
 
     if args.nerd_mode:
         # print stack as long line traces
-        for s in get_kstack_traces(stackmap): print(s)
+        for s in get_kstack_traces(kstackmap): print(s)
         for s in get_ustack_traces(stackmap): print(s)
 
 # group by for reporting
@@ -408,7 +411,8 @@ print(f"===  Ready (mypid {mypid})\n")
 
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
-stackmap = b.get_table("stackmap")
+stackmap  = b.get_table("stackmap")
+kstackmap = b.get_table("kstackmap")
 
 # replace digits in "comm" for better grouping and reporting
 trim_comm = re.compile(r'\d+')
