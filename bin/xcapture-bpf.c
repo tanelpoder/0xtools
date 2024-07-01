@@ -46,7 +46,7 @@ struct thread_state_t {
     u32 uid;
     char comm[TASK_COMM_LEN];
     char orig_comm[TASK_COMM_LEN];
-    char cmdline[64]; // task->mm->argv0 command executed, unless changed to something else, like Postgres does
+    char cmdline[64]; // task->mm->argv0 command executed, unless later changed to something else, like Postgres does
 
     u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
     // unsigned long syscall_args[6]; // IBM s390x port has only 5 syscall args
@@ -286,6 +286,9 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
         t_prev->offcpu_k = stackmap.get_stackid(ctx, 0); //, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 
+	// probably too expensive to execute it here
+        bpf_probe_read_str(t_prev->cmdline, sizeof(t_prev->cmdline), (struct task_struct *)prev->mm->arg_start);
+
         tsa.update(&prev_tid, t_prev);
     }
 
@@ -300,9 +303,6 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 	
 	if (!t_next->comm[0]) // if the first char is null, it's probably not yet set
             bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
-
-	//if (!t_next->cmdline[0]) // possibly too expensive to do here (at every event at least)
-        // bpf_probe_read_str(t_next->cmdline, sizeof(t_next->cmdline), (struct task_struct *)next->mm->arg_start);
 
         t_next->state = next->__state;
         t_next->in_sched_migrate  = 0;
