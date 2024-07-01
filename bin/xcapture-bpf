@@ -37,8 +37,8 @@ from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
 
 # all available fields (if you add more fields to thread_state_t in C, add them here)
-available_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'comm2'
-                   , 'syscall', 'cmdline', 'cmdline2', 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k'
+available_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'comm2', 'syscall'
+                   , 'cmdline', 'cmdline2', 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k'
                    , 'waker_tid', 'sch' ]
 
 # default output fields for ungrouped full detail output
