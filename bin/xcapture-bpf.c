@@ -64,7 +64,7 @@ struct thread_state_t {
     //s32 oracle_wait_event;
 
     // internal use by python frontend
-    bool syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't print syscall_id 0
+    bool syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't resolve syscall_id 0
 };
 
 
