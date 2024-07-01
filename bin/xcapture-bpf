@@ -31,7 +31,7 @@ DECODE_CHARSET   = "utf-8"
 XTOP_MAX_LINES   = 25 # how many top output lines to print
 
 
-import os, sys, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
+import os, sys, io, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
 from collections import defaultdict
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
@@ -502,10 +502,10 @@ while True:
 
         time.sleep(1 / (args.sample_hz if args.xtop else 1))
 
-
     if output_records:
         if args.clear_screen:
-            os.system('clear')
+            buffer = io.StringIO()
+            sys.stdout = buffer
 
         print_stacks_if_nerdmode()
         print()
@@ -524,12 +524,16 @@ while True:
             # terminal size may change over time 
             (term_width, term_height) = shutil.get_terminal_size()
 
-            for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 11): # header/footer lines
+            for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 10): # header/footer lines
                 print()
 
         else: # wide raw output
             print_fields(output_records, output_fields) 
-        
-        print("\n")
+
+        if args.clear_screen:
+            os.system('clear')
+            output = buffer.getvalue()
+            sys.stdout = sys.__stdout__ 
+            print(output)
 
 # That's all, folks!
