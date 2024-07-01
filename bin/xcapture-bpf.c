@@ -42,7 +42,6 @@ struct thread_state_t {
     u32 pid;
     u32 uid;
     char comm[TASK_COMM_LEN];
-    char orig_comm[TASK_COMM_LEN];
     char cmdline[64]; // task->mm->argv0 command executed, unless later changed to something else, like Postgres does
 
     u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
@@ -232,7 +231,7 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     t_new->tid = tid_woken;          // this guy is being woken up
     t_new->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here?)
 
-    bpf_probe_read_str(t_new->comm, sizeof(t_new->comm), args->comm); // the app may change its comm
+    bpf_probe_read_str(t_new->comm, sizeof(t_new->comm), args->comm);
     // cause of a bug:
     // bpf_probe_read_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
