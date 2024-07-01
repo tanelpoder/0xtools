@@ -22,14 +22,11 @@
  *
  */
 
-#include <linux/bpf.h>
 #include <uapi/linux/bpf.h>
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/types.h>
 #include <linux/syscalls.h>
-
-//#include <linux/bpf.h>
 
 #ifdef BCC_SEC
 #define __BCC__

@@ -343,9 +343,13 @@ if args.list:
         print(f)
     sys.exit(0)
 
-# handle xtop -g and -G group by columns
+# handle xtop -g and -G group by columns (and same -g/-G options work for non-xtop output col selection too)
 groupby_fields = args.group_by.split(',')
-groupby_fields = groupby_fields + args.append_group_by.split(',') if args.append_group_by else groupby_fields
+
+if args.xtop:
+    groupby_fields = groupby_fields + args.append_group_by.split(',') if args.append_group_by else groupby_fields
+else:
+    output_fields = output_fields + args.append_group_by.split(',') if args.append_group_by else groupby_fields
 
 if set(groupby_fields) - set(available_fields):
     print("Error: incorrect group by field name specified, use --list option see allowed columns")
@@ -529,6 +533,7 @@ while True:
 
         else: # wide raw output
             print_fields(output_records, output_fields) 
+            print()
 
         if args.clear_screen:
             os.system('clear')
