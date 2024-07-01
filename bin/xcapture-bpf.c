@@ -47,10 +47,17 @@ struct thread_state_t {
     u16 syscall_id; // unsigned as we switch the value to negative on completion, to see the last syscall
     // unsigned long syscall_args[6]; // IBM s390x port has only 5 syscall args
 
+#ifdef OFFCPU_U
     s32 offcpu_u;   // offcpu ustack
+#endif
+#ifdef OFFCPU_K
     s32 offcpu_k;   // offcpu kstack
+#endif
+#ifdef ONCPU_STACKS
     s32 oncpu_u;    // cpu-profile ustack
     s32 oncpu_k;    // cpu-profile kstack
+#endif
+
     s32 syscall_u;
 
     s32 waker_tid;           // who invoked the waking of the target task
@@ -58,10 +65,10 @@ struct thread_state_t {
     bool in_sched_waking;    // invoke wakeup, potentially on another CPU via inter-processor signalling (IPI)
     bool in_sched_wakeup;    // actual wakeup on target CPU starts
     bool is_running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
-    s16 waking_syscall;
-    s32 waking_u;
 
-    //s32 oracle_wait_event;
+    // s16 waking_syscall;
+    // s32 waking_u;
+    // s32 oracle_wait_event;
 
     // internal use by python frontend
     bool syscall_set; // 0 means that syscall probe has not fired yet for this task, so don't resolve syscall_id 0
@@ -127,6 +134,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_exit) {
 
 // sampling profiling of on-CPU threads (python frontend uses perf event with freq=1)
 // update the stack id of threads currently running on (any) CPU
+
 int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
 
     u32 tid = bpf_get_current_pid_tgid() & 0xffffffff;
@@ -148,18 +156,19 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         if (!t->comm[0]) // if the first char is null, that tsa fields hasn't been populated yet
 	    bpf_probe_read_str(t->comm, sizeof(t->comm), (struct task_struct *)curtask->comm);
 
-        //if (!t->cmdline[0])
+        if (!t->cmdline[0])
 	    bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
+#ifdef ONCPU_STACKS
         t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK); // | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t->oncpu_k = stackmap.get_stackid(ctx, 0); // BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+#endif
 
         tsa.update(&tid, t);
     }
 
     return 0;
 };
-
 
 // scheduler (or someone) wants this task to migrate to another CPU
 TRACEPOINT_PROBE(sched, sched_migrate_task) {
@@ -244,7 +253,7 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
 RAW_TRACEPOINT_PROBE(sched_switch) {
 
     // from https://github.com/torvalds/linux/blob/master/include/trace/events/sched.h (sched_switch trace event)
-    bool *preempt = (bool *)ctx->args[0]; // todo: check if this is correct
+    bool *preempt = (bool *)ctx->args[0];
     struct task_struct *prev = (struct task_struct *)ctx->args[1];
     struct task_struct *next = (struct task_struct *)ctx->args[2];
     unsigned int prev_state = prev->__state; // ctx->args[3] won't work in older configs due to breaking change in sched_switch tracepoint
@@ -265,26 +274,30 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->tid = prev_tid;
         t_prev->pid = prev_pid;
         t_prev->flags = prev->flags;
-        bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm);
+
+	if (!t_prev->comm[0])
+            bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm);
 
         // switch finished, clear waking/wakeup flags
         t_prev->is_running_on_cpu = 0;
         t_prev->in_sched_migrate  = 0; // todo: these 3 are probably not needed here
         t_prev->in_sched_waking   = 0;
         t_prev->in_sched_wakeup   = 0;
-        t_prev->state = prev_state; // prev_state is passed in as an arg to sched_switch probe
+        t_prev->state = prev_state;
 
-        if (prev->flags & PF_KTHREAD) // kernel thread
+#ifdef OFFCPU_U
+	if (prev->flags & PF_KTHREAD) // kernel thread
             t_prev->offcpu_u = t_prev->offcpu_u * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
         else
-            // t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK);
-
-        t_prev->offcpu_k = stackmap.get_stackid(ctx, 0); //, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
-
+            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+#endif
+#ifdef OFFCPU_K
+        t_prev->offcpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+#endif
+#ifdef CMDLINE
 	// probably too expensive to execute it here
         bpf_probe_read_str(t_prev->cmdline, sizeof(t_prev->cmdline), (struct task_struct *)prev->mm->arg_start);
-
+#endif
         tsa.update(&prev_tid, t_prev);
     }
 
@@ -297,8 +310,8 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->pid = next_pid;
         t_next->flags = next->flags;
 	
-	if (!t_next->comm[0]) // if the first char is null, it's probably not yet set
-            bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
+	//if (!t_next->comm[0]) // if the first char is null, it's probably not yet set
+        //    bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
 
         t_next->state = next->__state;
         t_next->in_sched_migrate  = 0;

@@ -26,7 +26,7 @@ __description__  = "Always-on profiling of Linux thread activity using eBPF."
 __url__          = "https://0x.tools"
 
 DEFAULT_PATH     = "." # where to write xcapture -o output files
-DEFAULT_GROUP_BY = "st,username,comm,syscall,cmdline" # for xtop mode
+DEFAULT_GROUP_BY = "st,username,comm,syscall" # for xtop mode
 DECODE_CHARSET   = "utf-8"
 XTOP_MAX_LINES   = 25 # how many top output lines to print
 
@@ -344,14 +344,17 @@ if args.list:
     sys.exit(0)
 
 # handle xtop -g and -G group by columns (and same -g/-G options work for non-xtop output col addition too)
+# args.group_by defaults to DEFAULT_GROUP_BY
 groupby_fields = args.group_by.split(',')
 
 if args.xtop:
     groupby_fields = groupby_fields + args.append_group_by.split(',') if args.append_group_by else groupby_fields
+    used_fields = groupby_fields # todo
 else:
     output_fields = output_fields + args.append_group_by.split(',') if args.append_group_by else output_fields
+    used_fields = output_fields
 
-if set(groupby_fields) - set(available_fields):
+if set(used_fields) - set(available_fields):
     print("Error: incorrect group by field name specified, use --list option see allowed columns")
     exit(1)
 
@@ -370,8 +373,28 @@ print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distro.id
 with open('xcapture-bpf.c', 'r') as file:
     bpf_text = file.read()
 
+# set up global variables for conditionally inserting stack capture code
+offcpu_u = 'offcpu_u' in used_fields
+offcpu_k = 'offcpu_k' in used_fields
+offcpu_stacks = offcpu_u or offcpu_k
+oncpu_stacks = ('oncpu_u' in used_fields or 'oncpu_k' in used_fields)
+cmdline = ('cmdline' in used_fields or 'cmdline2' in used_fields)
+
+# dynamic compilation of features that are needed
+ifdef = ''
+if offcpu_u:
+    ifdef += '#define OFFCPU_U 1\n'
+if offcpu_k:
+    ifdef += '#define OFFCPU_K 1\n'
+if offcpu_stacks:
+    ifdef += '#define OFFCPU_STACKS 1\n'
+if oncpu_stacks:
+    ifdef += '#define ONCPU_STACKS 1\n'
+if cmdline:
+    ifdef += '#define CMDLINE 1\n'
+
 print('===  Loading BPF...')
-b = BPF(text=bpf_text)
+b = BPF(text= ifdef + bpf_text)
 
 # Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events 
 # are not available, but software clocks don't measure what happens when CPUs are in 
@@ -528,7 +551,7 @@ while True:
             # terminal size may change over time 
             (term_width, term_height) = shutil.get_terminal_size()
 
-            for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 10): # header/footer lines
+            for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
                 print()
 
         else: # wide raw output
