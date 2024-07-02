@@ -220,8 +220,9 @@ def get_ustack_traces(ustack_traces, strip_args=True):
     return lines
 
 def get_kstack_traces(kstack_traces):
-    exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call', 'ret_from_fork_asm', 'ret_from_fork'
-                 , '__bpf_trace_sched_switch', '__traceiter_sched_switch']
+    exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call'
+                 , 'ret_from_fork_asm', 'ret_from_fork', '__bpf_trace_sched_switch', '__traceiter_sched_switch'
+                 , 'el0t_64_sync', 'el0t_64_sync_handler', 'el0_svc', 'do_el0_svc', 'el0_svc_common', 'invoke_syscall' ]
     lines = []
  
     for k, v in kstack_traces.items():
