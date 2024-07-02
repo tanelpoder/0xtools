@@ -494,6 +494,9 @@ while True:
                 enriched_fields = {"timestamp": ts[:-3]}
     
                 for field_name in fields_dict:
+                    if not field_name in used_fields:
+                        continue
+
                     outv = None # enriched value
                     if field_name in ['state', 'st']:
                         if state in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
