@@ -294,9 +294,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->uid = prev->cred->euid.val;
 
 #ifdef OFFCPU_U
-        if (prev->flags & PF_KTHREAD) // kernel thread
-            t_prev->offcpu_u = t_prev->offcpu_u * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
-        else
+        if (!(prev->flags & PF_KTHREAD))
             t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 #endif
 #ifdef OFFCPU_K
