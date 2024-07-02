@@ -70,7 +70,7 @@ struct thread_state_t {
     bool is_running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
 
     // s16 waker_syscall;
-    // s32 waking_u;
+    // s32 waker_ustack;
     // s32 oracle_wait_event;
 
     // internal use by python frontend
@@ -80,6 +80,7 @@ struct thread_state_t {
 
 // not using BPF_F_NO_PREALLOC here for now, trading some kernel memory for better performance
 BPF_HASH(tsa, u32, struct thread_state_t, 16384);
+
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
 // a rudimentary way for ignoring some syscalls we do not care about (this whole thing will change before GA release)

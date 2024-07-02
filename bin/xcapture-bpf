@@ -284,7 +284,7 @@ def print_pivoted_dynamic(traces, max_line_length):
 
 # stack printing and formatting choice driver function
 def print_stacks_if_nerdmode():
-    if args.giant_nerd_mode:
+    if args.giant_nerd_mode and stackmap:
         # printing stacktiles first, so the task state info is in the bottom of terminal output
         (term_width, term_height) = shutil.get_terminal_size()
 
@@ -412,6 +412,8 @@ tsa = b.get_table("tsa")
 
 if oncpu_stacks or offcpu_stacks:
     stackmap  = b.get_table("stackmap")
+else:
+    stackmap = {}
 
 # get own pid so to not display it in output
 mypid = os.getpid()
