@@ -32,8 +32,11 @@
 #define __BCC__
 #endif
 
-// need to optimize this with BPF_HASH maps & 32bit stack_ids to reduce mem usage and hash collisions
+// need to optimize this with a BPF_STACK_TRACE_BUILDID and possibly a
+// BPF_HASH map & 32bit stack_id to reduce mem usage and hash collisions (in v3/libbpf)
+#if defined(ONCPU_STACKS) || defined(OFFCPU_U) || defined(OFFCPU_K)
 BPF_STACK_TRACE(stackmap, 65536);
+#endif
 
 struct thread_state_t {
     u32 state; // scheduler state

@@ -182,7 +182,6 @@ def print_fields(rows, columns, linelimit=0):
     print(header2)
     print("-" * len(header2))
 
-    #for row in rows:
     for i, row in enumerate(rows):
         line = " | ".join(
             f"{row[col]:>{col_widths[col]}.2f}" if col in ["seconds", "samples", "avg_thr"] 
@@ -206,13 +205,10 @@ def get_ustack_traces(ustack_traces, strip_args=True):
             line = f"ustack {stack_id:6} "
             stack = list(ustack_traces.walk(stack_id))
             for addr in reversed(stack): # reversed(stack):
-                #print("%d %x %x %d %d" % (stack_item.status, stack_item.ip, stack_item.offset, pid, stack_id))
-                #func_name = b.sym(stack_item.ip, pid).decode(DECODE_CHARSET, 'replace')
                 func_name = b.sym(addr, pid).decode(DECODE_CHARSET, 'replace')
                 if func_name not in exclusions:
                     if strip_args:
                         func_name = re.split('[<(]', func_name)[0]
-                    #line += "->" + (func_name if func_name != '[unknown]' else '{:x}'.format(stack_item.ip)) # ip - offset?
                     line += "->" + (func_name if func_name != '[unknown]' else '{:x}'.format(addr))
 
             lines.append(line)
@@ -230,10 +226,8 @@ def get_kstack_traces(kstack_traces):
             line = f"kstack {stack_id:6} "
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
-                #print(stack_id)
                
                 for addr in reversed(stack):
-                    #print("  %x" % addr)
                     func = b.ksym(addr).decode(DECODE_CHARSET, 'replace')
                     if func not in exclusions and not func.startswith('bpf_'):
                         line += "->" + b.ksym(addr).decode(DECODE_CHARSET, 'replace')
@@ -415,7 +409,9 @@ b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
 
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
-stackmap  = b.get_table("stackmap")
+
+if oncpu_stacks or offcpu_stacks:
+    stackmap  = b.get_table("stackmap")
 
 # get own pid so to not display it in output
 mypid = os.getpid()
@@ -546,6 +542,7 @@ while True:
             sys.stdout = buffer
 
         print_stacks_if_nerdmode()
+        print()
         print()
  
         if args.xtop:
