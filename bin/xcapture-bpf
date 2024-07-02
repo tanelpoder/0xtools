@@ -191,7 +191,7 @@ def print_fields(rows, columns, linelimit=0):
         print(line)
 
         # dont break out if linelimit is at its default 0
-        if linelimit and i >= linelimit:
+        if linelimit and i >= linelimit - 1:
             break
 
 
@@ -528,40 +528,36 @@ while True:
                         outv = get_username(fields_dict['uid']) 
     
                     elif field_name == ('offcpu_k'):   # kstack id
-                        if state[0] != 'R':  # runnable state can be R or RQ, RQ is also off CPU
+                        if state != 'R':  # runnable state can be R or RQ: RQ is also off CPU, so will capture it
                             val = fields_dict[field_name]
-                            if val >= 0:
-                                outv = val if val else '-'
-                                output_kstack[val] = True
+                            outv = val if val > 0 else '-'
+                            output_kstack[val] = True
                         else:
                             outv = '-'
     
                     elif field_name == ("offcpu_u"):   # ustack id
-                        if state[0] != 'R':
+                        if state != 'R':
                             val = fields_dict[field_name]
-                            if val >= 0:
-                                outv = val if val else '-'
-                                # using pid/tgid here, address space is same for all threads in a process
-                                output_ustack[val, fields_dict['pid']] = True  
+                            outv = val if val > 0 else '-'
+                            # using pid/tgid here, address space is same for all threads in a process
+                            output_ustack[val, fields_dict['pid']] = True  
                         else:
                             outv = '-'
 
                     elif field_name == ('oncpu_k'):
-                        if state[0] != 'R':            # only print the perf-cpu samples when actually caught on cpu
+                        if state == 'R': # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
                             val = fields_dict[field_name]
-                            if val >= 0:
-                                outv = val if val else '-'
-                                output_kstack[val] = True
+                            outv = val if val > 0 else '-'
+                            output_kstack[val] = True
                         else:
                             outv = '-'
 
                     elif field_name == ("oncpu_u"):
-                        if state[0] != 'R':
+                        if state == 'R':
                             val = fields_dict[field_name]
-                            if val >= 0:
-                                outv = val if val else '-'
-                                # using pid/tgid here, address space is same for all threads in a process
-                                output_ustack[val, fields_dict['pid']] = True  
+                            outv = val if val > 0 else '-'
+                            # using pid/tgid here, address space is same for all threads in a process
+                            output_ustack[val, fields_dict['pid']] = True  
                         else:
                             outv = '-'
     
