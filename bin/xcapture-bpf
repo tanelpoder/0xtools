@@ -490,7 +490,7 @@ while True:
                 state = get_task_state_name(fields_dict['state'])
 
                 if state == 'R' and not is_running_on_cpu: # runnable on runqueue
-                            state_suffix = 'Q'
+                    state += 'Q'
 
                 enriched_fields = {"timestamp": ts[:-3]}
     
@@ -500,9 +500,9 @@ while True:
 
                     outv = None # enriched value
                     if field_name in ['state', 'st']:
-                        if state in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
-                              # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
-                            outv = state + state_suffix
+                        if state[0] in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
+                            # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
+                            outv = state
                         else:
                             save_record = False
                             break
