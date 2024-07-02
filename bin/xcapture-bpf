@@ -31,10 +31,17 @@ DECODE_CHARSET   = "utf-8"
 XTOP_MAX_LINES   = 25 # how many top output lines to print
 
 
-import os, sys, io, pwd, time, ctypes, platform, distro, re, shutil, argparse, signal
+import os, sys, io, pwd, time, ctypes, platform, re, shutil, argparse, signal
 from collections import defaultdict
 from datetime import datetime
 from bcc import BPF, PerfType, PerfSWConfig
+
+# distro package might not be present
+try:
+    import distro
+except ImportError:
+    distro = None
+    pass
 
 # all available fields (if you add more fields to thread_state_t in C, add them here)
 available_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'comm2', 'syscall'
@@ -364,13 +371,16 @@ if os.geteuid() != 0:
     sys.exit(1)
 
 # ready to go
-progname = "xtop" if args.xtop else "xcapture-bpf"
-kernname = platform.release().split('-')[0]
-archname = platform.machine()
-print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distro.id().title()} Linux {distro.version()} {kernname} {archname}')
+progname  = "xtop" if args.xtop else "xcapture-bpf"
+kernname  = platform.release().split('-')[0]
+archname  = platform.machine()
+distroid  = distro.id() if distro else ''
+distrover = distro.version() if distro else ''
+
+print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distroid} Linux {distrover} {kernname} {archname}')
 
 # open and load the BPF instrumenter
-with open('xcapture-bpf.c', 'r') as file:
+with open(os.path.dirname(os.path.abspath(__file__)) + '/xcapture-bpf.c', 'r') as file:
     bpf_text = file.read()
 
 # set up global variables for conditionally inserting stack capture code
