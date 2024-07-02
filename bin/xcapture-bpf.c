@@ -156,13 +156,15 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         t->pid = pid;
         t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
         t->state = curtask->__state;
+        t->uid = curtask->cred->euid.val;
+        bpf_probe_read_str(t->comm, sizeof(t->comm), (struct task_struct *)curtask->comm);
 
-        if (!t->comm[0]) // if the first char is null, that tsa fields hasn't been populated yet
-	    bpf_probe_read_str(t->comm, sizeof(t->comm), (struct task_struct *)curtask->comm);
-
-        if (!t->cmdline[0])
-	    bpf_probe_read_str(t->cmdline, sizeof(t->cmdline), (struct task_struct *)curtask->mm->arg_start);
-
+#ifdef CMDLINE
+        if (curtask->mm && curtask->mm->arg_start) {
+            unsigned long arg_start = curtask->mm->arg_start;
+            bpf_probe_read_user_str(t->cmdline, sizeof(t->cmdline), (void *)arg_start);
+        }
+#endif
 #ifdef ONCPU_STACKS
         t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK); // | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t->oncpu_k = stackmap.get_stackid(ctx, 0); // BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
@@ -245,8 +247,9 @@ TRACEPOINT_PROBE(sched, sched_wakeup_new) {
     t_new->waker_tid = curtask->pid; // this is who wakes that guy up (todo: is this valid here?)
 
     bpf_probe_read_str(t_new->comm, sizeof(t_new->comm), args->comm);
-    // cause of a bug:
-    // bpf_probe_read_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
+
+    // dont read cmdline here, will get cmdline of the task that ran clone()?
+    // bpf_probe_read_user_str(t_new->cmdline, sizeof(t_new->cmdline), (struct task_struct *)curtask->mm->arg_start);
 
     tsa.update(&tid_woken, t_new);
 
@@ -279,8 +282,8 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->pid = prev_pid;
         t_prev->flags = prev->flags;
 
-	if (!t_prev->comm[0])
-            bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm);
+        // if (!t_prev->comm[0])
+        bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm);
 
         // switch finished, clear waking/wakeup flags
         t_prev->is_running_on_cpu = 0;
@@ -290,7 +293,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->state = prev_state;
 
 #ifdef OFFCPU_U
-	if (prev->flags & PF_KTHREAD) // kernel thread
+        if (prev->flags & PF_KTHREAD) // kernel thread
             t_prev->offcpu_u = t_prev->offcpu_u * -1; // jbd2/dm-n-n shows ustack for some reason (bug...)
         else
             t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
@@ -299,8 +302,10 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->offcpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 #endif
 #ifdef CMDLINE
-	// probably too expensive to execute it here
-        bpf_probe_read_str(t_prev->cmdline, sizeof(t_prev->cmdline), (struct task_struct *)prev->mm->arg_start);
+        if (prev->mm && prev->mm->arg_start) {
+            unsigned long arg_start = prev->mm->arg_start;
+            bpf_probe_read_user_str(t_prev->cmdline, sizeof(t_prev->cmdline), (void *)arg_start);
+        }
 #endif
         tsa.update(&prev_tid, t_prev);
     }
@@ -313,9 +318,9 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->tid = next_tid;
         t_next->pid = next_pid;
         t_next->flags = next->flags;
-	
-	//if (!t_next->comm[0]) // if the first char is null, it's probably not yet set
-        //    bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
+    
+        //if (!t_next->comm[0])
+        bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
 
         t_next->state = next->__state;
         t_next->in_sched_migrate  = 0;
@@ -324,6 +329,13 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_next->is_running_on_cpu = 1;
 
         t_next->uid = next->cred->euid.val;
+
+#ifdef CMDLINE
+        if (next->mm && next->mm->arg_start) {
+            unsigned long arg_start = next->mm->arg_start;
+            bpf_probe_read_user_str(t_next->cmdline, sizeof(t_next->cmdline), (void *)arg_start);
+        }
+#endif
 
         tsa.update(&next_tid, t_next);
     }
