@@ -69,7 +69,7 @@ struct thread_state_t {
     bool in_sched_wakeup;    // actual wakeup on target CPU starts
     bool is_running_on_cpu;  // sched_switch (to complete the wakeup/switch) has been invoked
 
-    // s16 waking_syscall;
+    // s16 waker_syscall;
     // s32 waking_u;
     // s32 oracle_wait_event;
 
@@ -189,7 +189,7 @@ TRACEPOINT_PROBE(sched, sched_migrate_task) {
     return 0;
 }
 
-// Context enrichment example (kernel): who (curtask->pid) woke a wakee (args->pid) up?
+// Context enrichment example (kernel): which waker (curtask->pid) woke a wakee (args->pid) up?
 TRACEPOINT_PROBE(sched, sched_waking) {
 
     struct task_struct *curtask = (struct task_struct *) bpf_get_current_task();
