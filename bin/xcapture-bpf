@@ -424,152 +424,158 @@ trim_comm = re.compile(r'\d+')
 first_report_printed = False # show first xtop report quicker
 
 while True:
-    output_kstack = {} # map of stack_ids seen so far
-    output_ustack = {}
-    output_records = []
-
-    sample_start = time.time()
-    duration = (args.report_seconds if args.xtop and first_report_printed else 1)
-    sample_end = sample_start + duration # todo: 1 Hz for raw/csv output for now
-    first_report_printed = True
-    samples_attempted = 0 # not all TSA samples contain active threads of interest, this tells us how many samples we really took
-
-    while time.time() < sample_end:
-        samples_attempted += 1
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        i = tsa.items()[0]
-
-        for i in tsa.items():
-            save_record = True
-            # extract python values from BPF ctypes, return '-' if there's no match
-            fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
-
-            if fields_dict['tid'] == mypid:
-                continue
-
-            # additional fields for adding human readable info (not using None as it would be printed out as "None")
-            fields_dict['st']          = ''
-            fields_dict['sch']         = '' # for scheduler nerds
-            fields_dict['state_flags'] = '' # full scheduler state bitmap
-            fields_dict['username']    = ''
-            fields_dict['syscall']     = ''
-            fields_dict['comm2']       = ''
-            fields_dict['cmdline2']    = ''
- 
-            current_syscall   = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
-            in_sched_migrate  = fields_dict['in_sched_migrate']
-            in_sched_wakeup   = fields_dict['in_sched_wakeup']
-            in_sched_waking   = fields_dict['in_sched_waking']
-            is_running_on_cpu = fields_dict['is_running_on_cpu']
-
-            enriched_fields = {"timestamp": ts[:-3]}
-
-            for field_name in fields_dict:
-                outv = None # enriched value
-
-                if field_name in ['state', 'st']:
-                    state_suffix = ''
-                    state = get_task_state_name(fields_dict['state'])
-                    # for scheduling latency/preempted tasks (RQ)
-                    if state == 'R' and not is_running_on_cpu:
-                        state_suffix = 'Q'
-                    if state in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
-                          # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
-                        outv = state + state_suffix
+    try:
+        output_kstack = {} # map of stack_ids seen so far
+        output_ustack = {}
+        output_records = []
+    
+        sample_start = time.time()
+        duration = (args.report_seconds if args.xtop and first_report_printed else 1)
+        sample_end = sample_start + duration # todo: 1 Hz for raw/csv output for now
+        first_report_printed = True
+        samples_attempted = 0 # not all TSA samples contain active threads of interest, this tells us how many samples we really took
+    
+        while time.time() < sample_end:
+            samples_attempted += 1
+            ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            i = tsa.items()[0]
+    
+            for i in tsa.items():
+                save_record = True
+                # extract python values from BPF ctypes, return '-' if there's no match
+                fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
+    
+                if fields_dict['tid'] == mypid:
+                    continue
+    
+                # additional fields for adding human readable info (not using None as it would be printed out as "None")
+                fields_dict['st']          = ''
+                fields_dict['sch']         = '' # for scheduler nerds
+                fields_dict['state_flags'] = '' # full scheduler state bitmap
+                fields_dict['username']    = ''
+                fields_dict['syscall']     = ''
+                fields_dict['comm2']       = ''
+                fields_dict['cmdline2']    = ''
+     
+                current_syscall   = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
+                in_sched_migrate  = fields_dict['in_sched_migrate']
+                in_sched_wakeup   = fields_dict['in_sched_wakeup']
+                in_sched_waking   = fields_dict['in_sched_waking']
+                is_running_on_cpu = fields_dict['is_running_on_cpu']
+    
+                enriched_fields = {"timestamp": ts[:-3]}
+    
+                for field_name in fields_dict:
+                    outv = None # enriched value
+    
+                    if field_name in ['state', 'st']:
+                        state_suffix = ''
+                        state = get_task_state_name(fields_dict['state'])
+                        # for scheduling latency/preempted tasks (RQ)
+                        if state == 'R' and not is_running_on_cpu:
+                            state_suffix = 'Q'
+                        if state in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
+                              # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
+                            outv = state + state_suffix
+                        else:
+                            save_record = False
+                            break
+    
+                    elif field_name.startswith('comm'):
+                        val = fields_dict['comm'] # source field is "comm" regardless of potential comm2 output field name
+                        if isinstance(val, bytes):
+                            outv = str(val, DECODE_CHARSET)
+                        else:
+                            outv = str(val)
+                        if field_name == 'comm':  # only trim "comm", but not comm2 that is the unaltered string
+                            outv = re.sub(trim_comm, '*', outv)
+    
+                    elif field_name.startswith('cmdline'):
+                        val = fields_dict['cmdline']
+                        if isinstance(val, bytes):
+                            outv = str(val, DECODE_CHARSET)
+                        else:
+                            outv = str(val)
+                        if field_name == 'cmdline':
+                            outv = re.sub(trim_comm, '*', outv)
+    
+                    elif field_name == 'syscall':
+                        outv = current_syscall
+    
+                    elif field_name == 'username':
+                        outv = get_username(fields_dict['uid']) 
+    
+                    elif field_name.endswith('_k'):   # kstack id
+                        val = fields_dict[field_name]
+                        outv = val if val else '-'
+                        output_kstack[val] = True
+    
+                    elif field_name.endswith("_u"):   # ustack id
+                        val = fields_dict[field_name]
+                        outv = val if val else '-'
+                        # using pid/tgid here, address space is same for all threads in a process
+                        output_ustack[val, fields_dict['pid']] = True  
+    
+                    elif field_name == 'sch': 
+                        # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
+                        outv  = '-' if in_sched_migrate  else '_'
+                        outv += '-' if in_sched_waking   else '_'
+                        outv += '-' if in_sched_wakeup   else '_'
+                        outv += '-' if is_running_on_cpu else '_'
+    
                     else:
-                        save_record = False
-                        break
-
-                elif field_name.startswith('comm'):
-                    val = fields_dict['comm'] # source field is "comm" regardless of potential comm2 output field name
-                    if isinstance(val, bytes):
-                        outv = str(val, DECODE_CHARSET)
-                    else:
-                        outv = str(val)
-                    if field_name == 'comm':  # only trim "comm", but not comm2 that is the unaltered string
-                        outv = re.sub(trim_comm, '*', outv)
-
-                elif field_name.startswith('cmdline'):
-                    val = fields_dict['cmdline']
-                    if isinstance(val, bytes):
-                        outv = str(val, DECODE_CHARSET)
-                    else:
-                        outv = str(val)
-                    if field_name == 'cmdline':
-                        outv = re.sub(trim_comm, '*', outv)
-
-                elif field_name == 'syscall':
-                    outv = current_syscall
-
-                elif field_name == 'username':
-                    outv = get_username(fields_dict['uid']) 
-
-                elif field_name.endswith('_k'):   # kstack id
-                    val = fields_dict[field_name]
-                    outv = val if val else '-'
-                    output_kstack[val] = True
-
-                elif field_name.endswith("_u"):   # ustack id
-                    val = fields_dict[field_name]
-                    outv = val if val else '-'
-                    # using pid/tgid here, address space is same for all threads in a process
-                    output_ustack[val, fields_dict['pid']] = True  
-
-                elif field_name == 'sch': 
-                    # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
-                    outv  = '-' if in_sched_migrate  else '_'
-                    outv += '-' if in_sched_waking   else '_'
-                    outv += '-' if in_sched_wakeup   else '_'
-                    outv += '-' if is_running_on_cpu else '_'
-
-                else:
-                    val = fields_dict[field_name]
-                    if isinstance(val, bytes):
-                        outv = str(val, DECODE_CHARSET)
-                    else:
-                        outv = str(val)
-                    
-                enriched_fields[field_name] = outv
-
-            if save_record:
-                output_records.append(enriched_fields)
-
-        time.sleep(1 / (args.sample_hz if args.xtop else 1))
-
-    if output_records:
-        if args.clear_screen:
-            buffer = io.StringIO()
-            sys.stdout = buffer
-
-        print_stacks_if_nerdmode()
-        print()
-        print()
- 
-        if args.xtop:
-            # a new field "samples" shows up (count(*))
-            grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
-            ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
-            print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=XTOP_MAX_LINES)
-
+                        val = fields_dict[field_name]
+                        if isinstance(val, bytes):
+                            outv = str(val, DECODE_CHARSET)
+                        else:
+                            outv = str(val)
+                        
+                    enriched_fields[field_name] = outv
+    
+                if save_record:
+                    output_records.append(enriched_fields)
+    
+            time.sleep(1 / (args.sample_hz if args.xtop else 1))
+    
+        if output_records:
+            if args.clear_screen:
+                buffer = io.StringIO()
+                sys.stdout = buffer
+    
+            print_stacks_if_nerdmode()
             print()
             print()
-            print(f'sampled: {samples_attempted} times')
-            print(f'start: {ts[:19]}, duration: {duration}s')
-       
-            # terminal size may change over time 
-            (term_width, term_height) = shutil.get_terminal_size()
-
-            for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
+     
+            if args.xtop:
+                # a new field "samples" shows up (count(*))
+                grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
+                ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
+                print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=XTOP_MAX_LINES)
+    
                 print()
+                print()
+                print(f'sampled: {samples_attempted} times')
+                print(f'start: {ts[:19]}, duration: {duration}s')
+           
+                # terminal size may change over time 
+                (term_width, term_height) = shutil.get_terminal_size()
+    
+                for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
+                    print()
+    
+            else: # wide raw output
+                print_fields(output_records, output_fields) 
+                print()
+    
+            if args.clear_screen:
+                os.system('clear')
+                output = buffer.getvalue()
+                sys.stdout = sys.__stdout__ 
+                print(output)
 
-        else: # wide raw output
-            print_fields(output_records, output_fields) 
-            print()
+    except KeyboardInterrupt:
+        exit(0)
+        #signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-        if args.clear_screen:
-            os.system('clear')
-            output = buffer.getvalue()
-            sys.stdout = sys.__stdout__ 
-            print(output)
 
 # That's all, folks!
