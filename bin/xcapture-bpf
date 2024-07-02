@@ -198,6 +198,7 @@ def print_fields(rows, columns, linelimit=0):
 
 def get_ustack_traces(ustack_traces, strip_args=True):
     exclusions = ['__GI___clone3']
+    dedup_map = {}
     lines = []
 
     for stack_id, pid in output_ustack:
@@ -211,7 +212,10 @@ def get_ustack_traces(ustack_traces, strip_args=True):
                         func_name = re.split('[<(]', func_name)[0]
                     line += "->" + (func_name if func_name != '[unknown]' else '{:x}'.format(addr))
 
-            lines.append(line)
+            dedup_map[stack_id] = line
+
+    for stack_id in sorted(dedup_map):
+        lines.append(dedup_map[stack_id])
 
     return lines
 
