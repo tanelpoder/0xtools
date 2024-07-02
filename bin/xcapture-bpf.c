@@ -286,10 +286,10 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         bpf_probe_read_str(t_prev->comm, sizeof(t_prev->comm), prev->comm);
 
         // switch finished, clear waking/wakeup flags
-        t_prev->is_running_on_cpu = 0;
         t_prev->in_sched_migrate  = 0; // todo: these 3 are probably not needed here
         t_prev->in_sched_waking   = 0;
         t_prev->in_sched_wakeup   = 0;
+        t_prev->is_running_on_cpu = 0;
         t_prev->state = prev_state;
 
 #ifdef OFFCPU_U
