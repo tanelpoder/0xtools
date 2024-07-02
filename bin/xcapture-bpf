@@ -471,18 +471,19 @@ while True:
                 in_sched_wakeup   = fields_dict['in_sched_wakeup']
                 in_sched_waking   = fields_dict['in_sched_waking']
                 is_running_on_cpu = fields_dict['is_running_on_cpu']
-    
+
+                # we use state for conditionally printing out things like offcpu_stack etc
+                state_suffix = ''
+                state = get_task_state_name(fields_dict['state'])
+
+                if state == 'R' and not is_running_on_cpu: # runnable on runqueue
+                            state_suffix = 'Q'
+
                 enriched_fields = {"timestamp": ts[:-3]}
     
                 for field_name in fields_dict:
                     outv = None # enriched value
-    
                     if field_name in ['state', 'st']:
-                        state_suffix = ''
-                        state = get_task_state_name(fields_dict['state'])
-                        # for scheduling latency/preempted tasks (RQ)
-                        if state == 'R' and not is_running_on_cpu:
-                            state_suffix = 'Q'
                         if state in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
                               # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
                             outv = state + state_suffix
@@ -509,21 +510,44 @@ while True:
                             outv = re.sub(trim_comm, '*', outv)
     
                     elif field_name == 'syscall':
-                        outv = current_syscall
+                        outv = current_syscall 
     
                     elif field_name == 'username':
                         outv = get_username(fields_dict['uid']) 
     
-                    elif field_name.endswith('_k'):   # kstack id
-                        val = fields_dict[field_name]
-                        outv = val if val else '-'
-                        output_kstack[val] = True
+                    elif field_name == ('offcpu_k'):   # kstack id
+                        if state[0] != 'R':  # runnable state can be R or RQ, RQ is also off CPU
+                            val = fields_dict[field_name]
+                            outv = val if val else '-'
+                            output_kstack[val] = True
+                        else:
+                            outv = '-'
     
-                    elif field_name.endswith("_u"):   # ustack id
-                        val = fields_dict[field_name]
-                        outv = val if val else '-'
-                        # using pid/tgid here, address space is same for all threads in a process
-                        output_ustack[val, fields_dict['pid']] = True  
+                    elif field_name == ("offcpu_u"):   # ustack id
+                        if state[0] != 'R':
+                            val = fields_dict[field_name]
+                            outv = val if val else '-'
+                            # using pid/tgid here, address space is same for all threads in a process
+                            output_ustack[val, fields_dict['pid']] = True  
+                        else:
+                            outv = '-'
+
+                    elif field_name == ('oncpu_k'):
+                        if state[0] != 'R':            # only print the perf-cpu samples when actually caught on cpu
+                            val = fields_dict[field_name]
+                            outv = val if val else '-'
+                            output_kstack[val] = True
+                        else:
+                            outv = '-'
+
+                    elif field_name == ("oncpu_u"):
+                        if state[0] != 'R':
+                            val = fields_dict[field_name]
+                            outv = val if val else '-'
+                            # using pid/tgid here, address space is same for all threads in a process
+                            output_ustack[val, fields_dict['pid']] = True  
+                        else:
+                            outv = '-'
     
                     elif field_name == 'sch': 
                         # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
