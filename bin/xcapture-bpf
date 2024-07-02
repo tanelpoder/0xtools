@@ -374,7 +374,7 @@ if os.geteuid() != 0:
 progname  = "xtop" if args.xtop else "xcapture-bpf"
 kernname  = platform.release().split('-')[0]
 archname  = platform.machine()
-distroid  = distro.id() if distro else ''
+distroid  = distro.id().title() if distro else ''
 distrover = distro.version() if distro else ''
 
 print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distroid} Linux {distrover} {kernname} {archname}')
