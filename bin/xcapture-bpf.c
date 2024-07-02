@@ -32,8 +32,8 @@
 #define __BCC__
 #endif
 
-// need to optimize this with a BPF_STACK_TRACE_BUILDID and possibly a
-// BPF_HASH map & 32bit stack_id to reduce mem usage and hash collisions (in v3/libbpf)
+// need to test if using BPF_STACK_TRACE_BUILDID would optimize things
+// (apparently need separate stackmaps for ustacks & kstacks then)
 #if defined(ONCPU_STACKS) || defined(OFFCPU_U) || defined(OFFCPU_K)
 BPF_STACK_TRACE(stackmap, 65536);
 #endif
