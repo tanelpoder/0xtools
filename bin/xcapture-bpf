@@ -316,7 +316,6 @@ def group_by(records, column_names, sample_attempts_in_set, time_range_in_set):
             grouped_data[key].update({col: record[col] for col in column_names})
         grouped_data[key]['samples'] += 1
 
-    total_records = len(records)
     grouped_list = list(grouped_data.values())
 
     for item in grouped_list:
@@ -580,6 +579,7 @@ while True:
             print()
      
             if args.xtop:
+                total_records = len(output_records)
                 # a new field "samples" shows up (count(*))
                 grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
                 ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
@@ -587,7 +587,7 @@ while True:
     
                 print()
                 print()
-                print(f'sampled: {samples_attempted} times')
+                print(f'sampled: {samples_attempted} times, avg_thr: {round(total_records / samples_attempted, 2)}')
                 print(f'start: {ts[:19]}, duration: {duration}s')
           
                 if args.clear_screen:
