@@ -156,7 +156,6 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         t->pid = pid;
         t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
         t->state = curtask->__state;
-        t->uid = curtask->cred->euid.val;
         bpf_probe_read_str(t->comm, sizeof(t->comm), (struct task_struct *)curtask->comm);
 
 #ifdef CMDLINE
@@ -291,6 +290,8 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         t_prev->in_sched_wakeup   = 0;
         t_prev->is_running_on_cpu = 0;
         t_prev->state = prev_state;
+
+        t_prev->uid = prev->cred->euid.val;
 
 #ifdef OFFCPU_U
         if (prev->flags & PF_KTHREAD) // kernel thread
