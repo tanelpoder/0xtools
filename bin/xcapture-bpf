@@ -530,34 +530,38 @@ while True:
                     elif field_name == ('offcpu_k'):   # kstack id
                         if state[0] != 'R':  # runnable state can be R or RQ, RQ is also off CPU
                             val = fields_dict[field_name]
-                            outv = val if val else '-'
-                            output_kstack[val] = True
+                            if val >= 0:
+                                outv = val if val else '-'
+                                output_kstack[val] = True
                         else:
                             outv = '-'
     
                     elif field_name == ("offcpu_u"):   # ustack id
                         if state[0] != 'R':
                             val = fields_dict[field_name]
-                            outv = val if val else '-'
-                            # using pid/tgid here, address space is same for all threads in a process
-                            output_ustack[val, fields_dict['pid']] = True  
+                            if val >= 0:
+                                outv = val if val else '-'
+                                # using pid/tgid here, address space is same for all threads in a process
+                                output_ustack[val, fields_dict['pid']] = True  
                         else:
                             outv = '-'
 
                     elif field_name == ('oncpu_k'):
                         if state[0] != 'R':            # only print the perf-cpu samples when actually caught on cpu
                             val = fields_dict[field_name]
-                            outv = val if val else '-'
-                            output_kstack[val] = True
+                            if val >= 0:
+                                outv = val if val else '-'
+                                output_kstack[val] = True
                         else:
                             outv = '-'
 
                     elif field_name == ("oncpu_u"):
                         if state[0] != 'R':
                             val = fields_dict[field_name]
-                            outv = val if val else '-'
-                            # using pid/tgid here, address space is same for all threads in a process
-                            output_ustack[val, fields_dict['pid']] = True  
+                            if val >= 0:
+                                outv = val if val else '-'
+                                # using pid/tgid here, address space is same for all threads in a process
+                                output_ustack[val, fields_dict['pid']] = True  
                         else:
                             outv = '-'
     
