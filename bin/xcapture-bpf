@@ -403,6 +403,7 @@ if oncpu_stacks:
 if cmdline:
     ifdef += '#define CMDLINE 1\n'
 
+
 print('===  Loading BPF...')
 b = BPF(text= ifdef + bpf_text)
 
@@ -412,15 +413,15 @@ b = BPF(text= ifdef + bpf_text)
 b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
                     , fn_name="update_cpu_stack_profile", sample_freq=1)
 
-# get own pid so to not display it in output
-mypid = os.getpid()
-print(f"===  Ready (mypid {mypid})\n")
-
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
 stackmap  = b.get_table("stackmap")
 
-# replace digits in "comm" for better grouping and reporting
+# get own pid so to not display it in output
+mypid = os.getpid()
+print(f"===  Ready (mypid {mypid})\n")
+
+# regex for replacing digits in "comm" for better grouping and reporting (comm2 shows original)
 trim_comm = re.compile(r'\d+')
 
 
