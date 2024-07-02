@@ -528,7 +528,7 @@ while True:
                         outv = get_username(fields_dict['uid']) 
     
                     elif field_name == ('offcpu_k'):   # kstack id
-                        if state[0] != 'R':  # runnable state can be R or RQ, RQ is also off CPU
+                        if state != 'R':  # runnable state can be R or RQ: RQ is also off CPU, so will capture it
                             val = fields_dict[field_name]
                             if val >= 0:
                                 outv = val if val else '-'
@@ -537,7 +537,7 @@ while True:
                             outv = '-'
     
                     elif field_name == ("offcpu_u"):   # ustack id
-                        if state[0] != 'R':
+                        if state != 'R':
                             val = fields_dict[field_name]
                             if val >= 0:
                                 outv = val if val else '-'
@@ -547,7 +547,7 @@ while True:
                             outv = '-'
 
                     elif field_name == ('oncpu_k'):
-                        if state[0] != 'R':            # only print the perf-cpu samples when actually caught on cpu
+                        if state == 'R': # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
                             val = fields_dict[field_name]
                             if val >= 0:
                                 outv = val if val else '-'
@@ -556,7 +556,7 @@ while True:
                             outv = '-'
 
                     elif field_name == ("oncpu_u"):
-                        if state[0] != 'R':
+                        if state == 'R':
                             val = fields_dict[field_name]
                             if val >= 0:
                                 outv = val if val else '-'
