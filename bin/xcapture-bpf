@@ -29,7 +29,7 @@ DEFAULT_PATH     = "." # where to write xcapture -o output files
 DEFAULT_GROUP_BY = "st,username,comm,syscall" # for xtop mode
 DECODE_CHARSET   = "utf-8"
 XTOP_MAX_LINES   = 25 # how many top output lines to print
-
+BLOCK_CHARS      = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'] # for fancy viz
 
 import os, sys, io, pwd, time, ctypes, platform, re, shutil, argparse, signal
 from collections import defaultdict
@@ -308,6 +308,7 @@ def print_stacks_if_nerdmode():
 
 # group by for reporting
 def group_by(records, column_names, sample_attempts_in_set, time_range_in_set):
+    total_records = len(records)
     grouped_data = defaultdict(lambda: {'samples': 0})
 
     for record in records:
@@ -321,6 +322,18 @@ def group_by(records, column_names, sample_attempts_in_set, time_range_in_set):
     for item in grouped_list:
         item['avg_thr'] = round(item['samples'] / sample_attempts_in_set, 2)
         item['seconds'] = round(item['samples'] * (time_range_in_set / sample_attempts_in_set), 2)
+
+        # fancy viz
+        pct = item['samples'] / total_records
+        full_blocks = int(pct * 10)
+        remainder = (pct * 80) % 8
+        visual = '█' * full_blocks
+        if remainder > 0:
+            visual += BLOCK_CHARS[int(remainder)]
+        item['visual_pct'] = visual
+        #ascii also possible
+        #item['visual_pct'] = '#' * int(pct * 10)
+                 
 
     return grouped_list
 
@@ -583,7 +596,7 @@ while True:
                 # a new field "samples" shows up (count(*))
                 grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
                 ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
-                print_fields(ordered_aggr, ['seconds', 'avg_thr'] + groupby_fields, linelimit=XTOP_MAX_LINES)
+                print_fields(ordered_aggr, ['seconds', 'avg_thr', 'visual_pct'] + groupby_fields, linelimit=XTOP_MAX_LINES)
     
                 print()
                 print()
