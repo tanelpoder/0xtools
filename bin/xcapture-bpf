@@ -558,12 +558,13 @@ while True:
                 print()
                 print(f'sampled: {samples_attempted} times')
                 print(f'start: {ts[:19]}, duration: {duration}s')
-           
-                # terminal size may change over time 
-                (term_width, term_height) = shutil.get_terminal_size()
+          
+                if args.clear_screen:
+                    # terminal size may change over time 
+                    (term_width, term_height) = shutil.get_terminal_size()
     
-                for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
-                    print()
+                    for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
+                        print()
     
             else: # wide raw output
                 print_fields(output_records, output_fields) 
