@@ -196,8 +196,8 @@ int outputheader(char *add_columns) {
     fprintf(stdout, pad ? "%-23s %7s %7s %-15s %-2s %-30s %-30s %-30s" : "%s,%s,%s,%s,%s,%s,%s,%s",
             output_dir ? "TS" : "DATE       TIME", "PID", "TID", "USERNAME", "ST", "COMMAND", "SYSCALL", "WCHAN");
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "EXE");
-    if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "CMDLINE");
     if (strcasestr(add_columns, "nspid"))   fprintf(stdout, pad ? " %12s"  : ",%s", "NSPID");
+    if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "CMDLINE");
     if (strcasestr(add_columns, "kstack"))  fprintf(stdout, pad ? " %s"    : ",%s", "KSTACK");
     fprintf(stdout, "\n");
     return 1;
@@ -212,8 +212,8 @@ void outputprocpartial(int pid, int tid, char *sampletime, uid_t proc_uid, long 
                     sampletime, pid, tid, getusername(proc_uid), '-', message, "-", "-");
 
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "-");
-    if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "-");
     if (strcasestr(add_columns, "nspid"))   fprintf(stdout, pad ? " %12s"  : ",%s", "-");
+    if (strcasestr(add_columns, "cmdline")) fprintf(stdout, pad ? " %-30s" : ",%s", "-");
     if (strcasestr(add_columns, "kstack"))  fprintf(stdout, pad ? " %s"    : ",%s", "-");
     fprintf(stdout, "\n");
 }
