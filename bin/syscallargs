@@ -30,7 +30,7 @@
 
 import os, sys, argparse, signal
 
-__version__     = "1.0"
+__version__     = "1.0.1"
 __author__      = "Tanel Poder"
 __date__        = "2024-06-11"
 __description__ = "List system call arguments from debugfs"
@@ -79,9 +79,9 @@ def list_syscalls(syscalls_path):
 
     if not syscalls:
         if os.geteuid() != 0:
-            print("Error: No syscalls found. Please run this as root or mount the debugfs with proper permissions.")
+            print("Error: No syscalls found. Please run this as root or mount the debugfs with proper permissions.", file=sys.stderr)
         else:
-            print(f"Error: No syscalls found in the specified path {syscalls_path}")
+            print(f"Error: No syscalls found in the specified path {syscalls_path}", file=sys.stderr)
         sys.exit(1)
 
     return syscalls
