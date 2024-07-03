@@ -116,7 +116,7 @@ class Report:
             raise Exception('projection/dimension column %s not found.\nUse psn --list to see all available columns' % col_token)
 
         def process_filter_sql(filter_sql):
-            idle_filter = "stat.state_id IN ('S', 'Z', 'I')"
+            idle_filter = "stat.state_id IN ('S', 'Z', 'I', 'P')"
 
             if filter_sql == 'active':
                 return (proc.stat, ['state_id'], 'not(%s)' % idle_filter, filter_sql)

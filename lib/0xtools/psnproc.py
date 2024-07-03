@@ -169,7 +169,7 @@ def parse_stat_sample(proc_source, sample):
     return tokens
 
 
-trim_comm = re.compile('\d+')
+trim_comm = re.compile(r'\d+')
 
 
 stat = ProcSource('stat', '/proc/%s/task/%s/stat', [
@@ -383,13 +383,15 @@ syscalls_with_fd_arg = set([
   , syscall_name_to_id.get('fstat'      , 'N/A')
   , syscall_name_to_id.get('fstatfs'    , 'N/A')
   , syscall_name_to_id.get('newfstatat' , 'N/A')
-  , syscall_name_to_id.get('openat'     , 'N/A')
+#  , syscall_name_to_id.get('openat'     , 'N/A')
+#  , syscall_name_to_id.get('openat2'     , 'N/A')
   , syscall_name_to_id.get('readv'      , 'N/A')
   , syscall_name_to_id.get('writev'     , 'N/A')
   , syscall_name_to_id.get('preadv'     , 'N/A')
   , syscall_name_to_id.get('pwritev'    , 'N/A')
   , syscall_name_to_id.get('preadv2'    , 'N/A')
   , syscall_name_to_id.get('pwritev2'   , 'N/A') 
+  , syscall_name_to_id.get('splice'     , 'N/A') 
 ])
 
 special_fds = { 0:'(stdin) ', 1:'(stdout)', 2:'(stderr)' }
@@ -407,7 +409,7 @@ def parse_syscall_sample(proc_source, sample):
         return tokens
 
 
-trim_socket = re.compile('\d+')
+trim_socket = re.compile(r'\d+')
 
 syscall = ProcSource('syscall', '/proc/%s/task/%s/syscall', [
     ('syscall_id', int,  0, lambda sn: -2 if sn == 'running' else int(sn)),
