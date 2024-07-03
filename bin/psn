@@ -33,7 +33,7 @@
 #  "#!/usr/bin/env python26"
 #
 
-PSN_VERSION = '1.2.5'
+PSN_VERSION = '1.2.6'
 
 import sys, os, os.path, time, datetime
 import re
@@ -250,6 +250,13 @@ def get_process_tasks(pids):
     return tasks_by_pid
 
 
+def get_utc_now():
+    if sys.version_info >= (3, 2):
+        return datetime.datetime.now(datetime.timezone.utc)
+    else:
+        return datetime.datetime.utcnow()
+
+
 ## Main sampling loop ###
 def main():
     final_warning='' # show warning text in the end of output, if any
@@ -274,7 +281,7 @@ def main():
 
         try:
             while time.time() < start_time + args.sample_seconds:
-                measure_begin_time = datetime.datetime.utcnow()
+                measure_begin_time = get_utc_now()
                 event_time = measure_begin_time.isoformat()
 
                 # refresh matching pids at a much lower frequency than process sampling as the underlying ps is expensive
@@ -317,7 +324,7 @@ def main():
                 conn.commit()
 
                 num_sample_events += 1
-                measure_delta = datetime.datetime.utcnow() - measure_begin_time
+                measure_delta = get_utc_now() - measure_begin_time
                 total_measure_s += measure_delta.seconds + (measure_delta.microseconds * 0.000001)
 
                 sleep_until = start_time + num_sample_events * sample_period_s
