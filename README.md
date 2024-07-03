@@ -4,6 +4,10 @@
 
 **0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or clever metric-voodoo tricks with traditional system-level statistics.
 
+**xcapture-bpf** & **xtop** beta information is at:
+
+* https://0x.tools
+
 **An example** of one of the tools `psn` is here:
 
 ```
