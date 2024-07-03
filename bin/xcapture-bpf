@@ -437,7 +437,7 @@ else:
 
 # get own pid so to not display it in output
 mypid = os.getpid()
-print(f"===  Printing output on activity... (mypid {mypid})\n")
+print(f"===  Ready: Printing output on activity (mypid {mypid})\n")
 
 # regex for replacing digits in "comm" for better grouping and reporting (comm2 shows original)
 trim_comm = re.compile(r'\d+')
