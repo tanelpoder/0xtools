@@ -156,7 +156,27 @@ def get_task_state_name(task_state):
     return "+".join(names)
     
 
-# translate uid to username
+# is task state interesting ("active") according to your rules
+#   mode=active: any states that should be captured and printed out (including perf/on-cpu samples)
+#   mode=offcpu: states that are relevant for offcpu stack collection (the BPF program doesn't clear up previous offcpu stackids)
+def is_interesting(st, syscall, comm, mode="active"):
+    if mode == "active":
+        if st[0] in ['R','D', 'T', 't']:
+            return True
+        if st[0] == 'S':
+            if current_syscall == 'io_getevents' and comm.startswith('ora'):
+                return True 
+
+    if mode == "offcpu":
+        if st[0] in ['D', 'T', 't'] or st.startswith('RQ'): # there may be occasinal states like "D+wk" reported
+            return True
+        if st[0] == 'S':
+            if current_syscall == 'io_getevents' and comm.startswith('ora'):
+                return True 
+
+    return False
+
+# translate uid to username (no container/uid namespace support right now)
 def get_username(uid):
     try:
         username = pwd.getpwuid(uid).pw_name
@@ -480,6 +500,8 @@ while True:
                 fields_dict['cmdline2']    = ''
      
                 current_syscall   = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
+                comm              = str(fields_dict['comm'], DECODE_CHARSET)
+
                 in_sched_migrate  = fields_dict['in_sched_migrate']
                 in_sched_wakeup   = fields_dict['in_sched_wakeup']
                 in_sched_waking   = fields_dict['in_sched_waking']
@@ -500,8 +522,7 @@ while True:
 
                     outv = None # enriched value
                     if field_name in ['state', 'st']:
-                        if state[0] in ['R', 'D'] or (current_syscall == 'io_getevents' and str(fields_dict['comm'], DECODE_CHARSET).startswith('ora')):
-                            # or current_syscall == 'semtimedop' and str(fields_dict['comm'], DECODE_CHARSET).startswith('oracle'): # oracle example
+                        if is_interesting(state, current_syscall, comm):
                             outv = state
                         else:
                             save_record = False
@@ -533,7 +554,7 @@ while True:
     
                     elif field_name == ('offcpu_k'):   # kstack id
                         val = fields_dict[field_name]
-                        if state != 'R' and val > 0:  # runnable state can be R or RQ: RQ is also off CPU, so will capture it
+                        if is_interesting(state, current_syscall, comm, 'offcpu') and val > 0:  # runnable state can be R or RQ: RQ is also off CPU, so will capture it
                             outv = val
                             output_kstack[val] = True
                         else:
@@ -541,7 +562,7 @@ while True:
     
                     elif field_name == ("offcpu_u"):   # ustack id
                         val = fields_dict[field_name]
-                        if state != 'R' and val > 0:
+                        if is_interesting(state, current_syscall, comm, 'offcpu') and val > 0:
                             outv = val
                             # using pid/tgid here, address space is same for all threads in a process
                             output_ustack[val, fields_dict['pid']] = True  
@@ -550,7 +571,7 @@ while True:
 
                     elif field_name == ('oncpu_k'):
                         val = fields_dict[field_name]
-                        if state == 'R' and val > 0: # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
+                        if is_interesting(state, current_syscall, comm) and val > 0: # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
                             outv = val
                             output_kstack[val] = True
                         else:
@@ -558,7 +579,7 @@ while True:
 
                     elif field_name == ("oncpu_u"):
                         val = fields_dict[field_name]
-                        if state == 'R' and val > 0:
+                        if is_interesting(state, current_syscall, comm) and val > 0:
                             outv = val
                             # using pid/tgid here, address space is same for all threads in a process
                             output_ustack[val, fields_dict['pid']] = True  
