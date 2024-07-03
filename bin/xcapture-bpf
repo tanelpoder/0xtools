@@ -532,34 +532,34 @@ while True:
                         outv = get_username(fields_dict['uid']) 
     
                     elif field_name == ('offcpu_k'):   # kstack id
-                        if state != 'R':  # runnable state can be R or RQ: RQ is also off CPU, so will capture it
-                            val = fields_dict[field_name]
-                            outv = val if val > 0 else '-'
+                        val = fields_dict[field_name]
+                        if state != 'R' and val > 0:  # runnable state can be R or RQ: RQ is also off CPU, so will capture it
+                            outv = val
                             output_kstack[val] = True
                         else:
                             outv = '-'
     
                     elif field_name == ("offcpu_u"):   # ustack id
-                        if state != 'R':
-                            val = fields_dict[field_name]
-                            outv = val if val > 0 else '-'
+                        val = fields_dict[field_name]
+                        if state != 'R' and val > 0:
+                            outv = val
                             # using pid/tgid here, address space is same for all threads in a process
                             output_ustack[val, fields_dict['pid']] = True  
                         else:
                             outv = '-'
 
                     elif field_name == ('oncpu_k'):
-                        if state == 'R': # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
-                            val = fields_dict[field_name]
-                            outv = val if val > 0 else '-'
+                        val = fields_dict[field_name]
+                        if state == 'R' and val > 0: # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
+                            outv = val
                             output_kstack[val] = True
                         else:
                             outv = '-'
 
                     elif field_name == ("oncpu_u"):
-                        if state == 'R':
-                            val = fields_dict[field_name]
-                            outv = val if val > 0 else '-'
+                        val = fields_dict[field_name]
+                        if state == 'R' and val > 0:
+                            outv = val
                             # using pid/tgid here, address space is same for all threads in a process
                             output_ustack[val, fields_dict['pid']] = True  
                         else:
