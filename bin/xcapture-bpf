@@ -640,6 +640,7 @@ while True:
             else: # wide raw output
                 print_fields(output_records, output_fields) 
                 print()
+                print()
     
             if args.clear_screen:
                 os.system('clear')
