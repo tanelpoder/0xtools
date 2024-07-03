@@ -4,11 +4,9 @@
 
 **0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or clever metric-voodoo tricks with traditional system-level statistics.
 
-**xcapture-bpf** & **xtop** beta information is at:
+**xcapture-bpf** & **xtop** beta information & demo is at https://0x.tools
 
-* https://0x.tools
-
-**An example** of one of the tools `psn` is here:
+**An example** of one of the tools `psn` (that doesn't use eBPF, just reads the usual `/proc` files) is here:
 
 ```
 $ sudo psn -p "mysqld|kwork" -G syscall,wchan
