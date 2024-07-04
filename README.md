@@ -4,7 +4,13 @@
 
 **0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or clever metric-voodoo tricks with traditional system-level statistics.
 
-**xcapture-bpf** & **xtop** beta information & demo is at https://0x.tools
+## xcapture-bpf and xtop v2.0.2 announced! (2024-07-03)
+
+xcapture-bpf (and xtop) are like the Linux top tool, but extended with x-ray vision and ability to view your performance data from any chosen angle (that eBPF allows to instrument). You can use it for system level overview and drill down into indivual threads' activity and soon even into individual kernel events like lock waits or memory stalls. eBPF is not only customizable, it's completely programmable and I plan to take full advantage of it. I have so far implemented less than 5% of everything this method and the new tool is capable of, stay tuned for more!
+
+<script src="https://asciinema.org/a/666715.js" id="asciicast-666715" async="true"></script>
+
+* Go to https://0x.tools for more info and the installation instructions of the latest eBPF-based tool
 
 **An example** of one of the tools `psn` (that doesn't use eBPF, just reads the usual `/proc` files) is here:
 
