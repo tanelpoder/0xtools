@@ -9,10 +9,12 @@
 xcapture-bpf (and xtop) are like the Linux top tool, but extended with x-ray vision and ability to view your performance data from any chosen angle (that eBPF allows to instrument). You can use it for system level overview and drill down into indivual threads' activity and soon even into individual kernel events like lock waits or memory stalls. eBPF is not only customizable, it's completely programmable and I plan to take full advantage of it. I have so far implemented less than 5% of everything this method and the new tool is capable of, stay tuned for more!
 
 ### xcapture-bpf demo
+This is one of the things that you get:
 
 [![asciicast](https://asciinema.org/a/666715.svg)](https://asciinema.org/a/666715)
 
 ### xcapture-bpf screenshot
+A screenshot that illustrates how xcapture-bpf output and stacktiles work with terminal search/highlighting and scroll-back ability:
 
 ![xcapture-bpf screenshot with terminal highlighting](https://0x.tools/images/xcapture-bpf-stacktiles.png)
 
