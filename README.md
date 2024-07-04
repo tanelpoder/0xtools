@@ -14,7 +14,9 @@ xcapture-bpf (and xtop) are like the Linux top tool, but extended with x-ray vis
 
 ### xcapture-bpf screenshot
 
+![xcapture-bpf screenshot with terminal highlighting](https://0x.tools/images/xcapture-bpf-stacktiles.png)
 
+### xcapture-bpf install instructions and info 
 
 * Go to https://0x.tools for more info and the installation instructions of the latest eBPF-based tool
 
