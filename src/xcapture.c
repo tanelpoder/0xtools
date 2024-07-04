@@ -193,7 +193,7 @@ int outputfields(char *str, char *mask, char *sep) {
 // currently a fixed string, will make this dynamic together with command line option support
 int outputheader(char *add_columns) {
 
-    fprintf(stdout, pad ? "%-23s %7s %7s %-15s %-2s %-30s %-30s %-30s" : "%s,%s,%s,%s,%s,%s,%s,%s",
+    fprintf(stdout, pad ? "%-23s %7s %7s %-16s %-2s %-30s %-30s %-30s" : "%s,%s,%s,%s,%s,%s,%s,%s",
             output_dir ? "TS" : "DATE       TIME", "PID", "TID", "USERNAME", "ST", "COMMAND", "SYSCALL", "WCHAN");
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "EXE");
     if (strcasestr(add_columns, "nspid"))   fprintf(stdout, pad ? " %12s"  : ",%s", "NSPID");
@@ -208,7 +208,7 @@ void outputprocpartial(int pid, int tid, char *sampletime, uid_t proc_uid, long 
 
     header_printed = header_printed ? 1 : outputheader(add_columns);
 
-    fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c %-30s %-30s %-30s" : "%s,%d,%d,%s,%c,%s,%s,%s",
+    fprintf(stdout, pad ? "%-23s %7d %7d %-16s %-2c %-30s %-30s %-30s" : "%s,%d,%d,%s,%c,%s,%s,%s",
                     sampletime, pid, tid, getusername(proc_uid), '-', message, "-", "-");
 
     if (strcasestr(add_columns, "exe"))     fprintf(stdout, pad ? " %-20s" : ",%s", "-");
@@ -240,7 +240,7 @@ int outputprocentry(int pid, int tid, char *sampletime, uid_t proc_uid, long nsp
             // only print header (in stdout mode) when there are any samples to report
             header_printed = header_printed ? 1 : outputheader(add_columns);
 
-            fprintf(stdout, pad ? "%-23s %7d %7d %-15s %-2c " : "%s,%d,%d,%s,%c,", sampletime, pid, tid, getusername(proc_uid), task_status);
+            fprintf(stdout, pad ? "%-23s %7d %7d %-16s %-2c " : "%s,%d,%d,%s,%c,", sampletime, pid, tid, getusername(proc_uid), task_status);
             outputfields(statbuf, ".O", WSP);     // .O......x for PF_ flags
 
             b = readfile(pid, tid, "syscall", filebuf);
