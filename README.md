@@ -1,4 +1,4 @@
-# 0x.Tools: Always-on Profiling for Production Systems
+# 0x.Tools: X-Ray vision for Linux systems
 
 **0x.tools** is a set of open-source utilities for analyzing application performance on Linux. It has a goal of deployment simplicity and minimal dependencies, to reduce friction of systematic troubleshooting. There’s no need to upgrade the OS, install kernel modules, heavy monitoring frameworks, Java agents or databases. Some of these tools also work on over-decade-old Linux kernels, like version 2.6.18 from 18 years ago.
 
