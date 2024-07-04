@@ -20,7 +20,7 @@
  *
  */
 
-#define XCAP_VERSION "1.2.3"
+#define XCAP_VERSION "1.2.6"
 
 #define _GNU_SOURCE
 
@@ -311,7 +311,7 @@ int main(int argc, char **argv)
     DIR *pd, *td;
     struct dirent *pde, *tde; // process level and thread/task level directory entries in /proc
 
-    char timebuf[80], usec_buf[6];
+    char timebuf[80], usec_buf[9];
     struct timeval tmnow,loop_iteration_start_time,loop_iteration_end_time;
     float loop_iteration_msec;
     float sleep_for_msec;
