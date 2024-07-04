@@ -1,10 +1,30 @@
-# 0x.Tools: Always-on Profiling for Production Systems
+# 0x.Tools: X-Ray vision for Linux systems
 
-**0x.tools** is a set of open-source utilities for analyzing application performance on Linux. It has a goal of deployment simplicity and minimal dependencies, to reduce friction of systematic troubleshooting. There’s no need to upgrade the OS, install kernel modules, heavy monitoring frameworks, Java agents or databases. These tools also work on over-decade-old Linux kernels, like version 2.6.18 from 14 years ago.
+**0x.tools** is a set of open-source utilities for analyzing application performance on Linux. It has a goal of deployment simplicity and minimal dependencies, to reduce friction of systematic troubleshooting. There’s no need to upgrade the OS, install kernel modules, heavy monitoring frameworks, Java agents or databases. Some of these tools also work on over-decade-old Linux kernels, like version 2.6.18 from 18 years ago.
 
-**0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or clever metric-voodoo tricks with traditional system-level statistics.
+**0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or genius wizard tricks with traditional system utilization stats.
 
-**An example** of one of the tools `psn` is here:
+## xcapture-bpf and xtop v2.0.2 announced! (2024-07-03)
+
+xcapture-bpf (and xtop) are like the Linux top tool, but extended with x-ray vision and ability to view your performance data from any chosen angle (that eBPF allows to instrument). You can use it for system level overview and drill down into indivual threads' activity and soon even into individual kernel events like lock waits or memory stalls. eBPF is not only customizable, it's completely programmable and I plan to take full advantage of it. I have so far implemented less than 5% of everything this method and the new tool is capable of, stay tuned for more!
+
+* https://0x.tools
+
+### xcapture-bpf demo
+This is one of the things that you get:
+
+[![asciicast](https://asciinema.org/a/666715.svg)](https://asciinema.org/a/666715)
+
+### xcapture-bpf screenshot
+A screenshot that illustrates how xcapture-bpf output and stacktiles work with terminal search/highlighting and scroll-back ability:
+
+![xcapture-bpf screenshot with terminal highlighting](https://0x.tools/images/xcapture-bpf-stacktiles.png)
+
+### xcapture-bpf install instructions and info 
+
+* Go to https://0x.tools for more info and the installation instructions of the latest eBPF-based tool
+
+**An example** of one of the tools `psn` (that doesn't use eBPF, just reads the usual `/proc` files) is here:
 
 ```
 $ sudo psn -p "mysqld|kwork" -G syscall,wchan
