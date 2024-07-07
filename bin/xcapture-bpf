@@ -43,7 +43,7 @@ except ImportError:
     distro = None
     pass
 
-# all available fields with descriptions (if you add more fields to thread_state_t in C, add them here)
+# all available fields with descriptions (if you add more fields to thread_state_t in BPF/C, add them here)
 available_fdescr = [ ('timestamp' , 'sample timestamp')
                    , ('st'        , 'short thread state')
                    , ('tid'       , 'thread/task id')
@@ -390,7 +390,6 @@ parser.add_argument('-G', '--append-group-by', metavar='append-csv-columns', def
 parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out relevant stack traces as wide output lines')
 parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stacktiles')
 parser.add_argument('-c', '--clear-screen', action='store_true', help='Clear screen before printing next output')
-parser.add_argument('-w', '--wide', action='store_true', help='Wide raw formatted output of all samples and their fields')
 parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit')
 parser.add_argument('-o', '--output-dir', type=str, default=DEFAULT_PATH, help=f'Directory path where to write the output CSV files, default is {DEFAULT_PATH}')
 parser.add_argument('-l', '--list', default=None, action='store_true', help='list all available columns for display and grouping')
