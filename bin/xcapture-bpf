@@ -19,7 +19,7 @@
 #
 #  SPDX-License-Identifier: GPL-2.0-or-later
 
-__version__      = "2.0.2"
+__version__      = "2.0.3"
 __author__       = "Tanel Poder"
 __date__         = "2024-06-27"
 __description__  = "Always-on profiling of Linux thread activity using eBPF."
