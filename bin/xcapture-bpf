@@ -25,7 +25,6 @@ __date__         = "2024-06-27"
 __description__  = "Always-on profiling of Linux thread activity using eBPF."
 __url__          = "https://0x.tools"
 
-DEFAULT_PATH     = "." # where to write xcapture -o output files
 DEFAULT_GROUP_BY = "st,username,comm,syscall" # for xtop mode
 DECODE_CHARSET   = "utf-8"
 XTOP_MAX_LINES   = 25 # how many top output lines to print
@@ -59,7 +58,7 @@ available_fdescr = [ ('timestamp' , 'sample timestamp')
                    , ('oncpu_u'   , 'recent user stack id if the thread was on CPU')
                    , ('oncpu_k'   , 'recent kernel stack id if the thread was on CPU')
                    , ('waker_tid' , 'thread ID that woke up this thread last')
-                   , ('sch'       , 'scheduled debugging flags')
+                   , ('sch'       , 'thread state flags for scheduler nerds')
                    ]
 
 available_fields = []
@@ -232,7 +231,14 @@ def print_fields(rows, columns, linelimit=0):
         if linelimit and i >= linelimit - 1:
             break
 
+def print_header_csv(columns):
+    header = ",".join(f"{col.upper()}" for col in columns)
+    print(header)
 
+def print_fields_csv(rows, columns):
+    for i, row in enumerate(rows):
+        line = ",".join(f"{row[col]}" for col in columns)
+    print(line)
 
 def get_ustack_traces(ustack_traces, strip_args=True):
     exclusions = ['__GI___clone3']
@@ -240,7 +246,7 @@ def get_ustack_traces(ustack_traces, strip_args=True):
     lines = []
 
     for stack_id, pid in output_ustack:
-        if stack_id and stack_id >= 0:   # todo: find why we have Null/none stackids in this map
+        if stack_id and stack_id >= 0 and stack_id not in written_ustacks:   # todo: find why we have Null/none stackids in this map
             line = f"ustack {stack_id:6} "
             stack = list(ustack_traces.walk(stack_id))
             for addr in reversed(stack): # reversed(stack):
@@ -265,7 +271,7 @@ def get_kstack_traces(kstack_traces):
  
     for k, v in kstack_traces.items():
         stack_id = k.value
-        if stack_id in output_kstack:
+        if stack_id in output_kstack and stack_id not in written_kstacks:
             line = f"kstack {stack_id:6} "
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
@@ -338,7 +344,6 @@ def print_stacks_if_nerdmode():
         print()
 
     if args.nerd_mode:
-        # print stack as long line traces
         for s in get_kstack_traces(stackmap): 
             print(s)
         print()
@@ -391,7 +396,7 @@ parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out re
 parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stacktiles')
 parser.add_argument('-c', '--clear-screen', action='store_true', help='Clear screen before printing next output')
 parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit')
-parser.add_argument('-o', '--output-dir', type=str, default=DEFAULT_PATH, help=f'Directory path where to write the output CSV files, default is {DEFAULT_PATH}')
+parser.add_argument('-o', '--output-dir', type=str, default=None, help=f'Directory path where to write the output CSV files')
 parser.add_argument('-l', '--list', default=None, action='store_true', help='list all available columns for display and grouping')
 
 args = parser.parse_args()
@@ -400,6 +405,10 @@ if args.list:
     for f in available_fdescr:
         print(f'{f[0]:15} {f[1]}')
     sys.exit(0)
+
+if args.clear_screen and args.output_dir:
+    print("Error: --clear-screen (interactive) and --output-dir (continuous logging) are mutually exclusive, use only one option.")
+    sys.exit(1)
 
 # handle xtop -g and -G group by columns (and same -g/-G options work for non-xtop output col addition too)
 # args.group_by defaults to DEFAULT_GROUP_BY
@@ -427,6 +436,7 @@ kernname  = platform.release().split('-')[0]
 archname  = platform.machine()
 distroid  = distro.id().title() if distro else ''
 distrover = distro.version() if distro else ''
+sf        = None # fd for separate stackfile in continuous csv sampling mode
 
 print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distroid} Linux {distrover} {kernname} {archname}')
 
@@ -479,9 +489,10 @@ print(f"===  Ready (mypid {mypid})\n")
 # regex for replacing digits in "comm" for better grouping and reporting (comm2 shows original)
 trim_comm = re.compile(r'\d+')
 
+written_kstacks = {} # stack ids already written to csv (in -o mode)
+written_ustacks = {}
 
 first_report_printed = False # show first xtop report quicker
-
 while True:
     try:
         output_kstack = {} # map of stack_ids seen so far
@@ -571,7 +582,8 @@ while True:
     
                     elif field_name == ('offcpu_k'):   # kstack id
                         val = fields_dict[field_name]
-                        if is_interesting(state, current_syscall, comm, 'offcpu') and val > 0:  # runnable state can be R or RQ: RQ is also off CPU, so will capture it
+                        # runnable state can be R or RQ: RQ is also off CPU, so will capture it
+                        if is_interesting(state, current_syscall, comm, 'offcpu') and val > 0:  
                             outv = val
                             output_kstack[val] = True
                         else:
@@ -588,7 +600,8 @@ while True:
 
                     elif field_name == ('oncpu_k'):
                         val = fields_dict[field_name]
-                        if is_interesting(state, current_syscall, comm) and val > 0: # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
+                        # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
+                        if is_interesting(state, current_syscall, comm) and val > 0: 
                             outv = val
                             output_kstack[val] = True
                         else:
@@ -625,14 +638,25 @@ while True:
             time.sleep(1 / (args.sample_hz if args.xtop else 1))
     
         if output_records:
-            if args.clear_screen:
+            if args.clear_screen:               # interactive (xtop)
                 buffer = io.StringIO()
                 sys.stdout = buffer
-    
-            print_stacks_if_nerdmode()
-            print()
-            print()
+            elif args.output_dir:
+                outfile = args.output_dir + '/threads_' + ts[:13].replace(' ', '.') + '.csv' 
+                if sys.stdout.name != outfile:  # write thread states into hourly csv files
+                    sys.stdout = open(outfile, 'a')
+
+            if args.output_dir: # print long-line stack traces to separate stack capture files
+                for s in get_kstack_traces(stackmap):
+                    print(s)
+                for s in get_ustack_traces(stackmap):
+                    print(s)
+            else:
+                print_stacks_if_nerdmode()
+                print()
+                print()
      
+
             if args.xtop:
                 total_records = len(output_records)
                 # a new field "samples" shows up (count(*))
@@ -654,16 +678,24 @@ while True:
                 else:
                     print()
     
-            else: # wide raw output
-                print_fields(output_records, output_fields) 
-                print()
-                print()
+            else: # csv or wide raw output
+                if args.output_dir: # csv history archiving
+                    print_header_csv(output_fields)
+                    print_fields_csv(output_records, output_fields)
+                    if sf:
+                        sf.flush()
+                else:
+                    print_fields(output_records, output_fields) 
+                    print()
+                    print()
     
             if args.clear_screen:
                 os.system('clear')
                 output = buffer.getvalue()
                 sys.stdout = sys.__stdout__ 
                 print(output)
+
+            sys.stdout.flush()
 
     except KeyboardInterrupt:
         exit(0)

@@ -32,6 +32,10 @@
 #define __BCC__
 #endif
 
+// don't need EIP value for basic stack trace analysis (deduplicates some stackids)
+// #define SKIP_FRAMES (1 & BPF_F_SKIP_FIELD_MASK)
+#define SKIP_FRAMES 0
+
 // need to test if using BPF_STACK_TRACE_BUILDID would optimize things
 // (apparently need separate stackmaps for ustacks & kstacks then)
 #if defined(ONCPU_STACKS) || defined(OFFCPU_U) || defined(OFFCPU_K)
@@ -165,7 +169,7 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         }
 #endif
 #ifdef ONCPU_STACKS
-        t->oncpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK); // | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+        t->oncpu_u = stackmap.get_stackid(ctx, SKIP_FRAMES | BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
         t->oncpu_k = stackmap.get_stackid(ctx, 0); // BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 #endif
 
@@ -295,7 +299,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
 #ifdef OFFCPU_U
         if (!(prev->flags & PF_KTHREAD))
-            t_prev->offcpu_u = stackmap.get_stackid(ctx, BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
+            t_prev->offcpu_u = stackmap.get_stackid(ctx, SKIP_FRAMES | BPF_F_USER_STACK | BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
 #endif
 #ifdef OFFCPU_K
         t_prev->offcpu_k = stackmap.get_stackid(ctx, BPF_F_REUSE_STACKID | BPF_F_FAST_STACK_CMP);
