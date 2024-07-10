@@ -175,7 +175,8 @@ def get_task_state_name(task_state):
 
 # is task state interesting ("active") according to your rules
 #   mode=active: any states that should be captured and printed out (including perf/on-cpu samples)
-#   mode=offcpu: states that are relevant for offcpu stack collection (the BPF program doesn't clear up previous offcpu stackids)
+#   mode=offcpu: states that are relevant for offcpu stack printing (the BPF program doesn't clear up previous offcpu stackids)
+#   mode=oncpu:  states that are relevant for on-cpu stack printing (don't print previous oncpu stacks if a task sample is not on CPU)
 def is_interesting(st, syscall, comm, mode="active"):
     if mode == "active":
         if st[0] in ['R','D', 'T', 't']:
@@ -190,6 +191,10 @@ def is_interesting(st, syscall, comm, mode="active"):
         if st[0] == 'S':
             if current_syscall == 'io_getevents' and comm.startswith('ora'):
                 return True 
+
+    if mode == "oncpu":
+        if st[0] == 'R':
+            return True
 
     return False
 
@@ -604,7 +609,7 @@ while True:
                     elif field_name == ('oncpu_k'):
                         val = fields_dict[field_name]
                         # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
-                        if is_interesting(state, current_syscall, comm) and val > 0: 
+                        if is_interesting(state, current_syscall, comm, 'oncpu') and val > 0: 
                             outv = val
                             output_kstack[val] = True
                         else:
@@ -612,7 +617,7 @@ while True:
 
                     elif field_name == ("oncpu_u"):
                         val = fields_dict[field_name]
-                        if is_interesting(state, current_syscall, comm) and val > 0:
+                        if is_interesting(state, current_syscall, comm, 'oncpu') and val > 0:
                             outv = val
                             # using pid/tgid here, address space is same for all threads in a process
                             output_ustack[val, fields_dict['pid']] = True  
