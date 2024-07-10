@@ -67,7 +67,7 @@ for f in available_fdescr:
 
 # default output fields for ungrouped full detail output
 output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall', 'cmdline'
-                 , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k', 'waker_tid', 'sch' ]
+                , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k', 'waker_tid', 'sch' ]
 
 
 # syscall id to name translation (todo: fix aarch64 include file lookup)
@@ -240,13 +240,13 @@ def print_fields_csv(rows, columns):
         line = ",".join(f"{row[col]}" for col in columns)
     print(line)
 
-def get_ustack_traces(ustack_traces, strip_args=True):
+def get_ustack_traces(ustack_traces, ignore_ustacks={}, strip_args=True):
     exclusions = ['__GI___clone3']
     dedup_map = {}
     lines = []
 
     for stack_id, pid in output_ustack:
-        if stack_id and stack_id >= 0 and stack_id not in written_ustacks:   # todo: find why we have Null/none stackids in this map
+        if stack_id and stack_id >= 0 and stack_id not in ignore_ustacks:   # todo: find why we have Null/none stackids in this map
             line = f"ustack {stack_id:6} "
             stack = list(ustack_traces.walk(stack_id))
             for addr in reversed(stack): # reversed(stack):
@@ -263,7 +263,7 @@ def get_ustack_traces(ustack_traces, strip_args=True):
 
     return lines
 
-def get_kstack_traces(kstack_traces):
+def get_kstack_traces(kstack_traces, ignore_kstacks={}):
     exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call'
                  , 'ret_from_fork_asm', 'ret_from_fork', '__bpf_trace_sched_switch', '__traceiter_sched_switch'
                  , 'el0t_64_sync', 'el0t_64_sync_handler', 'el0_svc', 'do_el0_svc', 'el0_svc_common', 'invoke_syscall' ]
@@ -271,7 +271,7 @@ def get_kstack_traces(kstack_traces):
  
     for k, v in kstack_traces.items():
         stack_id = k.value
-        if stack_id in output_kstack and stack_id not in written_kstacks:
+        if stack_id in output_kstack and stack_id not in ignore_kstacks:
             line = f"kstack {stack_id:6} "
             if stack_id >= 0:
                 stack = list(kstack_traces.walk(stack_id))
@@ -494,6 +494,8 @@ written_kstacks = {} # stack ids already written to csv (in -o mode)
 written_ustacks = {}
 
 first_report_printed = False # show first xtop report quicker
+csv_header_printed   = False
+
 while True:
     try:
         output_kstack = {} # map of stack_ids seen so far
@@ -639,62 +641,76 @@ while True:
             time.sleep(1 / (args.sample_hz if args.xtop else 1))
     
         if output_records:
-            if args.clear_screen:               # interactive (xtop)
-                buffer = io.StringIO()
-                sys.stdout = buffer
-            elif args.output_dir:
-                outfile = args.output_dir + '/threads_' + ts[:13].replace(' ', '.') + '.csv' 
-                if sys.stdout.name != outfile:  # write thread states into hourly csv files
+            # csv output mode will not do any terminal stuff
+            if args.output_dir:
+                outfile = args.output_dir + '/threads_' + ts[:13].replace(' ', '.') + '.csv'
+                if sys.stdout.name != outfile:  # create a new output file when the hour changes
                     sys.stdout = open(outfile, 'a')
 
-            if args.output_dir: # print long-line stack traces to separate stack capture files
-                for s in get_kstack_traces(stackmap):
-                    print(s)
-                for s in get_ustack_traces(stackmap):
-                    print(s)
+                if not csv_header_printed:
+                    print_header_csv(output_fields)
+                    csv_header_printed = True
+                    
+                print_fields_csv(output_records, output_fields)
+
+                # stackfile is created once and name doesn't change throughout xcapture process lifetime
+                if not sf:
+                    stackfile = args.output_dir + '/stacks_' + ts[:13].replace(' ', '.') + '.csv'
+                    sf = open(stackfile, 'a')
+
+                if sf:
+                    for s in get_kstack_traces(stackmap, ignore_kstacks=written_kstacks):
+                        print(s, file=sf)
+                        written_kstacks[int(s.split()[1])] = True
+                        #print(written_kstacks, file=sf)
+
+                    for s in get_ustack_traces(stackmap, ignore_ustacks=written_ustacks):
+                        print(s, file=sf)
+                        written_ustacks[int(s.split()[1])] = True
+                        #print(written_ustacks, file=sf)
+
+                    sf.flush()
+
             else:
+                if args.clear_screen:               # interactive (xtop)
+                    buffer = io.StringIO()
+                    sys.stdout = buffer
+
                 print_stacks_if_nerdmode()
                 print()
                 print()
-     
 
-            if args.xtop:
-                total_records = len(output_records)
-                # a new field "samples" shows up (count(*))
-                grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
-                ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
-                print_fields(ordered_aggr, ['seconds', 'avg_thr', 'visual_pct'] + groupby_fields, linelimit=XTOP_MAX_LINES)
-    
-                print()
-                print()
-                print(f'sampled: {samples_attempted} times, avg_thr: {round(total_records / samples_attempted, 2)}')
-                print(f'start: {ts[:19]}, duration: {duration}s')
-          
-                if args.clear_screen:
-                    # terminal size may change over time 
-                    (term_width, term_height) = shutil.get_terminal_size()
-    
-                    for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
-                        print()
-                else:
+                if args.xtop:
+                    total_records = len(output_records)
+                    # a new field "samples" shows up (count(*))
+                    grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
+                    ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
+                    print_fields(ordered_aggr, ['seconds', 'avg_thr', 'visual_pct'] + groupby_fields, linelimit=XTOP_MAX_LINES)
+        
                     print()
-    
-            else: # csv or wide raw output
-                if args.output_dir: # csv history archiving
-                    print_header_csv(output_fields)
-                    print_fields_csv(output_records, output_fields)
-                    if sf:
-                        sf.flush()
-                else:
+                    print()
+                    print(f'sampled: {samples_attempted} times, avg_thr: {round(total_records / samples_attempted, 2)}')
+                    print(f'start: {ts[:19]}, duration: {duration}s')
+              
+                    if args.clear_screen:
+                        # terminal size may change over time 
+                        (term_width, term_height) = shutil.get_terminal_size()
+        
+                        for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
+                            print()
+                    else:
+                        print()
+        
+                else: # wide raw terminal output
                     print_fields(output_records, output_fields) 
                     print()
                     print()
-    
-            if args.clear_screen:
-                os.system('clear')
-                output = buffer.getvalue()
-                sys.stdout = sys.__stdout__ 
-                print(output)
+        
+                if args.clear_screen:
+                    os.system('clear')
+                    output = buffer.getvalue()
+                    sys.stdout = sys.__stdout__ 
+                    print(output)
 
             sys.stdout.flush()
 
