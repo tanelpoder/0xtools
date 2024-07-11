@@ -334,6 +334,16 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
 
         t_next->uid = next->cred->euid.val;
 
+// previous off-cpu stacks are oncpu stacks when getting back onto cpu (kernel stack slightly different)
+#ifdef ONCPU_STACKS
+#ifdef OFFCPU_U
+        t_next->oncpu_u = t_next->offcpu_u;
+#endif
+#ifdef OFFCPU_K
+        t_next->oncpu_k = t_next->offcpu_k;
+#endif
+#endif
+
 #ifdef CMDLINE
         if (next->mm && next->mm->arg_start) {
             unsigned long arg_start = next->mm->arg_start;

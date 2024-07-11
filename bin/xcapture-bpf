@@ -478,7 +478,7 @@ b = BPF(text= ifdef + bpf_text)
 # critical sections when most interrupts are disabled
 b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
                     , fn_name="update_cpu_stack_profile"
-                    , sample_freq=1) # args.sample_hz if args.xtop else 1
+                    , sample_freq=2) # args.sample_hz if args.xtop else 1
 
 # start sampling the Task State Array
 tsa = b.get_table("tsa")
