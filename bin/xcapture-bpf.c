@@ -35,7 +35,7 @@
 // don't need EIP value for basic stack trace analysis (deduplicate some stackids)
 // unfortunately SKIP_FRAMES 1 "skips" both the EIP value and one stack frame...
 // #define SKIP_FRAMES (1 & BPF_F_SKIP_FIELD_MASK)
-#define SKIP_FRAMES 1
+#define SKIP_FRAMES 0
 
 // need to test if using BPF_STACK_TRACE_BUILDID would optimize things
 // (apparently need separate stackmaps for ustacks & kstacks then)
