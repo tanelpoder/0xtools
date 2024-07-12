@@ -649,7 +649,12 @@ while True:
             # csv output mode will not do any terminal stuff
             if args.output_dir:
                 outfile = args.output_dir + '/threads_' + ts[:13].replace(' ', '.') + '.csv'
-                if sys.stdout.name != outfile:  # create a new output file when the hour changes
+
+                if os.path.isfile(outfile):  # special case if xcapture-bpf has been restarted within the same hour
+                    csv_header_printed = True
+
+                if sys.stdout.name != outfile: # create a new output file when the hour changes
+                    csv_header_printed = False # new file
                     sys.stdout = open(outfile, 'a')
 
                 if not csv_header_printed:
