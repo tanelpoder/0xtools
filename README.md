@@ -24,7 +24,7 @@ A screenshot that illustrates how xcapture-bpf output and stacktiles work with t
 
 * Go to https://0x.tools for more info and the installation instructions of the latest eBPF-based tool
 
-### other tools
+## Other tools
 
 An example of _one of_ the tools `psn` (that doesn't use eBPF, just reads the usual `/proc` files) is here:
 
