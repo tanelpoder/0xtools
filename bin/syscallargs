@@ -30,7 +30,7 @@
 
 import os, sys, argparse, signal
 
-__version__     = "1.0.1"
+__version__     = "1.0.2"
 __author__      = "Tanel Poder"
 __date__        = "2024-06-11"
 __description__ = "List system call arguments from debugfs"
@@ -50,6 +50,8 @@ def parse_syscall_format(file_path):
                 # split line to fields, also remove leading "sys_enter_" with [10:]
                 syscall_name = line.split(':')[1].strip()[10:] 
                 syscall_info['name'] = syscall_name
+            elif line.startswith('ID:'):
+                syscall_info['id'] = int(line.split()[1].strip())
             elif line.startswith('field:'):
                 # syscall arguments come immediately after "__syscall_nr" line
                 # saving syscall_nr to populate dict as not all syscalls have arguments
@@ -92,6 +94,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='List kernel system calls and their arguments from Linux debugfs.')
     parser.add_argument('-l', '--newlines', action='store_true', help='Print each system call and its arguments on a new line')
+    parser.add_argument('-i', '--id', action='store_true', help='Print syscall ID (not the same thing as internal syscall_nr)')
     parser.add_argument('-t', '--typeinfo', action='store_true', help='Include type information for syscall arguments in the output')
     parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit') 
     parser.add_argument('--path', type=str, default=DEFAULT_PATH, help=f'Path to the debugfs syscalls directory: {DEFAULT_PATH}')
@@ -101,7 +104,10 @@ def main():
     syscalls = list_syscalls(syscalls_path)
 
     for syscall in syscalls:
-        print(f"{syscall['name']}", end="\n" if args.newlines else "(")
+        if args.id:
+            print(f"{syscall['name']}", end=f" // {syscall['id']}\n" if args.newlines else "(")
+        else:
+            print(f"{syscall['name']}", end="\n" if args.newlines else "(")
 
         args_list = []
         for index, (arg_type, arg_name) in enumerate(syscall['args'][1:]):
@@ -116,8 +122,11 @@ def main():
         if not args.newlines:
             print(", ".join(args_list), end="")
 
+        if args.id:
+            print("" if args.newlines else f"); // {syscall['id']}")
+        else:
+            print("" if args.newlines else ");")
 
-        print("" if args.newlines else ");")
 
 if __name__ == "__main__":
     main()
