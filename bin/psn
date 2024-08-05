@@ -167,7 +167,7 @@ def sqlexec(conn, sql):
 
 def sqlexecmany(conn, sql, samples):
     logging.debug(sql)
-    conn.execute(sql, samples)
+    conn.executemany(sql, samples)
     logging.debug('Done')
 
 ### Schema setup ###
@@ -309,7 +309,7 @@ def main():
 
                                 for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
                                     # TODO factor out
-                                    conn.executemany(s.insert_sql, samples)
+                                    sqlexecmany(conn, s.insert_sql, samples)
 
                             except IOError as e:
                                 sample_ioerrors +=1
