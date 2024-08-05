@@ -308,7 +308,6 @@ def main():
                                 task_samples = [s.sample(event_time, pid, task) for s in sources.keys() if s.task_level == True]
 
                                 for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
-                                    # TODO factor out
                                     sqlexecmany(conn, s.insert_sql, samples)
 
                             except IOError as e:
