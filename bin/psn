@@ -33,7 +33,7 @@
 #  "#!/usr/bin/env python26"
 #
 
-PSN_VERSION = '1.2.6'
+PSN_VERSION = '1.2.7'
 
 import sys, os, os.path, time, datetime
 import re
