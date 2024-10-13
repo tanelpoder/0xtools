@@ -4,7 +4,17 @@ Highly WIP dev area for libbpf and moden eBPF-based xcapture tool.
 
 ## building
 
-To install required dependencies, run `git submodule update --init --recursive`
+Make sure you cd to the `next` directory.
+
+```
+cd next
+```
+
+To install required libbpf dependencies, run:
+
+```
+git submodule update --init --recursive
+```
 
 ## running
 
