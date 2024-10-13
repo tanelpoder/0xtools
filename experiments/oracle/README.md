@@ -1,4 +1,4 @@
-This is an example of using xcapture to read `kskthwtb` arg2 to report Oracle wait event name.
+This is an example of using `xcapture` to read Oracle's `kskthwtb()` function arg2 to report Oracle wait event name.
 
 This is just a proof-of-concept experiment, so you need to change the `KSLEDT_SYM_ADDRESS` value in `xcapture-bpf.c` to the location of `ksledt_` symbol in your Oracle binary.
 
