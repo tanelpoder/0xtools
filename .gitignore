@@ -5,4 +5,3 @@ bin/xcap/*
 *.tar.gz
 next/src/.output/
 next/src/xcapture
-
