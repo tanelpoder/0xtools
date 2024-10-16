@@ -40,6 +40,7 @@ import re
 import sqlite3
 import logging
 from signal import signal, SIGPIPE, SIG_DFL
+import atexit
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + '/lib/0xtools')
 
@@ -96,6 +97,21 @@ else:
 start_time = time.time()
 sample_period_s = 1. / args.sample_hz
 sample_ps_period_s = 1. / args.ps_hz
+
+# Define cleanup function
+def cleanup():
+    if args.output_sample_db != ':memory:':
+        if os.path.exists(args.output_sample_db):
+            try:
+                os.remove(args.output_sample_db)
+                logging.debug(f"Removed temporary database file {args.output_sample_db}")
+            except OSError as e:
+                logging.error(f"Error removing temporary database file: {e}")
+
+# Register cleanup function only if execution duration exceeds 60 seconds and samples are not being persisted
+if (args.sample_seconds > 60) and (args.output_sample_db == ':memory:') :
+    args.output_sample_db = f'/tmp/psn_samples_{os.getpid()}.db'
+    atexit.register(cleanup)
 
 if args.list:
     for p in proc.all_sources:
