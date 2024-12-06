@@ -9,7 +9,9 @@ import time, re, subprocess, argparse
 
 NANOSECONDS_PER_SEC = 1000000000
 NANOSECONDS_PER_USEC = 1000
-HELP = """%CPU = mean %time spent running tasks on the CPU
+HELP = """SchedLatSys by Kristian Rados and Tanel Poder [https://0x.tools]
+
+%CPU = mean %time spent running tasks on the CPU
 %LAT = mean %time spent waiting in the run queue (scheduler latency) by all tasks, normalized by num tasks
 %SLP = 100 - (%CPU + %LAT)
 """

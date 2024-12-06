@@ -19,6 +19,7 @@ from datetime import datetime
 import time, sys
 
 NANOSECONDS_PER_SEC = 1000000000
+NANOSECONDS_PER_USEC = 1000
 
 
 if len(sys.argv) != 2 or sys.argv[1] == '-h':
@@ -30,18 +31,26 @@ pid=sys.argv[1]
 with open('/proc/' + pid + '/comm', 'r') as f:
     print("SchedLat by Tanel Poder [https://0x.tools]\n\nPID=" + pid + " COMM=" + f.read())
 
-print("%-20s %6s %6s %6s" % ("TIMESTAMP", "%CPU", "%LAT", "%SLP"))
+print(u"%s|    RUNQ LAT \u00B5s" % (" " * 42))
+print("%-20s %6s %6s %6s | %7s %6s" % ("TIMESTAMP", "%CPU", "%LAT", "%SLP", "1-sec", "boot"))
 
 while True:
     with open('/proc/' + pid + '/schedstat' , 'r') as f:
         t1=time.time()
         (cpu_ns1, lat_ns1, slices1) = f.read().split()
+        lat_ns1, slices1 = int(lat_ns1), int(slices1)
+
         time.sleep(1)
         f.seek(0)
+
         t2=time.time()
         (cpu_ns2, lat_ns2, slices2) = f.read().split()
+        lat_ns2, slices2 = int(lat_ns2), int(slices2)
 
     cpu=(int(cpu_ns2)-int(cpu_ns1))/(t2-t1)/NANOSECONDS_PER_SEC*100
-    lat=(int(lat_ns2)-int(lat_ns1))/(t2-t1)/NANOSECONDS_PER_SEC*100
+    lat=(lat_ns2-lat_ns1)/(t2-t1)/NANOSECONDS_PER_SEC*100
 
-    print("%-20s %6.1f %6.1f %6.1f" % (datetime.fromtimestamp(t2).strftime("%Y-%m-%d %H:%M:%S"), cpu, lat, 100-(cpu+lat)))
+    lat_us = (lat_ns2 - lat_ns1) / (slices2 - slices1) / NANOSECONDS_PER_USEC
+    lat_us_boot = lat_ns2 / slices2 / NANOSECONDS_PER_USEC
+
+    print("%-20s %6.1f %6.1f %6.1f | %7.2f %6.2f" % (datetime.fromtimestamp(t2).strftime("%Y-%m-%d %H:%M:%S"), cpu, lat, 100 - (cpu + lat), lat_us, lat_us_boot))
