@@ -4,9 +4,11 @@
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 # Name:    schedlat.py (v0.2)
-# Purpose: display % of time a process (thread group leader, i.e. excluding child threads) spent
-#          in CPU runqueue (scheduling latency)
-# Usage:   ./schedlat.py PID
+# Purpose: display % of time a thread spent in CPU runqueue
+#          (scheduling latency)
+# Usage:   ./schedlat.py PID TID
+#
+#          For the main process thread, i.e. the thread group leader, TID = PID
 #
 #          %CPU shows % of time the task spent on CPU
 #          %LAT shows % of time the task spent trying to get onto CPU (in runqueue)
@@ -22,14 +24,15 @@ NANOSECONDS_PER_SEC = 1000000000
 NANOSECONDS_PER_USEC = 1000
 
 
-if len(sys.argv) != 2 or sys.argv[1] == '-h':
-    print("usage: " + sys.argv[0] + " PID")
+if len(sys.argv) != 3 or sys.argv[1] == '-h':
+    print("usage: " + sys.argv[0] + " PID TID")
     exit(1)
 
 pid = sys.argv[1]
+tid = sys.argv[2]
 
 with open('/proc/' + pid + '/comm', 'r') as f:
-    print("SchedLat by Tanel Poder [https://0x.tools]\n\nPID=" + pid + " COMM=" + f.read())
+    print("SchedLat by Tanel Poder [https://0x.tools]\n\nTID=%s PID=%s COMM=%s" % (tid, pid, f.read()))
 
 print(u"%s|    RUNQ LAT \u00B5s" % (" " * 42))
 print("%-20s %6s %6s %6s | %7s %6s" % ("TIMESTAMP", "%CPU", "%LAT", "%SLP", "1-sec", "boot"))
@@ -38,7 +41,7 @@ count = 0
 lat_us_sum = 0
 try:
     while True:
-        with open('/proc/' + pid + '/schedstat' , 'r') as f:
+        with open('/proc/' + pid + '/task/' + tid + '/schedstat', 'r') as f:
             t1 = time.time()
             (cpu_ns1, lat_ns1, slices1) = f.read().split()
             lat_ns1, slices1 = int(lat_ns1), int(slices1)
