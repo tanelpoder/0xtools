@@ -4,8 +4,8 @@
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 # Name:    schedlat.py (v0.2)
-# Purpose: display % of time a process spent in CPU runqueue
-#          (scheduling latency)
+# Purpose: display % of time a process (thread group leader, i.e. excluding child threads) spent
+#          in CPU runqueue (scheduling latency)
 # Usage:   ./schedlat.py PID
 #
 #          %CPU shows % of time the task spent on CPU
