@@ -63,7 +63,7 @@ int get_tasks(struct bpf_iter__task *ctx)
 
 	t->pid = task->pid;
 	t->tgid = task->tgid;
-  t->flags = task->flags;
+	t->flags = task->flags;
 	t->state = get_task_state(task);
 	bpf_probe_read_kernel_str(t->comm, TASK_COMM_LEN, task->comm);
 	t->euid = BPF_CORE_READ(task, cred, euid.val);
