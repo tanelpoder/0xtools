@@ -38,14 +38,21 @@ static const char *get_task_state(__u32 state)
 	}
 }
 
+static const char *safe_syscall_name(__u32 syscall_nr) {
+	if (syscall_nr > NR_SYSCALLS) {
+		return "<unknown>";
+	}
+
+	return sysent0[syscall_nr].name;
+}
 
 int main(int argc, char **argv)
 {
-	struct xcapture_bpf *skel;
+	struct xcapture_bpf *skel = 0;
 	struct task_info buf;
-	int iter_fd;
-	ssize_t ret;
-	int err;
+	int iter_fd = 0;
+	ssize_t ret = 0;
+	int err = 0;
 
 
 	/* Open, load, and verify BPF application */
@@ -93,7 +100,7 @@ int main(int argc, char **argv)
 
         printf("%-23s  %7d  %7d  %-15s  %-16s  %-16s  %-16s  %-25s  %-16llx  %s\n",
             timestamp, buf.pid, buf.tgid, get_task_state(buf.state), getusername(buf.euid), buf.comm, buf.exe_file,
-            sysent0[buf.syscall_nr].name, buf.syscall_args[0], buf.filename[0] ? buf.filename : ""
+            safe_syscall_name(buf.syscall_nr), buf.syscall_args[0], buf.filename[0] ? buf.filename : ""
         ); //
     }
 
