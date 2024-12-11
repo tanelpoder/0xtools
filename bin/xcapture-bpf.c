@@ -160,7 +160,11 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         t->tid = tid;
         t->pid = pid;
         t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
+#if LINUX_VERSION_MAJOR >= 5 && LINUX_VERSION_PATCHLEVEL >= 14
         t->state = curtask->__state;
+#else
+        t->state = curtask->state;
+#endif
         bpf_probe_read_str(t->comm, sizeof(t->comm), (struct task_struct *)curtask->comm);
 
 #ifdef CMDLINE
@@ -267,7 +271,11 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     bool *preempt = (bool *)ctx->args[0];
     struct task_struct *prev = (struct task_struct *)ctx->args[1];
     struct task_struct *next = (struct task_struct *)ctx->args[2];
+#if LINUX_VERSION_MAJOR >= 5 && LINUX_VERSION_PATCHLEVEL >= 14
     unsigned int prev_state = prev->__state; // ctx->args[3] won't work in older configs due to breaking change in sched_switch tracepoint
+#else
+    unsigned int prev_state = prev->state; 
+#endif
     
     s32 prev_tid = prev->pid;  // task (tid in user tools)
     s32 prev_pid = prev->tgid; // tgid (pid in user tools)
@@ -326,7 +334,11 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         //if (!t_next->comm[0])
         bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
 
+#if LINUX_VERSION_MAJOR >= 5 && LINUX_VERSION_PATCHLEVEL >= 14
         t_next->state = next->__state;
+#else
+        t_next->state = next->state;
+#endif
         t_next->in_sched_migrate  = 0;
         t_next->in_sched_waking   = 0;
         t_next->in_sched_wakeup   = 0;
