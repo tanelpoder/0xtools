@@ -32,6 +32,14 @@
 #define __BCC__
 #endif
 
+// workaround for rename of task->state to task->__state in kernel 5.14
+// (this change has been backported to rhel8 kernel 4.18 as well)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0) || RHEL_MAJOR >= 8
+#define STATE_FIELD __state
+#else
+#define STATE_FIELD state
+#endif
+
 // don't need EIP value for basic stack trace analysis (deduplicate some stackids)
 // unfortunately SKIP_FRAMES 1 "skips" both the EIP value and one stack frame...
 // #define SKIP_FRAMES (1 & BPF_F_SKIP_FIELD_MASK)
@@ -160,11 +168,7 @@ int update_cpu_stack_profile(struct bpf_perf_event_data *ctx) {
         t->tid = tid;
         t->pid = pid;
         t->uid = (s32) (bpf_get_current_uid_gid() & 0xFFFFFFFF);
-#if LINUX_VERSION_MAJOR >= 5 && LINUX_VERSION_PATCHLEVEL >= 14
-        t->state = curtask->__state;
-#else
-        t->state = curtask->state;
-#endif
+        t->state = curtask->STATE_FIELD;
         bpf_probe_read_str(t->comm, sizeof(t->comm), (struct task_struct *)curtask->comm);
 
 #ifdef CMDLINE
@@ -271,11 +275,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
     bool *preempt = (bool *)ctx->args[0];
     struct task_struct *prev = (struct task_struct *)ctx->args[1];
     struct task_struct *next = (struct task_struct *)ctx->args[2];
-#if LINUX_VERSION_MAJOR >= 5 && LINUX_VERSION_PATCHLEVEL >= 14
-    unsigned int prev_state = prev->__state; // ctx->args[3] won't work in older configs due to breaking change in sched_switch tracepoint
-#else
-    unsigned int prev_state = prev->state; 
-#endif
+    unsigned int prev_state = prev->STATE_FIELD; // ctx->args[3] won't work in older configs due to breaking change in sched_switch tracepoint
     
     s32 prev_tid = prev->pid;  // task (tid in user tools)
     s32 prev_pid = prev->tgid; // tgid (pid in user tools)
@@ -334,11 +334,7 @@ RAW_TRACEPOINT_PROBE(sched_switch) {
         //if (!t_next->comm[0])
         bpf_probe_read_str(t_next->comm, sizeof(t_next->comm), next->comm);
 
-#if LINUX_VERSION_MAJOR >= 5 && LINUX_VERSION_PATCHLEVEL >= 14
-        t_next->state = next->__state;
-#else
-        t_next->state = next->state;
-#endif
+        t_next->state = next->STATE_FIELD;
         t_next->in_sched_migrate  = 0;
         t_next->in_sched_waking   = 0;
         t_next->in_sched_wakeup   = 0;
