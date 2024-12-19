@@ -39,12 +39,18 @@ static const char *get_task_state(__u32 state)
     }
 }
 
-static const char *safe_syscall_name(__u32 syscall_nr) {
-    if (syscall_nr > NR_SYSCALLS) {
-        return "<unknown>";
+// the sysent0[] may have numbering gaps in it and since it's a 
+// static .h file, there may be newer syscalls with higher nr too
+static const char *safe_syscall_name(__u32 syscall_nr) 
+{
+    static char unknown_str[32];
+    
+    if (syscall_nr <= NR_SYSCALLS && sysent0[syscall_nr].name != NULL) {
+        return sysent0[syscall_nr].name;
     }
-
-    return sysent0[syscall_nr].name;
+    
+    snprintf(unknown_str, sizeof(unknown_str), "<%x>", syscall_nr);
+    return unknown_str;
 }
 
 int main(int argc, char **argv)
