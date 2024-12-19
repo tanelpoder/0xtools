@@ -79,10 +79,6 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    /* Print output (kernel pid printed as TID in userspace and kernel tgid as PID) */
-    printf("%-23s  %7s  %7s  %-15s  %-16s  %-20s  %-16s  %-25s  %-25s  %16s  %-16s  %s\n",
-       "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM", "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "US_SO_FAR", "ARG0", "FILENAME");
-
     struct timespec ts;
     char timestamp[64];
 
@@ -98,6 +94,13 @@ int main(int argc, char **argv)
         struct tm *tm = localtime(&ts.tv_sec);
         strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm);
         snprintf(timestamp + 19, sizeof(timestamp) - 19, ".%03ld", ts.tv_nsec / 1000000);
+
+        // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
+        printf("\n");
+        printf("%-23s  %7s  %7s  %-15s  %-16s  %-20s  %-16s  %-25s  %-25s  %16s  %-16s  %s\n",
+               "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM", 
+               "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "US_SO_FAR", "ARG0", "FILENAME");
+
 
         // iterate through all tasks
         iter_fd = bpf_iter_create(bpf_link__fd(skel->links.get_tasks));
