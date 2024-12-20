@@ -45,7 +45,8 @@ static const char *safe_syscall_name(__u32 syscall_nr)
 {
     static char unknown_str[32];
     
-    if (syscall_nr <= NR_SYSCALLS && sysent0[syscall_nr].name != NULL) {
+    // syscall numbering starts from 0 
+    if (syscall_nr < NR_SYSCALLS && sysent0[syscall_nr].name != NULL) {
         return sysent0[syscall_nr].name;
     }
     
