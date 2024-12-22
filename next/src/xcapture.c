@@ -131,7 +131,7 @@ int main(int argc, char **argv)
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.storage.in_syscall_nr),
                 (duration_ns / 1000), 
-                buf.syscall_args[0], buf.filename[0] ? buf.filename : ""
+                buf.syscall_args[0], buf.filename[0] ? buf.filename : "-"
             );
 
         }

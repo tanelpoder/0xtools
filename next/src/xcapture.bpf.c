@@ -125,8 +125,10 @@ int get_tasks(struct bpf_iter__task *ctx)
 
     // early check and bailout if not a thread or state of interest
     __u32 task_state = get_task_state(task);
-    
-    if (task_state & TASK_NOLOAD) // idle kernel thread waiting for work
+    __u32 task_flags = task->flags;
+  
+    // idle kernel worker thread waiting for work or other kernel threads in S state
+    if ((task_state & TASK_NOLOAD) || ((task_flags & PF_KTHREAD) && (task_state & TASK_INTERRUPTIBLE)))
         return 0;
 
     t = bpf_map_lookup_elem(&task_info_buf, &zero);
@@ -136,7 +138,7 @@ int get_tasks(struct bpf_iter__task *ctx)
     t->addr = task; // used later on for task storage lookup
     t->pid = task->pid;
     t->tgid = task->tgid;
-    t->flags = task->flags;
+    t->flags = task_flags;
     t->state = task_state;
     t->euid = BPF_CORE_READ(task, cred, euid.val);
     bpf_probe_read_kernel_str(t->comm, TASK_COMM_LEN, task->comm);
@@ -202,8 +204,8 @@ int get_tasks(struct bpf_iter__task *ctx)
 
         bpf_probe_read_kernel_str(t->filename, sizeof(t->filename), d_name.name);
     } else {
-        t->full_path[0] = '\0';
-        t->filename[0] = '\0';
+        t->full_path[0] = '-'; t->full_path[1] = '\0';
+        t->filename[0] = '-'; t->filename[1] = '\0';
     }
 
     ret = bpf_get_task_stack(task, t->kstack, sizeof(__u64) * MAX_STACK_LEN, 0);
