@@ -28,9 +28,9 @@ const char *getusername(uid_t uid)
 static const char *get_task_state(__u32 state)
 {
     switch (state & 0xFFF) {
-    case 0x0000: return "RUNNING";
-    case 0x0001: return "INTERRUPTIBLE";
-    case 0x0002: return "UNINTERRUPTIBLE";
+    case 0x0000: return "RUN";   // RUNNING
+    case 0x0001: return "SLEEP"; // INTERRUPTIBLE"
+    case 0x0002: return "DISK";  // UNINTERRUPTIBLE"
     case 0x0200: return "WAKING";
     case 0x0400: return "NOLOAD";
     case 0x0402: return "IDLE";
@@ -98,7 +98,7 @@ int main(int argc, char **argv)
 
         // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
         printf("\n");
-        printf("%-23s  %7s  %7s  %-15s  %-16s  %-20s  %-16s  %-25s  %-25s  %16s  %-16s  %s\n",
+        printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %16s  %-16s  %s\n",
                "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM", 
                "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "US_SO_FAR", "ARG0", "FILENAME");
 
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
             if (buf.storage.sc_enter_time) 
                 duration_ns = buf.storage.sample_ktime - buf.storage.sc_enter_time;
 
-            printf("%-23s  %7d  %7d  %-15s  %-16s  %-20s  %-16s  %-25s  %-25s  %'16lld  %-16llx  %s\n",
+            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-25s  %-25s  %'16lld  %-16llx  %s\n",
                 timestamp, buf.pid, buf.tgid, get_task_state(buf.state), getusername(buf.euid), buf.exe_file, buf.comm, 
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.storage.in_syscall_nr),
