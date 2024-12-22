@@ -123,6 +123,12 @@ int get_tasks(struct bpf_iter__task *ctx)
     if (!task)
         return 0;
 
+    // early check and bailout if not a thread or state of interest
+    __u32 task_state = get_task_state(task);
+    
+    if (task_state & TASK_NOLOAD) // idle kernel thread waiting for work
+        return 0;
+
     t = bpf_map_lookup_elem(&task_info_buf, &zero);
     if (!t)
         return 0;
@@ -131,7 +137,7 @@ int get_tasks(struct bpf_iter__task *ctx)
     t->pid = task->pid;
     t->tgid = task->tgid;
     t->flags = task->flags;
-    t->state = get_task_state(task);
+    t->state = task_state;
     t->euid = BPF_CORE_READ(task, cred, euid.val);
     bpf_probe_read_kernel_str(t->comm, TASK_COMM_LEN, task->comm);
 
