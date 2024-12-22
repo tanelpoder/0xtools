@@ -29,16 +29,20 @@
 #define TASK_FROZEN           0x00008000
 #define TASK_STATE_MAX        0x00010000
 
-// task flags from linux/sched/h
+// task flags from linux/sched.h
 #define PF_KSWAPD             0x00020000  /* I am kswapd */
 #define PF_KTHREAD            0x00200000  /* I am a kernel thread */
 
 
 // to be used with BPF_MAP_TYPE_TASK_STORAGE
 struct task_storage {
+    __u64 sample_ktime;
     __s32 in_syscall_nr;
     __u64 sc_enter_time;
-    __u64 sample_ktime;
+
+    __u64 bio_queue_ktime;
+    __u32 bio_dev;
+    __u64 bio_sector;
 };
 
 // use kernel nomenclature in kernel side eBPF code (pid,tgid)

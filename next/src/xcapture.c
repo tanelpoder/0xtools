@@ -128,7 +128,9 @@ int main(int argc, char **argv)
 
             printf("%-23s  %7d  %7d  %-15s  %-16s  %-20s  %-16s  %-25s  %-25s  %'16lld  %-16llx  %s\n",
                 timestamp, buf.pid, buf.tgid, get_task_state(buf.state), getusername(buf.euid), buf.exe_file, buf.comm, 
-                safe_syscall_name(buf.syscall_nr), safe_syscall_name(buf.storage.in_syscall_nr), (duration_ns / 1000), 
+                buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
+                buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.storage.in_syscall_nr),
+                (duration_ns / 1000), 
                 buf.syscall_args[0], buf.filename[0] ? buf.filename : ""
             );
 
