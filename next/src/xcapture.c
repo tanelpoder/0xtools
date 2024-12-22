@@ -126,7 +126,7 @@ int main(int argc, char **argv)
             if (buf.storage.sc_enter_time) 
                 duration_ns = buf.storage.sample_ktime - buf.storage.sc_enter_time;
 
-            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-25s  %-25s  %'16lld  %-16llx  %s\n",
+            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %'16lld  %-16llx  %s\n",
                 timestamp, buf.pid, buf.tgid, get_task_state(buf.state), getusername(buf.euid), buf.exe_file, buf.comm, 
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.storage.in_syscall_nr),
