@@ -91,8 +91,6 @@ int main(int argc, char **argv)
     ssize_t ret = 0;
     int err = 0;
 
-    int map_fd = 0;
-
     /* For number formatting for readability */
     setlocale(LC_ALL,"en_US.UTF-8");
 
@@ -111,12 +109,6 @@ int main(int argc, char **argv)
 
     struct timespec sample_ts; // sample timestamp
     char timestamp[64];
-
-    map_fd = bpf_map__fd(skel->maps.task_storage);
-
-    if (map_fd < 0) {
-        return 0;
-    }
 
 
     // CSV file needs only one header printed
@@ -235,7 +227,6 @@ int main(int argc, char **argv)
 
     cleanup:
     /* Clean up */
-    close(map_fd);
     close(iter_fd);
     xcapture_bpf__destroy(skel);
 
