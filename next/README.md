@@ -13,7 +13,7 @@ cd next
 To install the system packages (on Ubuntu 24.04) for compiling the binary, run:
 
 ```
-sudo apt install clang llvm libbfd-dev
+sudo apt install libbpf-dev libbpf-tools clang llvm libbfd-dev
 ```
 
 To install required libbpf dependencies for the GitHub repo, run:
