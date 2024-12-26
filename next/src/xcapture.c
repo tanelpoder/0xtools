@@ -79,6 +79,12 @@ struct timespec subtract_ns_from_timespec(struct timespec ts, __s64 ns) {
 
 int main(int argc, char **argv)
 {
+    // super simple check to avoid proper argument handling for now
+    // if any args are given to xcapture, output CSV
+    bool output_csv = false;
+    if (argc > 1)
+        output_csv = true;
+
     struct xcapture_bpf *skel = 0;
     struct task_info buf;
     int iter_fd = 0;
@@ -112,21 +118,33 @@ int main(int argc, char **argv)
         return 0;
     }
 
+
+    // CSV file needs only one header printed
+    bool header_printed = false;
+
     // sample and print every second
     while (true) {
         clock_gettime(CLOCK_REALTIME, &sample_ts);
         // clock_gettime(CLOCK_MONOTONIC, &ktime); // TODO check twice and pick lowest diff in case of an interrupt/inv ctx switch
 
         struct tm *tm = localtime(&sample_ts.tv_sec);
-        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm);
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", tm);
         snprintf(timestamp + 19, sizeof(timestamp) - 19, ".%03ld", sample_ts.tv_nsec / 1000000);
 
         // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
-        printf("\n");
-        printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %16s  %12s  %-16s  %s\n",
-               "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM", 
-               "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
+        if (output_csv) {
+            if (!header_printed) {
+                printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+                      "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
+                      "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
+            }
+        } else {
+            printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %16s  %12s  %-16s  %s\n",
+                   "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
+                   "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
+        }
 
+        header_printed = true;
 
         // iterate through all tasks (BPF task iterator program may choose to not emit some non-interesting tasks)
         iter_fd = bpf_iter_create(bpf_link__fd(skel->links.get_tasks));
@@ -157,25 +175,60 @@ int main(int argc, char **argv)
             struct timespec sc_start_timespec = subtract_ns_from_timespec(sample_ts, duration_ns);
             struct tm *sc_start_tm = localtime(&sc_start_timespec.tv_sec);
 
-            strftime(sc_start_time_str, sizeof(sc_start_time_str), "%Y-%m-%d %H:%M:%S", sc_start_tm);
+            strftime(sc_start_time_str, sizeof(sc_start_time_str), "%Y-%m-%dT%H:%M:%S", sc_start_tm);
             snprintf(sc_start_time_str + 19, sizeof(sc_start_time_str) - 19, ".%03ld", sc_start_timespec.tv_nsec / 1000000);
 
-            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %'16lld  %12lld  %-16llx  %s\n",
-                timestamp, buf.pid, buf.tgid, get_task_state(buf.state), getusername(buf.euid), buf.exe_file, buf.comm, 
-                buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
-                buf.flags & PF_KTHREAD ? "-" : (buf.storage.in_syscall_nr == -1 ? "-" : safe_syscall_name(buf.storage.in_syscall_nr)),
-                buf.storage.sc_enter_time > 0 ? sc_start_time_str : "-",
-                (duration_ns / 1000), 
-                buf.storage.sc_sequence_num,
-                buf.syscall_args[0], 
-                buf.filename[0] ? buf.filename : "-"
-            );
+            if (output_csv) {
+                printf("%s,%d,%d,%s,\"%s\",\"%s\",\"%s\",%s,%s,%s,%lld,%lld,%llx,\"%s\"\n",
+                    timestamp,
+                    buf.pid,
+                    buf.tgid,
+                    get_task_state(buf.state),
+                    getusername(buf.euid),
+                    buf.exe_file,
+                    buf.comm,
+                    (buf.flags & PF_KTHREAD) ? "-" : safe_syscall_name(buf.syscall_nr),
+                    (buf.flags & PF_KTHREAD) ? "-" : (buf.storage.in_syscall_nr == -1 ? "-" : safe_syscall_name(buf.storage.in_syscall_nr)),
+                    buf.storage.sc_enter_time > 0 ? sc_start_time_str : "", // in CSV better to have "NULL" instead of a malformed timestamp
+                    (duration_ns / 1000),
+                    buf.storage.sc_sequence_num,
+                    buf.syscall_args[0],
+                    buf.filename[0] ? buf.filename : "-"
+                );
+            }
+            else {
+                printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %'16lld  %12lld  %-16llx  %s\n",
+                    timestamp,
+                    buf.pid,
+                    buf.tgid,
+                    get_task_state(buf.state),
+                    getusername(buf.euid),
+                    buf.exe_file,
+                    buf.comm,
+                    buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
+                    buf.flags & PF_KTHREAD ? "-" : (buf.storage.in_syscall_nr == -1 ? "-" : safe_syscall_name(buf.storage.in_syscall_nr)),
+                    buf.storage.sc_enter_time > 0 ? sc_start_time_str : "-",
+                    (duration_ns / 1000), 
+                    buf.storage.sc_sequence_num,
+                    buf.syscall_args[0], 
+                    buf.filename[0] ? buf.filename : "-"
+                );
+            }
 
         }
+
+
+        if (!output_csv) {
+            printf("\n");
+        }
+
+        // avoid seeing half-written lines when redirecting to a file
+        fflush(stdout);
 
         close(iter_fd); // probably need to check in cleanup: if the iter_fd is open?
 
         // sleep for 1 second for now (even if prev sample took some time)
+        // TODO sleep N microseconds less, based on how long the last sample took (like in original v1 xcapture.c)
         usleep(1000000);
     }
 
