@@ -62,7 +62,7 @@ struct task_info {
 
     int kstack_len;
     __u64 kstack[MAX_STACK_LEN];
-    __u32 syscall_nr;
+    __s32 syscall_nr;
     __u32 syscall_nr_test;
     __u64 syscall_args[6];
 

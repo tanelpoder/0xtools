@@ -79,15 +79,11 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
     storage = bpf_task_storage_get(&task_storage, bpf_get_current_task_btf(), 0, 
                                   BPF_LOCAL_STORAGE_GET_F_CREATE);
 
-    // bpf_printk("storage: addr %llx \n", storage);
     if (!storage)
         return 0;
     
-    storage->in_syscall_nr = (u32)ctx->args[1];  // syscall nr
+    storage->in_syscall_nr = (s32)ctx->args[1];  // syscall nr
     storage->sc_enter_time = bpf_ktime_get_ns();
-
-    // bpf_printk("syscall %d\n", (u32)ctx->args[1]);
-
     return 0;
 }
 
@@ -96,14 +92,13 @@ int handle_sys_exit(struct bpf_raw_tracepoint_args *ctx)
 {
     struct task_storage *storage;
     
-    storage = bpf_task_storage_get(&task_storage, (struct task_struct *) bpf_get_current_task_btf(), 0,
+    storage = bpf_task_storage_get(&task_storage, bpf_get_current_task_btf(), 0,
                                   BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (!storage)
         return 0;
     
     storage->in_syscall_nr = -1;
     storage->sc_enter_time = 0;
- 
     return 0;
 }
 
@@ -173,15 +168,19 @@ int get_tasks(struct bpf_iter__task *ctx)
     t->regs_ptr = regs;
     t->thread_size = THREAD_SIZE;
 
-    // Read syscall nr and arguments from registers, x86_64 args: rdi, rsi, rdx, r10, r8, r9
+    // Read syscall nr and arguments from registers saved when invoking the syscall
+    // on x86_64 ABI the args are stored in: rdi, rsi, rdx, r10, r8, r9
     if(regs) {
-        t->syscall_nr = (__u32) BPF_CORE_READ(regs, orig_ax);  // orig_ax holds syscall number
+        t->syscall_nr = (__s32) BPF_CORE_READ(regs, orig_ax);  // orig_ax holds syscall number (TODO: change for ARM64)
         t->syscall_args[0] = PT_REGS_PARM1_CORE_SYSCALL(regs);
         t->syscall_args[1] = PT_REGS_PARM2_CORE_SYSCALL(regs);
         t->syscall_args[2] = PT_REGS_PARM3_CORE_SYSCALL(regs);
         t->syscall_args[3] = PT_REGS_PARM4_CORE_SYSCALL(regs);
         t->syscall_args[4] = PT_REGS_PARM5_CORE_SYSCALL(regs);
         t->syscall_args[5] = PT_REGS_PARM6_CORE_SYSCALL(regs);
+    }
+    else {
+        t->syscall_nr = -2;
     }
 
     // this shorthand should be possible: filename = BPF_CORE_READ(task, files, fdt, fd, f_path.dentry, d_name.name);

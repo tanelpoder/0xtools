@@ -41,18 +41,41 @@ static const char *get_task_state(__u32 state)
 
 // the sysent0[] may have numbering gaps in it and since it's a 
 // static .h file, there may be newer syscalls with higher nr too
-static const char *safe_syscall_name(__u32 syscall_nr) 
+static const char *safe_syscall_name(__s32 syscall_nr) 
 {
     static char unknown_str[32];
     
-    // syscall numbering starts from 0 
+    // syscall numbering starts from 0, gaps in number range usage also possible
+    // however -1 is also possible when not in a syscall
+
+    if (syscall_nr < 0)
+        return "-";
+
     if (syscall_nr < NR_SYSCALLS && sysent0[syscall_nr].name != NULL) {
         return sysent0[syscall_nr].name;
     }
     
-    snprintf(unknown_str, sizeof(unknown_str), "<%x>", syscall_nr);
+    snprintf(unknown_str, sizeof(unknown_str), "%d", syscall_nr);
     return unknown_str;
 }
+
+
+// ns is signed as sometimes there's small negative durations reported due to
+// concurrency of BPF task iterator vs event capture probes running on different CPUs
+struct timespec subtract_ns_from_timespec(struct timespec ts, __s64 ns) {
+    struct timespec result = ts;
+
+    if (result.tv_nsec < (long)(ns % 1000000000)) {
+        result.tv_sec--;  // Borrow a second
+        result.tv_nsec = result.tv_nsec + 1000000000 - (ns % 1000000000);
+    } else {
+        result.tv_nsec -= (ns % 1000000000);
+    }
+
+    result.tv_sec -= (ns / 1000000000);
+    return result;
+}
+
 
 int main(int argc, char **argv)
 {
@@ -80,7 +103,7 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    struct timespec ts;
+    struct timespec sample_ts; // sample timestamp
     char timestamp[64];
 
     map_fd = bpf_map__fd(skel->maps.task_storage);
@@ -91,19 +114,21 @@ int main(int argc, char **argv)
 
     // sample and print every second
     while (true) {
-        clock_gettime(CLOCK_REALTIME, &ts);
-        struct tm *tm = localtime(&ts.tv_sec);
+        clock_gettime(CLOCK_REALTIME, &sample_ts);
+        // clock_gettime(CLOCK_MONOTONIC, &ktime); // TODO check twice and pick lowest diff in case of an interrupt/inv ctx switch
+
+        struct tm *tm = localtime(&sample_ts.tv_sec);
         strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm);
-        snprintf(timestamp + 19, sizeof(timestamp) - 19, ".%03ld", ts.tv_nsec / 1000000);
+        snprintf(timestamp + 19, sizeof(timestamp) - 19, ".%03ld", sample_ts.tv_nsec / 1000000);
 
         // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
         printf("\n");
-        printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %16s  %-16s  %s\n",
+        printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %16s  %-16s  %s\n",
                "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM", 
-               "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "US_SO_FAR", "ARG0", "FILENAME");
+               "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "ARG0", "FILENAME");
 
 
-        // iterate through all tasks
+        // iterate through all tasks (BPF task iterator program may choose to not emit some non-interesting tasks)
         iter_fd = bpf_iter_create(bpf_link__fd(skel->links.get_tasks));
         if (iter_fd < 0) {
             err = -1;
@@ -122,16 +147,27 @@ int main(int argc, char **argv)
             if (ret == 0)
                 break;
 
-            __s64 duration_ns = -1; // event duration so far, from its start to sampling point
+            __s64 duration_ns = 0; // event duration so far, from its start to sampling point
             if (buf.storage.sc_enter_time) 
                 duration_ns = buf.storage.sample_ktime - buf.storage.sc_enter_time;
 
-            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %'16lld  %-16llx  %s\n",
+            // knowing the duration so far (when sampled), calculate the event start time,
+            // without relying on ktime to walltime conversion
+            char   sc_start_time_str[64];
+            struct timespec sc_start_timespec = subtract_ns_from_timespec(sample_ts, duration_ns);
+            struct tm *sc_start_tm = localtime(&sc_start_timespec.tv_sec);
+
+            strftime(sc_start_time_str, sizeof(sc_start_time_str), "%Y-%m-%d %H:%M:%S", sc_start_tm);
+            snprintf(sc_start_time_str + 19, sizeof(sc_start_time_str) - 19, ".%03ld", sc_start_timespec.tv_nsec / 1000000);
+
+            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %'16lld  %-16llx  %s\n",
                 timestamp, buf.pid, buf.tgid, get_task_state(buf.state), getusername(buf.euid), buf.exe_file, buf.comm, 
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
-                buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.storage.in_syscall_nr),
+                buf.flags & PF_KTHREAD ? "-" : (buf.storage.in_syscall_nr == -1 ? "-" : safe_syscall_name(buf.storage.in_syscall_nr)),
+                buf.storage.sc_enter_time > 0 ? sc_start_time_str : "-",
                 (duration_ns / 1000), 
-                buf.syscall_args[0], buf.filename[0] ? buf.filename : "-"
+                buf.syscall_args[0], 
+                buf.filename[0] ? buf.filename : "-"
             );
 
         }
