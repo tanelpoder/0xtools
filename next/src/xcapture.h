@@ -39,6 +39,7 @@ struct task_storage {
     __u64 sample_ktime;
     __s32 in_syscall_nr;
     __u64 sc_enter_time;
+    __u64 sc_sequence_num; // any syscall entry in a task will increment this single counter
 
     __u64 bio_queue_ktime;
     __u32 bio_dev;

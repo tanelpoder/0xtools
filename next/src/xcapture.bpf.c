@@ -82,8 +82,9 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
     if (!storage)
         return 0;
     
-    storage->in_syscall_nr = (s32)ctx->args[1];  // syscall nr
     storage->sc_enter_time = bpf_ktime_get_ns();
+    storage->sc_sequence_num += 1;
+    storage->in_syscall_nr = (s32)ctx->args[1];  // syscall nr
     return 0;
 }
 
@@ -219,8 +220,9 @@ int get_tasks(struct bpf_iter__task *ctx)
         return 0;
 
     t->storage.in_syscall_nr = storage->in_syscall_nr;
-    t->storage.sample_ktime = sample_ktime;
+    t->storage.sample_ktime  = sample_ktime;
     t->storage.sc_enter_time = storage->sc_enter_time;
+    t->storage.sc_sequence_num    = storage->sc_sequence_num;
 
     bpf_seq_write(seq, t, sizeof(struct task_info));
     return 0;

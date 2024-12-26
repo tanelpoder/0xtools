@@ -123,9 +123,9 @@ int main(int argc, char **argv)
 
         // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
         printf("\n");
-        printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %16s  %-16s  %s\n",
+        printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %16s  %12s  %-16s  %s\n",
                "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM", 
-               "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "ARG0", "FILENAME");
+               "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
 
 
         // iterate through all tasks (BPF task iterator program may choose to not emit some non-interesting tasks)
@@ -160,12 +160,13 @@ int main(int argc, char **argv)
             strftime(sc_start_time_str, sizeof(sc_start_time_str), "%Y-%m-%d %H:%M:%S", sc_start_tm);
             snprintf(sc_start_time_str + 19, sizeof(sc_start_time_str) - 19, ".%03ld", sc_start_timespec.tv_nsec / 1000000);
 
-            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %'16lld  %-16llx  %s\n",
+            printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %'16lld  %12lld  %-16llx  %s\n",
                 timestamp, buf.pid, buf.tgid, get_task_state(buf.state), getusername(buf.euid), buf.exe_file, buf.comm, 
                 buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
                 buf.flags & PF_KTHREAD ? "-" : (buf.storage.in_syscall_nr == -1 ? "-" : safe_syscall_name(buf.storage.in_syscall_nr)),
                 buf.storage.sc_enter_time > 0 ? sc_start_time_str : "-",
                 (duration_ns / 1000), 
+                buf.storage.sc_sequence_num,
                 buf.syscall_args[0], 
                 buf.filename[0] ? buf.filename : "-"
             );
