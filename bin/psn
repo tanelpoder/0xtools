@@ -33,7 +33,7 @@
 #  "#!/usr/bin/env python26"
 #
 
-PSN_VERSION = '1.2.7'
+PSN_VERSION = '1.2.8'
 
 import sys, os, os.path, time, datetime
 import re
@@ -104,13 +104,13 @@ def cleanup():
         if os.path.exists(args.output_sample_db):
             try:
                 os.remove(args.output_sample_db)
-                logging.debug(f"Removed temporary database file {args.output_sample_db}")
+                logging.debug("Removed temporary database file %s" % (args.output_sample_db))
             except OSError as e:
-                logging.error(f"Error removing temporary database file: {e}")
+                logging.error("Error removing temporary database file: %s" % (e))
 
 # Register cleanup function only if execution duration exceeds 60 seconds and samples are not being persisted
 if (args.sample_seconds > 60) and (args.output_sample_db == ':memory:') :
-    args.output_sample_db = f'/tmp/psn_samples_{os.getpid()}.db'
+    args.output_sample_db = '/tmp/psn_samples_%.db' % os.getpid()
     atexit.register(cleanup)
 
 if args.list:
