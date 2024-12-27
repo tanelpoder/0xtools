@@ -180,7 +180,9 @@ int main(int argc, char **argv)
                     buf.exe_file,
                     buf.comm,
                     (buf.flags & PF_KTHREAD) ? "-" : safe_syscall_name(buf.syscall_nr),
-                    (buf.flags & PF_KTHREAD) ? "-" : safe_syscall_name(buf.storage.in_syscall_nr),
+                    (buf.flags & PF_KTHREAD) ? "-" : ( // deal with syscalls already ongoing from before xcapture was started
+                        buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
+                    ),
                     buf.storage.sc_enter_time > 0 ? sc_start_time_str : "", // in CSV better to have "NULL" instead of a malformed timestamp
                     (duration_ns / 1000),
                     buf.storage.sc_sequence_num,
@@ -198,7 +200,9 @@ int main(int argc, char **argv)
                     buf.exe_file,
                     buf.comm,
                     buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
-                    buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.storage.in_syscall_nr),
+                    (buf.flags & PF_KTHREAD) ? "-" : (
+                        buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
+                    ),
                     buf.storage.sc_enter_time > 0 ? sc_start_time_str : "-",
                     (duration_ns / 1000), 
                     buf.storage.sc_sequence_num,
