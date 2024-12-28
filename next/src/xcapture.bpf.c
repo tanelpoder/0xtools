@@ -112,20 +112,20 @@ int get_tasks(struct bpf_iter__task *ctx)
     struct pt_regs *syscall_regs;
     long ret;
 
-    // monotonic clock source for event duration sampling
-    __u64  sample_ktime = bpf_ktime_get_ns();
-
     struct task_struct *task = ctx->task;
     if (!task)
         return 0;
 
-    // early check and bailout if not a thread or state of interest
+    // in-kernel filtering: early check and bailout if not a thread or state of interest
     __u32 task_state = get_task_state(task);
     __u32 task_flags = task->flags;
   
     // idle kernel worker thread waiting for work or other kernel threads in S state
     if ((task_state & TASK_NOLOAD) || ((task_flags & PF_KTHREAD) && (task_state & TASK_INTERRUPTIBLE)))
         return 0;
+
+    // monotonic clock source for event duration sampling
+    __u64  sample_ktime = bpf_ktime_get_ns();
 
     t = bpf_map_lookup_elem(&task_info_buf, &zero);
     if (!t)
@@ -147,6 +147,7 @@ int get_tasks(struct bpf_iter__task *ctx)
             struct path file_path;
             BPF_CORE_READ_INTO(&file_path, exe_file, f_path);
             struct dentry *dentry = BPF_CORE_READ(exe_file, f_path.dentry);
+
             if (dentry) {
                 struct qstr d_name = BPF_CORE_READ(dentry, d_name);
                 bpf_probe_read_kernel_str(t->exe_file, sizeof(t->exe_file), d_name.name);

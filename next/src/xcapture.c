@@ -121,7 +121,7 @@ int main(int argc, char **argv)
 
         struct tm *tm = localtime(&sample_ts.tv_sec);
         strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", tm);
-        snprintf(timestamp + 19, sizeof(timestamp) - 19, ".%03ld", sample_ts.tv_nsec / 1000000);
+        snprintf(timestamp + 19, sizeof(timestamp) - 19, ".%06ld", sample_ts.tv_nsec / 1000);
 
         // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
         if (output_csv) {
@@ -131,7 +131,7 @@ int main(int argc, char **argv)
                       "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
             }
         } else {
-            printf("%-23s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %16s  %12s  %-16s  %s\n",
+            printf("%-26s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %16s  %12s  %-16s  %s\n",
                    "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
                    "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
         }
@@ -168,7 +168,7 @@ int main(int argc, char **argv)
             struct tm *sc_start_tm = localtime(&sc_start_timespec.tv_sec);
 
             strftime(sc_start_time_str, sizeof(sc_start_time_str), "%Y-%m-%dT%H:%M:%S", sc_start_tm);
-            snprintf(sc_start_time_str + 19, sizeof(sc_start_time_str) - 19, ".%03ld", sc_start_timespec.tv_nsec / 1000000);
+            snprintf(sc_start_time_str + 19, sizeof(sc_start_time_str) - 19, ".%06ld", sc_start_timespec.tv_nsec / 1000);
 
             if (output_csv) {
                 printf("%s,%d,%d,%s,\"%s\",\"%s\",\"%s\",%s,%s,%s,%lld,%lld,%llx,\"%s\"\n",
@@ -191,7 +191,7 @@ int main(int argc, char **argv)
                 );
             }
             else {
-                printf("%-23s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-23s  %'16lld  %12lld  %-16llx  %s\n",
+                printf("%-26s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %'16lld  %12lld  %-16llx  %s\n",
                     timestamp,
                     buf.pid,
                     buf.tgid,
@@ -231,6 +231,7 @@ int main(int argc, char **argv)
 
     cleanup:
     /* Clean up */
+    fflush(stdout);
     close(iter_fd);
     xcapture_bpf__destroy(skel);
 
