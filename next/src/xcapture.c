@@ -6,12 +6,23 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <time.h>
+#include <locale.h>
+#include <signal.h>
 #include <bpf/bpf.h>
 #include "xcapture.h"
 #include "xcapture.skel.h"
 #include <syscall_names.h>
-#include <time.h>
-#include <locale.h>
+
+
+// handle CTRL+C and sigpipe etc
+static volatile bool exiting = false;
+
+static void sig_handler(int sig)
+{
+    exiting = true;
+}
+
 
 // translate uid to user name
 const char *getusername(uid_t uid)
@@ -91,6 +102,12 @@ int main(int argc, char **argv)
     ssize_t ret = 0;
     int err = 0;
 
+    /* Signal handling */
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+    signal(SIGPIPE, sig_handler);
+
+
     /* For number formatting for readability */
     setlocale(LC_ALL,"en_US.UTF-8");
 
@@ -115,7 +132,7 @@ int main(int argc, char **argv)
     bool header_printed = false;
 
     // sample and print every second
-    while (true) {
+    while (!exiting) {
         clock_gettime(CLOCK_REALTIME, &sample_ts);
         // clock_gettime(CLOCK_MONOTONIC, &ktime); // TODO check twice and pick lowest diff in case of an interrupt/inv ctx switch
 
@@ -225,9 +242,9 @@ int main(int argc, char **argv)
 
         // sleep for 1 second for now (even if prev sample took some time)
         // TODO sleep N microseconds less, based on how long the last sample took (like in original v1 xcapture.c)
-        usleep(1000000);
+        if (!exiting)
+            usleep(1000000);
     }
-
 
     cleanup:
     /* Clean up */
