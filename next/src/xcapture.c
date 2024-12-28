@@ -238,7 +238,7 @@ int main(int argc, char **argv)
         // avoid seeing half-written lines when redirecting to a file
         fflush(stdout);
 
-        close(iter_fd); // probably need to check in cleanup: if the iter_fd is open?
+        close(iter_fd);
 
         // sleep for 1 second for now (even if prev sample took some time)
         // TODO sleep N microseconds less, based on how long the last sample took (like in original v1 xcapture.c)
@@ -249,7 +249,7 @@ int main(int argc, char **argv)
     cleanup:
     /* Clean up */
     fflush(stdout);
-    close(iter_fd);
+    close(iter_fd); // the fd might already be closed above, but this would just return an EBADF then
     xcapture_bpf__destroy(skel);
 
     return err < 0 ? -err : 0;
