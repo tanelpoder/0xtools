@@ -146,7 +146,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         printf("SC_END  %7d  %7d  %-20s  %12llu  %26llu  %26llu  %'16llu\n",
                e->pid,
                e->tgid,
-               safe_syscall_name(e->completed_syscall_nr),
+               safe_syscall_name(e->completed_syscall_nr), // TODO we don't know the active syscall nr for syscalls started before xcapture start
                e->completed_sc_sequence_nr,
                e->completed_sc_enter_time,
                e->completed_sc_exit_time,
