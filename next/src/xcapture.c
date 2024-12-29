@@ -269,7 +269,9 @@ int main(int argc, char **argv)
                 break;
 
 
-            __s64 duration_ns = 0; // event duration so far, from its start to sampling point
+            // event duration so far, from its start to sampling point
+            // the eBPF side sets all ongoing syscalls start time to program start time
+            __s64 duration_ns = 0;
             if (buf.storage.sc_enter_time) 
                 duration_ns = buf.storage.sample_ktime - buf.storage.sc_enter_time;
 
@@ -293,8 +295,8 @@ int main(int argc, char **argv)
                        buf.exe_file,
                        buf.comm,
                        (buf.flags & PF_KTHREAD) ? "-" : safe_syscall_name(buf.syscall_nr),
-                       (buf.flags & PF_KTHREAD) ? "-" : (
-                           buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
+                       (buf.flags & PF_KTHREAD) ? "-" : ( // if sc_sequence_num == 0, we are in a syscall that started before xcapture ran
+                           buf.storage.sc_sequence_num ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
                        ),
                        buf.storage.sc_enter_time > 0 ? sc_start_time_str : "",
                        (long long int) 0, // in CSV mode, use outer join with event completion records instead of "duration so far"
@@ -315,7 +317,7 @@ int main(int argc, char **argv)
                     buf.comm,
                     buf.flags & PF_KTHREAD ? "-" : safe_syscall_name(buf.syscall_nr),
                     (buf.flags & PF_KTHREAD) ? "-" : (
-                        buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
+                        buf.storage.sc_sequence_num ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
                     ),
                     buf.storage.sc_enter_time > 0 ? sc_start_time_str : "-",
                     (duration_ns / 1000), // this is cumulative for long waits over samples, so don't sum it up
