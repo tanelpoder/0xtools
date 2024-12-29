@@ -44,7 +44,7 @@ struct {
 } task_storage SEC(".maps");
 
 
-// ringbuf for event completion events
+// ringbuf for the (infrequent) event completion records
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
@@ -270,6 +270,8 @@ int get_tasks(struct bpf_iter__task *ctx)
     t->storage.sc_enter_time   = storage->sc_enter_time;
     t->storage.sc_sequence_num = storage->sc_sequence_num;
 
+    // as we now use a ringbuf for emitting event completion events anyway
+    // perhaps emit everything via a ringbuf if it speeds the sampling up (?)
     bpf_seq_write(seq, t, sizeof(struct task_info));
     return 0;
 }

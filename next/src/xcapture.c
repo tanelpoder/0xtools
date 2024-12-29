@@ -146,7 +146,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         printf("SC_END  %7d  %7d  %-20s  %12llu  %26llu  %26llu  %'16llu\n",
                e->pid,
                e->tgid,
-               safe_syscall_name(e->completed_syscall_nr), // TODO we don't know the active syscall nr for syscalls started before xcapture start
+               safe_syscall_name(e->completed_syscall_nr), // we don't know the active syscall nr for syscalls started before
+                                                           // xcapture start (0), but for completion we care about other fields
                e->completed_sc_sequence_nr,
                e->completed_sc_enter_time,
                e->completed_sc_exit_time,
@@ -296,7 +297,7 @@ int main(int argc, char **argv)
                            buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
                        ),
                        buf.storage.sc_enter_time > 0 ? sc_start_time_str : "",
-                       (duration_ns / 1000),
+                       (long long int) 0, // in CSV mode, use outer join with event completion records instead of "duration so far"
                        buf.storage.sc_sequence_num,
                        buf.syscall_args[0],
                        buf.filename[0] ? buf.filename : "-"
@@ -317,7 +318,7 @@ int main(int argc, char **argv)
                         buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
                     ),
                     buf.storage.sc_enter_time > 0 ? sc_start_time_str : "-",
-                    (duration_ns / 1000), 
+                    (duration_ns / 1000), // this is cumulative for long waits over samples, so don't sum it up
                     buf.storage.sc_sequence_num,
                     buf.syscall_args[0], 
                     buf.filename[0] ? buf.filename : "-"
