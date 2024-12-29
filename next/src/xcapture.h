@@ -33,6 +33,13 @@
 #define PF_KSWAPD             0x00020000  /* I am kswapd */
 #define PF_KTHREAD            0x00200000  /* I am a kernel thread */
 
+// Separate output files in CSV mode
+extern FILE *sample_output_file;
+extern FILE *completion_output_file;
+
+#define SAMPLE_CSV_FILE "xcapture_samples.csv"
+#define COMPLETION_CSV_FILE "xcapture_sc_completion.csv"
+
 
 // global xcapture start time (for syscall duration sanitization later on)
 extern __u64 program_start_time;

@@ -14,8 +14,13 @@
 #include "xcapture.skel.h"
 #include <syscall_names.h>
 
-// global, set once during startup arg checking
+// globals, set once by one function
 bool output_csv = false;
+bool header_printed = false; // thread sample output
+bool completion_header_printed = false; // completion events
+
+FILE *sample_output_file = NULL;
+FILE *completion_output_file = NULL;
 
 
 // handle CTRL+C and sigpipe etc
@@ -24,6 +29,16 @@ static volatile bool exiting = false;
 static void sig_handler(int sig)
 {
     exiting = true;
+    if (output_csv) {
+        if (sample_output_file) {
+            fflush(sample_output_file);
+            fclose(sample_output_file);
+        }
+        if (completion_output_file) {
+            fflush(completion_output_file);
+            fclose(completion_output_file);
+        }
+    }
 }
 
 
@@ -101,14 +116,32 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     __u64 duration_us = (e->completed_sc_exit_time - e->completed_sc_enter_time) / 1000;
 
     if (output_csv) {
-        printf("SC_END,%d,%d,%d,%llu,%llu,%llu,%llu\n",
-               e->pid,
-               e->tgid,
-               e->completed_syscall_nr,
-               e->completed_sc_sequence_nr,
-               e->completed_sc_enter_time,
-               e->completed_sc_exit_time,
-               duration_us);
+        // Print header once for completion events
+        if (!completion_header_printed) {
+            fprintf(completion_output_file,
+                   "%s,%s,%s,%s,%s,%s,%s,%s\n",
+                   "TYPE",
+                   "TID",
+                   "TGID",
+                   "SYSCALL_NR",
+                   "SC_SEQ_NUM",
+                   "SC_ENTER_TIME",
+                   "SC_EXIT_TIME",
+                   "DURATION_US");
+            completion_header_printed = true;
+            fflush(completion_output_file);
+        }
+
+        fprintf(completion_output_file, 
+                "SC_END,%d,%d,%d,%llu,%llu,%llu,%llu\n",
+                e->pid,
+                e->tgid,
+                e->completed_syscall_nr,
+                e->completed_sc_sequence_nr,
+                e->completed_sc_enter_time,
+                e->completed_sc_exit_time,
+                duration_us);
+        fflush(completion_output_file);
     } else {
         printf("SC_END  %7d  %7d  %-20s  %12llu  %26llu  %26llu  %'16llu\n",
                e->pid,
@@ -129,8 +162,23 @@ int main(int argc, char **argv)
 {
     // super simple check to avoid proper argument handling for now
     // if any args are given to xcapture, output CSV
-    if (argc > 1)
+    if (argc > 1) {
         output_csv = true;
+        // Open output files
+        sample_output_file = fopen(SAMPLE_CSV_FILE, "w");
+        if (!sample_output_file) {
+            fprintf(stderr, "Failed to open %s for writing\n", SAMPLE_CSV_FILE);
+            return 1;
+        }
+
+        completion_output_file = fopen(COMPLETION_CSV_FILE, "w");
+        if (!completion_output_file) {
+            fprintf(stderr, "Failed to open %s for writing\n", COMPLETION_CSV_FILE);
+            fclose(sample_output_file);
+            return 1;
+        }
+    }
+
 
     struct xcapture_bpf *skel = 0;
     struct task_info buf;
@@ -173,10 +221,6 @@ int main(int argc, char **argv)
     struct timespec sample_ts; // sample timestamp
     char timestamp[64];
 
-
-    // CSV file needs only one header printed
-    bool header_printed = false;
-
     // sample and print every second
     while (!exiting) {
         clock_gettime(CLOCK_REALTIME, &sample_ts);
@@ -189,13 +233,16 @@ int main(int argc, char **argv)
         // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
         if (output_csv) {
             if (!header_printed) {
-                printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-                      "TYPE", "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
-                      "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
+                fprintf(sample_output_file, 
+                       "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+                       "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
+                       "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", 
+                       "SC_SEQ_NUM", "ARG0", "FILENAME");
+                fflush(sample_output_file);
             }
         } else {
-            printf("%-6s  %-26s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %16s  %12s  %-16s  %s\n",
-                   "TYPE", "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
+            printf("%-26s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %16s  %12s  %-16s  %s\n",
+                   "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
                    "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
         }
 
@@ -235,29 +282,29 @@ int main(int argc, char **argv)
             snprintf(sc_start_time_str + 19, sizeof(sc_start_time_str) - 19, ".%06ld", sc_start_timespec.tv_nsec / 1000);
 
             if (output_csv) {
-                printf("%s,%s,%d,%d,%s,\"%s\",\"%s\",\"%s\",%s,%s,%s,%lld,%lld,%llx,\"%s\"\n",
-                    "SAMPLE",
-                    timestamp,
-                    buf.pid,
-                    buf.tgid,
-                    get_task_state(buf.state),
-                    getusername(buf.euid),
-                    buf.exe_file,
-                    buf.comm,
-                    (buf.flags & PF_KTHREAD) ? "-" : safe_syscall_name(buf.syscall_nr),
-                    (buf.flags & PF_KTHREAD) ? "-" : ( // deal with syscalls already ongoing from before xcapture was started
-                        buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
-                    ),
-                    buf.storage.sc_enter_time > 0 ? sc_start_time_str : "", // in CSV better to have "NULL" instead of a malformed timestamp
-                    (duration_ns / 1000),
-                    buf.storage.sc_sequence_num,
-                    buf.syscall_args[0],
-                    buf.filename[0] ? buf.filename : "-"
-                );
+               fprintf(sample_output_file,
+                       "%s,%d,%d,%s,\"%s\",\"%s\",\"%s\",%s,%s,%s,%lld,%lld,%llx,\"%s\"\n",
+                       timestamp,
+                       buf.pid,
+                       buf.tgid,
+                       get_task_state(buf.state),
+                       getusername(buf.euid),
+                       buf.exe_file,
+                       buf.comm,
+                       (buf.flags & PF_KTHREAD) ? "-" : safe_syscall_name(buf.syscall_nr),
+                       (buf.flags & PF_KTHREAD) ? "-" : (
+                           buf.storage.sc_enter_time ? safe_syscall_name(buf.storage.in_syscall_nr) : "-"
+                       ),
+                       buf.storage.sc_enter_time > 0 ? sc_start_time_str : "",
+                       (duration_ns / 1000),
+                       buf.storage.sc_sequence_num,
+                       buf.syscall_args[0],
+                       buf.filename[0] ? buf.filename : "-"
+               );
+               fflush(sample_output_file);
             }
             else {
-                printf("%-6s  %-26s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %'16lld  %12lld  %-16llx  %s\n",
-                    "SAMPLE",
+                printf("%-26s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %'16lld  %12lld  %-16llx  %s\n",
                     timestamp,
                     buf.pid,
                     buf.tgid,
