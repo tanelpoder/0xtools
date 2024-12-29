@@ -34,19 +34,39 @@
 #define PF_KTHREAD            0x00200000  /* I am a kernel thread */
 
 
+// global xcapture start time (for syscall duration sanitization later on)
+extern __u64 program_start_time;
+
 // to be used with BPF_MAP_TYPE_TASK_STORAGE
 struct task_storage {
     __u64 sample_ktime;
+
     __s32 in_syscall_nr;
     __u64 sc_enter_time;
     __u64 sc_sequence_num; // any syscall entry in a task will increment this single counter
 
+    bool  sc_sampled:1;    // task iterator will set the following fields only if it catches a task 
+                           // in syscall during its sampling (later used for event completion records)
+    // block I/O latency sampling (not implemented yet)
     __u64 bio_queue_ktime;
     __u32 bio_dev;
     __u64 bio_sector;
 };
 
-// use kernel nomenclature in kernel side eBPF code (pid,tgid)
+
+// to be emitted via ringbuf only on *sampled* event completions, for getting the correct measured event times
+// so we are not going to emit millions of events per sec here (just up to num active threads * sampling rate)
+struct sc_completion_event {
+    pid_t pid;  // pid, tgid, completed_sc_sequence_nr, completed_sc_enter_time are the unique identifier here
+    pid_t tgid;
+    __u64 completed_sc_sequence_nr;
+    __u64 completed_sc_enter_time;
+    __u64 completed_sc_exit_time;
+    __s32 completed_syscall_nr;
+};
+
+
+// use kernel nomenclature in kernel side eBPF code (pid=thread_id, tgid=process_id)
 struct task_info {
     struct task_struct * addr;  // task kernel address for task storage lookups elsewhere
     pid_t pid;   // task id (tid in userspace)

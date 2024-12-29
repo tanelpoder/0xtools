@@ -10,11 +10,11 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 char VERSION[] = "3.0.0";
 
-// ? figure this out without including kernel .h files (platform and kconfig-dependent)
+// figure this out without including kernel .h files (platform and kconfig-dependent)
 #define PAGE_SIZE 4096
 #define THREAD_SIZE (PAGE_SIZE << 2)
 
-// for map_get lookups
+// for map_get lookups & empty map creations
 static __u32 zero = 0;
 
 
@@ -44,20 +44,14 @@ struct {
 } task_storage SEC(".maps");
 
 
-// static struct task_storage *get_task_storage(struct task_struct *task)
-// {
-//     struct task_storage *storage;
-//     
-//     storage = bpf_task_storage_get(&task_storage, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
-//     bpf_printk("bpf_task_storage_get = %llx \n", storage);
-// 
-//     if (!storage)
-//         return NULL;
-//         
-//     return storage;
-// }
+// ringbuf for event completion events
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} completion_events SEC(".maps");
 
 
+// kernel version-adaptive task state retrieval
 static __u32 get_task_state(void *arg)
 {
     if (bpf_core_field_exists(struct task_struct___pre514, state)) {
@@ -70,6 +64,17 @@ static __u32 get_task_state(void *arg)
 }
 
 
+// xcapture start ktime for syscall duration sanitization later on
+__u64 program_start_time = 0;
+
+SEC("tp_btf/sys_enter")
+int handle_init(void *ctx)
+{
+    if (program_start_time == 0)
+        program_start_time = bpf_ktime_get_ns();
+    return 0;
+}
+
 
 SEC("raw_tracepoint/sys_enter")
 int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
@@ -78,15 +83,16 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 
     storage = bpf_task_storage_get(&task_storage, bpf_get_current_task_btf(), 0, 
                                   BPF_LOCAL_STORAGE_GET_F_CREATE);
-
     if (!storage)
         return 0;
     
     storage->sc_enter_time = bpf_ktime_get_ns();
+    storage->sc_sampled = false; // new syscall, can't have been seen yet by sampler
     storage->sc_sequence_num += 1;
     storage->in_syscall_nr = (s32)ctx->args[1];  // syscall nr
     return 0;
 }
+
 
 SEC("raw_tracepoint/sys_exit")
 int handle_sys_exit(struct bpf_raw_tracepoint_args *ctx)
@@ -97,9 +103,36 @@ int handle_sys_exit(struct bpf_raw_tracepoint_args *ctx)
                                   BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (!storage)
         return 0;
-    
+
+    // Only emit completion events for syscalls that were caught in a sample
+    if (storage->sc_sampled) {
+        struct sc_completion_event *event;
+        
+        // Reserve space in the ringbuf
+        event = bpf_ringbuf_reserve(&completion_events, sizeof(*event), 0);
+        if (!event)
+            goto cleanup;  // ringbuf full, skip this event
+            
+        // Get current task info for pid/tgid
+        struct task_struct *task = bpf_get_current_task_btf();
+        event->pid = BPF_CORE_READ(task, pid);
+        event->tgid = BPF_CORE_READ(task, tgid);
+        
+        // Fill in syscall completion details
+        event->completed_syscall_nr     = storage->in_syscall_nr;
+        event->completed_sc_sequence_nr = storage->sc_sequence_num;
+        event->completed_sc_enter_time  = storage->sc_enter_time;
+        event->completed_sc_exit_time   = bpf_ktime_get_ns();
+        
+        // Submit the event
+        bpf_ringbuf_submit(event, 0);
+    }
+
+cleanup:
+    // Reset syscall tracking state
     storage->in_syscall_nr = -1;
     storage->sc_enter_time = 0;
+
     return 0;
 }
 
@@ -120,7 +153,7 @@ int get_tasks(struct bpf_iter__task *ctx)
     __u32 task_state = get_task_state(task);
     __u32 task_flags = task->flags;
   
-    // idle kernel worker thread waiting for work or other kernel threads in S state
+    // idle kernel worker thread waiting for work or other kernel threads in S state (also, they make no syscalls)
     if ((task_state & TASK_NOLOAD) || ((task_flags & PF_KTHREAD) && (task_state & TASK_INTERRUPTIBLE)))
         return 0;
 
@@ -197,7 +230,8 @@ int get_tasks(struct bpf_iter__task *ctx)
     bpf_probe_read_kernel(&file, sizeof(file), &fd_array[t->syscall_args[0]]);
 
     if (file) {
-        // bpf_d_path() doesn't work in a non-tracing task iterator program context?
+        // bpf_d_path() doesn't work in a simple task iterator program context (?)
+        // task_vma, task_files should work since kernel #3d06f34 (bpf: Allow bpf_d_path in bpf_iter program)
         struct path file_path;
         bpf_probe_read_kernel(&file_path, sizeof(file_path), &file->f_path);
         struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
@@ -212,7 +246,8 @@ int get_tasks(struct bpf_iter__task *ctx)
     ret = bpf_get_task_stack(task, t->kstack, sizeof(__u64) * MAX_STACK_LEN, 0);
     t->kstack_len = ret <= 0 ? ret : ret / sizeof(t->kstack[0]);
 
-    // read task storage map experiment
+    
+    // put all this into a task_storage map for emitting to userspace
     struct task_storage *storage;
 
     storage = bpf_task_storage_get(&task_storage, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
@@ -220,14 +255,41 @@ int get_tasks(struct bpf_iter__task *ctx)
     if (!storage) // for the verifier
         return 0;
 
-    t->storage.in_syscall_nr = storage->in_syscall_nr;
-    t->storage.sample_ktime  = sample_ktime;
-    t->storage.sc_enter_time = storage->sc_enter_time;
-    t->storage.sc_sequence_num    = storage->sc_sequence_num;
+    // use "storage" here not "t->storage" (I need to come up with better naming of things)
+    storage->sc_sampled      = true; // used for deciding when to emit syscall completion records
+
+    // if this is the first time we see this task and it's already in a syscall,
+    // set its sc_enter_time to program start time instead of 0
+    if (storage->sc_enter_time == 0 && storage->in_syscall_nr >= 0) {
+        storage->sc_enter_time = program_start_time;
+    }
+
+    // "t" is the final struct for emitting everything to userspace
+    t->storage.in_syscall_nr   = storage->in_syscall_nr;
+    t->storage.sample_ktime    = sample_ktime;
+    t->storage.sc_enter_time   = storage->sc_enter_time;
+    t->storage.sc_sequence_num = storage->sc_sequence_num;
 
     bpf_seq_write(seq, t, sizeof(struct task_info));
     return 0;
 }
+
+
+
+// maybe for refactoring later
+
+// static struct task_storage *get_task_storage(struct task_struct *task)
+// {
+//     struct task_storage *storage;
+//     
+//     storage = bpf_task_storage_get(&task_storage, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
+//     bpf_printk("bpf_task_storage_get = %llx \n", storage);
+// 
+//     if (!storage)
+//         return NULL;
+//         
+//     return storage;
+// }
 
 
 

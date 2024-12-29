@@ -14,6 +14,9 @@
 #include "xcapture.skel.h"
 #include <syscall_names.h>
 
+// global, set once during startup arg checking
+bool output_csv = false;
+
 
 // handle CTRL+C and sigpipe etc
 static volatile bool exiting = false;
@@ -72,8 +75,9 @@ static const char *safe_syscall_name(__s32 syscall_nr)
 
 
 // ns is signed as sometimes there's small negative durations reported due to
-// concurrency of BPF task iterator vs event capture probes running on different CPUs
-struct timespec subtract_ns_from_timespec(struct timespec ts, __s64 ns) {
+// concurrency of BPF task iterator vs event capture probes running on different CPUs (?)
+struct timespec subtract_ns_from_timespec(struct timespec ts, __s64 ns) 
+{
     struct timespec result = ts;
 
     if (result.tv_nsec < (long)(ns % 1000000000)) {
@@ -87,12 +91,44 @@ struct timespec subtract_ns_from_timespec(struct timespec ts, __s64 ns) {
     return result;
 }
 
+// handle ringbuf completion events, don't bother trying to format 
+// wallclock time as these are ktime timestamps
+static int handle_event(void *ctx, void *data, size_t data_sz)
+{
+    const struct sc_completion_event *e = data;
+    
+    // Calculate duration in microseconds
+    __u64 duration_us = (e->completed_sc_exit_time - e->completed_sc_enter_time) / 1000;
+
+    if (output_csv) {
+        printf("SC_END,%d,%d,%d,%llu,%llu,%llu,%llu\n",
+               e->pid,
+               e->tgid,
+               e->completed_syscall_nr,
+               e->completed_sc_sequence_nr,
+               e->completed_sc_enter_time,
+               e->completed_sc_exit_time,
+               duration_us);
+    } else {
+        printf("SC_END  %7d  %7d  %-20s  %12llu  %26llu  %26llu  %'16llu\n",
+               e->pid,
+               e->tgid,
+               safe_syscall_name(e->completed_syscall_nr),
+               e->completed_sc_sequence_nr,
+               e->completed_sc_enter_time,
+               e->completed_sc_exit_time,
+               duration_us);
+    }
+    
+    return 0;
+}
+
+
 
 int main(int argc, char **argv)
 {
     // super simple check to avoid proper argument handling for now
     // if any args are given to xcapture, output CSV
-    bool output_csv = false;
     if (argc > 1)
         output_csv = true;
 
@@ -124,6 +160,16 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+
+    /* Set up ring buffer polling */
+    struct ring_buffer *rb = NULL;
+    rb = ring_buffer__new(bpf_map__fd(skel->maps.completion_events), handle_event, NULL, NULL);
+    if (!rb) {
+        fprintf(stderr, "Failed to create ring buffer\n");
+        goto cleanup;
+    }
+
+
     struct timespec sample_ts; // sample timestamp
     char timestamp[64];
 
@@ -143,13 +189,13 @@ int main(int argc, char **argv)
         // Print output (kernel pid printed as TID in userspace and kernel tgid as PID)
         if (output_csv) {
             if (!header_printed) {
-                printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-                      "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
+                printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+                      "TYPE", "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
                       "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
             }
         } else {
-            printf("%-26s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %16s  %12s  %-16s  %s\n",
-                   "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
+            printf("%-6s  %-26s  %7s  %7s  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %16s  %12s  %-16s  %s\n",
+                   "TYPE", "TIMESTAMP", "TID", "TGID", "STATE", "USER", "EXE", "COMM",
                    "SYSCALL_PASSIVE", "SYSCALL_ACTIVE", "SC_ENTRY_TIME", "SC_US_SO_FAR", "SC_SEQ_NUM", "ARG0", "FILENAME");
         }
 
@@ -174,6 +220,7 @@ int main(int argc, char **argv)
             if (ret == 0)
                 break;
 
+
             __s64 duration_ns = 0; // event duration so far, from its start to sampling point
             if (buf.storage.sc_enter_time) 
                 duration_ns = buf.storage.sample_ktime - buf.storage.sc_enter_time;
@@ -188,7 +235,8 @@ int main(int argc, char **argv)
             snprintf(sc_start_time_str + 19, sizeof(sc_start_time_str) - 19, ".%06ld", sc_start_timespec.tv_nsec / 1000);
 
             if (output_csv) {
-                printf("%s,%d,%d,%s,\"%s\",\"%s\",\"%s\",%s,%s,%s,%lld,%lld,%llx,\"%s\"\n",
+                printf("%s,%s,%d,%d,%s,\"%s\",\"%s\",\"%s\",%s,%s,%s,%lld,%lld,%llx,\"%s\"\n",
+                    "SAMPLE",
                     timestamp,
                     buf.pid,
                     buf.tgid,
@@ -208,7 +256,8 @@ int main(int argc, char **argv)
                 );
             }
             else {
-                printf("%-26s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %'16lld  %12lld  %-16llx  %s\n",
+                printf("%-6s  %-26s  %7d  %7d  %-6s  %-16s  %-20s  %-16s  %-20s  %-20s  %-26s  %'16lld  %12lld  %-16llx  %s\n",
+                    "SAMPLE",
                     timestamp,
                     buf.pid,
                     buf.tgid,
@@ -227,7 +276,14 @@ int main(int argc, char **argv)
                     buf.filename[0] ? buf.filename : "-"
                 );
             }
+        }
 
+
+        /* Ring buffer poll for event completions */
+        err = ring_buffer__poll(rb, 100 /* timeout, ms */);
+        if (err < 0) {
+            fprintf(stderr, "Error polling ring buffer: %d\n", err);
+            goto cleanup;
         }
 
 
@@ -249,7 +305,13 @@ int main(int argc, char **argv)
     cleanup:
     /* Clean up */
     fflush(stdout);
-    close(iter_fd); // the fd might already be closed above, but this would just return an EBADF then
+    close(iter_fd); /* the fd might already be closed above, but this would just return an EBADF then */
+
+    /* Release event completion ring buffer */
+    if (rb) {
+        ring_buffer__free(rb);
+    }
+
     xcapture_bpf__destroy(skel);
 
     return err < 0 ? -err : 0;
