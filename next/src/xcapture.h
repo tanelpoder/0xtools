@@ -34,8 +34,10 @@
 #define PF_KTHREAD            0x00200000  /* I am a kernel thread */
 
 // Separate output files in CSV mode
+#ifndef __BPF__
 extern FILE *sample_output_file;
 extern FILE *completion_output_file;
+#endif
 
 #define SAMPLE_CSV_FILE "xcapture_samples.csv"
 #define COMPLETION_CSV_FILE "xcapture_sc_completion.csv"
