@@ -43,9 +43,6 @@ extern FILE *completion_output_file;
 #define COMPLETION_CSV_FILE "xcapture_sc_completion.csv"
 
 
-// global xcapture start time (for syscall duration sanitization later on)
-extern __u64 program_start_time;
-
 // to be used with BPF_MAP_TYPE_TASK_STORAGE
 struct task_storage {
     __u64 sample_ktime;
