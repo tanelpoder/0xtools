@@ -64,18 +64,6 @@ static __u32 get_task_state(void *arg)
 }
 
 
-// xcapture start ktime for syscall duration sanitization later on
-__u64 program_start_time = 0;
-
-SEC("tp_btf/sys_enter")
-int handle_init(void *ctx)
-{
-    if (program_start_time == 0)
-        program_start_time = bpf_ktime_get_ns();
-    return 0;
-}
-
-
 SEC("raw_tracepoint/sys_enter")
 int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 {
@@ -261,7 +249,7 @@ int get_tasks(struct bpf_iter__task *ctx)
     // if this is the first time we see this task and it's already in a syscall,
     // set its sc_enter_time to program start time instead of 0
     if (storage->sc_enter_time == 0 && storage->in_syscall_nr >= 0) {
-        storage->sc_enter_time = program_start_time;
+        storage->sc_enter_time = bpf_ktime_get_ns(); // for syscalls already inflight when xcapture started, set it to earliest sample ns
     }
 
     // "t" is the final struct for emitting everything to userspace
