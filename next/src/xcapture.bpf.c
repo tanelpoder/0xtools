@@ -194,9 +194,9 @@ int get_tasks(struct bpf_iter__task *ctx)
     // Read syscall nr and arguments from registers saved when invoking the syscall
     // on x86_64 ABI the args are stored in: rdi, rsi, rdx, r10, r8, r9
     if(regs) {
-#ifdef __x86_64__
+#if defined(__x86_64__)
         t->syscall_nr = (__s32) BPF_CORE_READ(regs, orig_ax);
-#else // aarch64 for now
+#elif defined(__aarch64__)
         t->syscall_nr = (__s32) BPF_CORE_READ(regs, orig_x0);
 #endif
         t->syscall_args[0] = PT_REGS_PARM1_CORE_SYSCALL(regs);
