@@ -3,10 +3,14 @@
 # Copyright 2022-2025, Tanel Poder [0x.tools]
 # SPDX-License-Identifier: GPL-2.0-or-later 
 #
-# Program:   cpumhzturbo
+# Program:   cpuwrkturbo
 #
-# Purpose:   Show a summary of CPUs frequencies *when busy* (in C0-state and not idle),
+# Purpose:   Show a summary of CPUs "busyness" (being in C0-state and not idle),
 #            in somewhat tricky units of MHz, grouped by 100MHz increments.
+#
+#            Since there are different levels of "idle", this output is too high
+#            level for *really understanding* your CPU (power) usage. For that,
+#            you'd need to use raw turbostat output to see the C1,C2,... states too
 #
 # Options:   You may want to use -p option to break down CPU busyness by physical CPU
 #            Package (same as socket, unless your BIOS/hypervisor fakes the topology)
@@ -14,12 +18,13 @@
 # Notes:     You need sudo/root access for this tool as turbostat requires it (setcap
 #            is also possible)
 #
-# Important: This script does not show how "fast" your CPUs ran during the entire measurement
-#            interval, only when they happened to be not idle! (man turbostat to read more
-#            about Bzy_MHz meaning.
+# Important: This only shows you something about how often (and how fast) the CPU clocks
+#            ran during the measurement period. This tool does not drill down into
+#            actual CPU frontend/backend/latency metrics within the CPU. You'd need
+#            "perf stat -d" for that or similar tools.
 #
-#            For actual CPU "busyness" view at low level, you should run cpuwrkturbo
-#            or turbostat directly (or use perf stat -d to dig deeper into the CPUs)
+#            One example of "perf stat -d" usage is in my blog:
+#            https://tanelpoder.com/2015/09/21/ram-is-the-new-disk-and-how-to-measure-its-performance-part-2-tools/
 
 # As this script needs to be ran as root (with sudo), /usr/bin might not be in root's path
 TURBOSTAT=/usr/bin/turbostat
@@ -67,8 +72,8 @@ print_blocks() {
 if [ $per_package -eq 1 ]; then
     # Per-package/socket histograms
     printf "%-8s %-8s %4s  %s\n" "Package" "MHz" "Num" "Visual"
-    ${TURBOSTAT} -q -s Package,Bzy_MHz -i 1 -n 1 | \
-        grep -Ev "Bzy_MHz|^-" | \
+    ${TURBOSTAT} -q -s Package,Avg_MHz -i 1 -n 1 | \
+        grep -Ev "Avg_MHz|^-" | \
         awk '{ printf "%d %04d\n", $1, $2 }' | \
         awk '{ 
             split($2,x,"."); 
@@ -86,8 +91,8 @@ if [ $per_package -eq 1 ]; then
 else
     # Summarize all CPUs together
     printf "%-8s %4s  %s\n" "MHz" "Num" "Visual"
-    ${TURBOSTAT} -q -s Package,Bzy_MHz -i 1 -n 1 | \
-        grep -Ev "Bzy_MHz|^-" | \
+    ${TURBOSTAT} -q -s Package,Avg_MHz -i 1 -n 1 | \
+        grep -Ev "Avg_MHz|^-" | \
         awk '{ printf("%04d\n",$2) }' | \
         awk '{ 
             split($1,x,"."); 

@@ -14,8 +14,7 @@
 #          that may be too high level info (then use raw turbostat output)
 #
 
-# Function to convert a number to vertical block characters
-# Takes a number and converts it to a vertical block character
+# Function to convert a number to a fine-grained (unicode) bar for bar charts
 print_blocks() {
     local count=$1
     case $count in
@@ -42,22 +41,25 @@ print_blocks() {
             ;;
     esac
 }
-# Print header
+
+
+# main()
 printf "%-8s %3s  %s\n" "MHz" "Num" "Visual"
+
 # Get CPU MHz numbers and do a "group by" 
 # using uniq -c into frequency range buckets
+# the int(... + 0.5) trick is for rounding in awk
 grep MHz /proc/cpuinfo | \
     awk '{ 
         split($4,x,"."); 
-        printf substr(x[1],1,2) "00..99 \n" 
+        printf "%02d00..99\n", substr(x[1],1,2)
     }' | \
-    sed 's/^0/ /' | \
     sort | \
     uniq -c | \
-    sort -nbrk 2 | \
+    sort -k2,2 -nr | \
     while read count bucket; do
         printf "%-8s %3d  " "$bucket" "$count"
         print_blocks "$count"
         printf "\n"
     done
-echo
+
