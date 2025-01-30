@@ -1,11 +1,93 @@
 #!/bin/bash
 
-# cpumhzturbo wrapper by Tanel Poder [https://0x.tools]
-# run this as root or add CAP_SYS_RAWIO capability to turbostat
+# Copyright 2022-2025, Tanel Poder [0x.tools]
+# SPDX-License-Identifier: GPL-2.0-or-later 
+#
+# Program: cpumhzturbo
+#
+# Purpose: Show a summary of CPUs "busyness" (being in C0-state and not idle),
+#          in somewhat tricky units of MHz, grouped by 100MHz increments.
+#
+#          Since there are different levels of "idle", this output is too high
+#          level for *really understanding* your CPU (power) usage. For that,
+#          you'd need to use raw turbostat output to see the C1,C2,... states too
+#
+# Options: You may want to use -p option to break down CPU busyness by physical CPU
+#          Package (same as socket, unless your BIOS/hypervisor fakes the topology)
+#
+# Notes:   You need sudo/root access for this tool as turbostat requires it (setcap
+#          is also possible)
 
-turbostat -q -s Bzy_MHz -i 1 -n 1 | grep -v Bzy_MHz \
-  | awk '{ printf("%04d\n",$1) }' \
-  | awk '{ split($1,x,".") ; printf substr(x[1],1,2) "00..99 \n" }' | sed 's/^0/ /' | sort | uniq -c \
-  | awk '{ printf $0 ; for(x=0;x<$1;x++) printf "#"; printf "\n" }' \
-  | sort -nbrk 2
+# Function to convert a number to vertical block characters
+print_blocks() {
+    local count=$1
+    case $count in
+        1) printf "▏";;  # 1/8 block
+        2) printf "▎";;  # 1/4 block
+        3) printf "▍";;  # 3/8 block
+        4) printf "▌";;  # 1/2 block
+        5) printf "▋";;  # 5/8 block
+        6) printf "▊";;  # 3/4 block
+        7) printf "▉";;  # 7/8 block
+        8) printf "█";;  # full block
+        *)
+            # For numbers > 8, print full blocks and then a partial block
+            local full_blocks=$((count / 8))
+            local remainder=$((count % 8))
+            
+            for ((i=0; i<full_blocks; i++)); do
+                printf "█"
+            done
+            
+            if [ $remainder -ne 0 ]; then
+                print_blocks $remainder
+            fi
+            ;;
+    esac
+}
 
+# Process command line options
+per_package=0
+[ "$1" = "-p" ] && per_package=1
+
+
+if [ $per_package -eq 1 ]; then
+    # Per-package/socket histograms
+    printf "%-8s %-8s %4s  %s\n" "Package" "MHz" "Num" "Visual"
+    /usr/bin/turbostat -q -s Package,Avg_MHz -i 1 -n 1 | \
+        grep -Ev "Avg_MHz|^-" | \
+        awk '{ printf "%d %04d\n", $1, $2 }' | \
+        awk '{ 
+            split($2,x,"."); 
+            printf "%d %s00..99\n", $1, substr(x[1],1,2)
+        }' | \
+        sed 's/ 0/ /' | \
+        sort | \
+        uniq -c | \
+        sort -k2n -k3n | \
+        while read count package bucket; do
+            printf "%-8d %-8s %4d  " "$package" "$bucket" "$count"
+            print_blocks "$count"
+            printf "\n"
+        done
+else
+    # All CPUs
+    printf "%-8s %4s  %s\n" "MHz" "Num" "Visual"
+    /usr/bin/turbostat -q -s Package,Avg_MHz -i 1 -n 1 | \
+        grep -Ev "Avg_MHz|^-" | \
+        awk '{ printf("%04d\n",$2) }' | \
+        awk '{ 
+            split($1,x,"."); 
+            printf substr(x[1],1,2) "00..99 \n" 
+        }' | \
+        sed 's/^0/ /' | \
+        sort | \
+        uniq -c | \
+        sort -nbrk 2 | \
+        while read count bucket; do
+            printf "%-8s %4d  " "$bucket" "$count"
+            print_blocks "$count"
+            printf "\n"
+        done
+fi
+echo

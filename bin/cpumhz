@@ -1,9 +1,63 @@
 #!/bin/bash
 
-# cpumhz tool by Tanel Poder [https://0x.tools]
+# Copyright 2022-2025, Tanel Poder [0x.tools]
+# SPDX-License-Identifier: GPL-2.0-or-later 
+#
+# Program: cpumhz
+#
+# Purpose: Show a summary of current nominal CPU speeds from /proc/cpuinfo,
+#          grouped into 100MHz increments (this does not show you how busy
+#          your CPUs really are (and not in an idle state).
+#
+#          Use the cpumhzturbo tool to see how busy (not idle) your CPUs 
+#          really are (since there are different levels of "idle", even
+#          that may be too high level info (then use raw turbostat output)
+#
 
-grep MHz /proc/cpuinfo | awk '{ split($4,x,".") ; printf substr(x[1],1,2) "00..99 \n" }' \
-	               | sed 's/^0/ /' | sort | uniq -c \
-                       | awk '{ printf $0 ; for(x=0;x<$1;x++) printf "#"; printf "\n" }' \
-                       | sort -nbrk 2
+# Function to convert a number to vertical block characters
+# Takes a number and converts it to a vertical block character
+print_blocks() {
+    local count=$1
+    case $count in
+        1) printf "▏";;  # 1/8 block
+        2) printf "▎";;  # 1/4 block
+        3) printf "▍";;  # 3/8 block
+        4) printf "▌";;  # 1/2 block
+        5) printf "▋";;  # 5/8 block
+        6) printf "▊";;  # 3/4 block
+        7) printf "▉";;  # 7/8 block
+        8) printf "█";;  # full block
+        *)
+            # For numbers > 8, print full blocks and then a partial block
+            local full_blocks=$((count / 8))
+            local remainder=$((count % 8))
 
+            for ((i=0; i<full_blocks; i++)); do
+                printf "█"
+            done
+
+            if [ $remainder -ne 0 ]; then
+                print_blocks $remainder
+            fi
+            ;;
+    esac
+}
+# Print header
+printf "%-8s %3s  %s\n" "MHz" "Num" "Visual"
+# Get CPU MHz numbers and do a "group by" 
+# using uniq -c into frequency range buckets
+grep MHz /proc/cpuinfo | \
+    awk '{ 
+        split($4,x,"."); 
+        printf substr(x[1],1,2) "00..99 \n" 
+    }' | \
+    sed 's/^0/ /' | \
+    sort | \
+    uniq -c | \
+    sort -nbrk 2 | \
+    while read count bucket; do
+        printf "%-8s %3d  " "$bucket" "$count"
+        print_blocks "$count"
+        printf "\n"
+    done
+echo
