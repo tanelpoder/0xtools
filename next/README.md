@@ -19,7 +19,7 @@ sudo apt install libbpf-dev libbpf-tools clang llvm libbfd-dev libelf1 libelf-de
 On RHEL9:
 
 ```
-sudo dnf install libbpf libbpf-tools clang elfutils-libelf elfutils-libelf-devel zlib-devel
+sudo dnf install libbpf libbpf-tools clang llvm-devel elfutils-libelf elfutils-libelf-devel zlib-devel
 
 ```
 
