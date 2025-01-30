@@ -8,9 +8,6 @@
 # Purpose:   Show a summary of CPUs frequencies *when busy* (in C0-state and not idle),
 #            in somewhat tricky units of MHz, grouped by 100MHz increments.
 #
-# Options:   You may want to use -p option to break down CPU busyness by physical CPU
-#            Package (same as socket, unless your BIOS/hypervisor fakes the topology)
-#
 # Notes:     You need sudo/root access for this tool as turbostat requires it (setcap
 #            is also possible)
 #
@@ -29,11 +26,6 @@ if [ "$USER" != root ]; then
     echo "Error: This script uses turbostat which requires root privs. Run sudo $0" >&2
     exit 1
 fi
-
-# Check if should show per package breakdown
-per_package=0
-[ "$1" = "-p" ] && per_package=1
-
 
 # Function to convert a number to vertical block characters
 print_blocks() {
@@ -63,45 +55,25 @@ print_blocks() {
     esac
 }
 
-# This can probably be refactored into one block (but ok for now)
-if [ $per_package -eq 1 ]; then
-    # Per-package/socket histograms
-    printf "%-8s %-8s %4s  %s\n" "Package" "MHz" "Num" "Visual"
-    ${TURBOSTAT} -q -s Package,Bzy_MHz -i 1 -n 1 | \
-        grep -Ev "Bzy_MHz|^-" | \
-        awk '{ printf "%d %04d\n", $1, $2 }' | \
-        awk '{ 
-            split($2,x,"."); 
-            printf "%d %s00..99\n", $1, substr(x[1],1,2)
-        }' | \
-        sed 's/ 0/ /' | \
-        sort | \
-        uniq -c | \
-        sort -k2,2n -k3,3nr | \
-        while read count package bucket; do
-            printf "%-8d %-8s %4d  " "$package" "$bucket" "$count"
-            print_blocks "$count"
-            printf "\n"
-        done
-else
-    # Summarize all CPUs together
-    printf "%-8s %4s  %s\n" "MHz" "Num" "Visual"
-    ${TURBOSTAT} -q -s Package,Bzy_MHz -i 1 -n 1 | \
-        grep -Ev "Bzy_MHz|^-" | \
-        awk '{ printf("%04d\n",$2) }' | \
-        awk '{ 
-            split($1,x,"."); 
-            printf substr(x[1],1,2) "00..99 \n" 
-        }' | \
-        sed 's/^0/ /' | \
-        sort | \
-        uniq -c | \
-        sort -nbrk 2 | \
-        while read count bucket; do
-            printf "%-8s %4d  " "$bucket" "$count"
-            print_blocks "$count"
-            printf "\n"
-        done
-fi
+# main - print header
+printf "%-8s %4s  %s\n" "MHz" "Num" "Visual"
+
+# using Core field only to filter out turbostat summary rows (Core is "-")
+${TURBOSTAT} -q -s Core,Bzy_MHz -i 1 -n 1 | \
+    grep -Ev "Core|^-" | \
+    awk '{ printf("%04d\n",$2) }' | \
+    awk '{ 
+        split($1,x,"."); 
+        printf substr(x[1],1,2) "00..99 \n" 
+    }' | \
+    sed 's/^0/ /' | \
+    sort | \
+    uniq -c | \
+    sort -nbrk 2 | \
+    while read count bucket; do
+        printf "%-8s %4d  " "$bucket" "$count"
+        print_blocks "$count"
+        printf "\n"
+    done
 echo
 
