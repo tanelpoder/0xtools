@@ -34,7 +34,7 @@ install_utils:
 	install -m 0755 bin/syscallargs ${PREFIX}/bin/syscallargs
 	install -m 0755 bin/cpumhz ${PREFIX}/bin/cpumhz
 	install -m 0755 bin/cpumhzturbo ${PREFIX}/bin/cpumhzturbo
-	install -m 0755 bin/cpumhzturbo ${PREFIX}/bin/cpuwrkturbo
+	install -m 0755 bin/cpuwrkturbo ${PREFIX}/bin/cpuwrkturbo
 
 uninstall:
 	rm -fv  ${PREFIX}/bin/xcapture ${PREFIX}/bin/psn
