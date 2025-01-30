@@ -50,10 +50,7 @@ printf "%-8s %3s  %s\n" "MHz" "Num" "Visual"
 # using uniq -c into frequency range buckets
 # the int(... + 0.5) trick is for rounding in awk
 grep MHz /proc/cpuinfo | \
-    awk '{ 
-        split($4,x,"."); 
-        printf "%02d00..99\n", substr(x[1],1,2)
-    }' | \
+    awk '{ printf "%02d00..99\n", int($4/100) }' | \
     sort | \
     uniq -c | \
     sort -k2,2 -nr | \
