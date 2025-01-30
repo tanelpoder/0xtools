@@ -33,7 +33,7 @@ if [ "$USER" != root ]; then
     exit 1
 fi
 
-# Function to convert a number to vertical block characters
+# create bars for barchart
 print_blocks() {
     local count=$1
     case $count in
