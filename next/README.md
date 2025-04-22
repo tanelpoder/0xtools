@@ -10,7 +10,7 @@ This is the first ever release of [0x.tools](https://0x.tools) XCapture tool tha
 
 Modern eBPF means `libbpf`, `CORE`, `BTF`, `BPF iterators`, etc. I'll write about my learning journey with proper thank you notes soon.
 
-In practice this means you'll need to be on a Linux kernel `5.14` or up. XCapture v3 is a future-facing tool, so I'll invest the time in that direction and not worry about all the legacy systems out thre (unlike my approach was with all my previous tools was).
+In practice this means you'll need to be on a **Linux kernel 5.14** or up. XCapture v3 is a future-facing tool, so I'll invest the time in that direction and not worry about all the legacy systems out there (unlike my approach was with all my previous tools was).
 
 This means, RHEL9+ on Linux 5.14, or Oracle Enterprise Linux 8+, as long as you run at least their UEK7 Linux kernel (5.15). Ubuntu has pretty new kernels (and they have the HWE versions), so Ubuntu 20+ with the latest HWE kernel available for it should work. I have done my latest tests on Ubuntu 24.04 on Linux 6.8 though (will keep you updated once I test more).
 
