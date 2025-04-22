@@ -1,6 +1,7 @@
 ## xcapture (and xtop) v3
 
-Highly WIP dev area for libbpf and moden eBPF-based xcapture tool.
+Ready for 3.0.0-alpha release prep
+
 
 ## building
 
@@ -13,7 +14,7 @@ cd next
 To install the system packages (on Ubuntu 24.04) for compiling the binary, run:
 
 ```
-sudo apt install libbpf-dev libbpf-tools clang llvm libbfd-dev libelf1 libelf-dev zlib1g-dev
+sudo apt install make gcc pkg-config libbpf-dev libbpf-tools clang llvm libbfd-dev libelf1 libelf-dev zlib1g-dev
 ```
 
 On RHEL9:
@@ -33,7 +34,9 @@ git submodule update --init --recursive
 ## running
 
 ```
-cd src
+cd xcapture
 make
 sudo ./xcapture
 ```
+
+You can also run `./xcapture --help` to get some idea of its current functionality.
