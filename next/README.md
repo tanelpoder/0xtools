@@ -16,6 +16,11 @@ This means, RHEL9+ on Linux 5.14, or Oracle Enterprise Linux 8+, as long as you 
 
 ## Building xcapture-next (v3)
 
+```
+git clone https://github.com/tanelpoder/0xtools.git
+cd 0xtools
+```
+
 Make sure you cd to the **`next`** directory, the repo root is currently the old code (which includes an old `xcapture` v1 version that is just a C program sampling whatever is available in the `/proc/PID/task/TID` pseudofiles and saves the output into hourly CSV files.
 
 ```
