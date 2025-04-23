@@ -6,7 +6,6 @@
 
 ## Announcing xcapture v3.0.0-alpha using modern eBPF and DuckDB! (2025-04-23)
 
-
 * https://tanelpoder.com/posts/xcapture-v3-alpha-ebpf-performance-analysis-with-duckdb/
 
 ## OLD: xcapture-bpf and xtop v2.0.2 announced! (2024-07-03)
