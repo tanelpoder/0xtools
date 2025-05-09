@@ -68,7 +68,7 @@ COLUMN_MAP = {
     "IOPOLL_DEL": {"source": "file", "path": "queue/io_poll_delay", "verbose_source": "{dev_path}/queue/io_poll_delay"},
     "RANDOM": {"source": "file", "path": "queue/add_random", "verbose_source": "{dev_path}/queue/add_random"},
     "IOSTATS": {"source": "file", "path": "queue/iostats", "verbose_source": "{dev_path}/queue/iostats"},
-    "NVME_QDEPTH_CFG": {"source": "nvme_qdepth_cfg", "verbose_source": "{module_base}/nvme*/parameters/io_queue_depth"},
+    "NVME_QDEPTH": {"source": "nvme_qdepth", "verbose_source": "{module_base}/nvme*/parameters/io_queue_depth"},
     "P2P_QUEUES": {"source": "file", "path": "device/num_p2p_queues", "verbose_source": "{dev_path}/device/num_p2p_queues"},
 }
 
@@ -384,7 +384,7 @@ def get_device_info(device, columns_to_get):
             elif source_type == "discard":
                 value, status = get_discard_info(device, dev_path)
                 status = "inferred" if status == 'ok' else status # Mark as inferred if checks passed
-            elif source_type == "nvme_qdepth_cfg":
+            elif source_type == "nvme_qdepth":
                  if device_type.startswith("NVMe"):
                      value, real_path, status = read_nvme_module_param("io_queue_depth", default=VALUE_MISSING)
                      if args.realpath:
