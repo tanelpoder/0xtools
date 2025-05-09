@@ -3,10 +3,12 @@
 # Copyright 2022-2025, Tanel Poder [0x.tools]
 # SPDX-License-Identifier: GPL-2.0-or-later 
 #
-# Program:   cpuwrkturbo
+# Program:   cpuactturbo
 #
-# Purpose:   Show a summary of CPUs "busyness" (being in C0-state and not idle),
+# Purpose:   Show a summary of actual CPUs "busyness" (being in C0-state and not idle),
 #            in somewhat tricky units of MHz, grouped by 100MHz increments.
+#
+#            The "act" in cpuactturbo stands for actual (or active) running time for the CPU.
 #
 #            Since there are different levels of "idle", this output is too high
 #            level for *really understanding* your CPU (power) usage. For that,
