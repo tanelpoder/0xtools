@@ -1,72 +1,89 @@
-# 0x.Tools: X-Ray vision for Linux systems
+## XCapture v3.0.0-alpha
+_By Tanel Poder_
+_2025-04-22_
 
-**0x.tools** is a set of open-source utilities for analyzing application performance on Linux. It has a goal of deployment simplicity and minimal dependencies, to reduce friction of systematic troubleshooting. There’s no need to upgrade the OS, install kernel modules, heavy monitoring frameworks, Java agents or databases. Some of these tools also work on over-decade-old Linux kernels, like version 2.6.18 from 18 years ago.
+This is the first ever release of [0x.tools](https://0x.tools) XCapture tool that is built with **modern eBPF**! My previous tools and prototypes were using either _bcc_, _bpftrace_ or were just sampling and aggregating thread level info from _/proc_ files.
 
-**0x.tools** allow you to measure individual thread level activity, like thread sleep states, currently executing system calls and kernel wait locations. Additionally, you can drill down into CPU usage of any thread or the system as a whole. You can be systematic in your troubleshooting - no need for guessing or genius wizard tricks with traditional system utilization stats.
+* [Announcing xCapture v3: Linux Performance Analysis with Modern eBPF and DuckDB](https://tanelpoder.com/posts/xcapture-v3-alpha-ebpf-performance-analysis-with-duckdb/)
 
-## Announcing xcapture v3.0.0-alpha using modern eBPF and DuckDB! (2025-04-23)
+## Requirements
 
-* https://tanelpoder.com/posts/xcapture-v3-alpha-ebpf-performance-analysis-with-duckdb/
+Modern eBPF means `libbpf`, `CORE`, `BTF`, `BPF iterators`, etc. I'll write about my learning journey with proper thank you notes soon.
 
-## OLD: xcapture-bpf and xtop v2.0.2 announced! (2024-07-03)
+In practice this means you'll need to be on a **Linux kernel 5.14** or up. XCapture v3 is a future-facing tool, so I'll invest the time in that direction and not worry about all the legacy systems out there (unlike my approach was with all my previous tools was).
 
-xcapture-bpf (and xtop) are like the Linux top tool, but extended with x-ray vision and ability to view your performance data from any chosen angle (that eBPF allows to instrument). You can use it for system level overview and drill down into indivual threads' activity and soon even into individual kernel events like lock waits or memory stalls. eBPF is not only customizable, it's completely programmable and I plan to take full advantage of it. I have so far implemented less than 5% of everything this method and the new tool is capable of, stay tuned for more!
+This means, RHEL9+ on Linux 5.14, or Oracle Enterprise Linux 8+, as long as you run at least their UEK7 Linux kernel (5.15). Ubuntu has pretty new kernels (and they have the HWE versions), so Ubuntu 20+ with the latest HWE kernel available for it should work. I have done my latest tests on Ubuntu 24.04 on Linux 6.8 though (will keep you updated once I test more).
 
-* https://0x.tools
-
-### xcapture-bpf demo
-This is one of the things that you get:
-
-[![asciicast](https://asciinema.org/a/666715.svg)](https://asciinema.org/a/666715)
-
-### xcapture-bpf screenshot
-A screenshot that illustrates how xcapture-bpf output and stacktiles work with terminal search/highlighting and scroll-back ability:
-
-![xcapture-bpf screenshot with terminal highlighting](https://0x.tools/images/xcapture-bpf-stacktiles.png)
-
-### xcapture-bpf install instructions and info 
-
-* Go to https://0x.tools for more info and the installation instructions of the latest eBPF-based tool
-
-## Other tools
-
-An example of _one of_ the tools `psn` (that doesn't use eBPF, just reads the usual `/proc` files) is here:
+## Building xcapture-next (v3)
 
 ```
-$ sudo psn -p "mysqld|kwork" -G syscall,wchan
-
-Linux Process Snapper v0.14 by Tanel Poder [https://0x.tools]
-Sampling /proc/syscall, stat, wchan for 5 seconds... finished.
-
-
-=== Active Threads ========================================================================================
-
- samples | avg_threads | comm          | state                  | syscall   | wchan                        
------------------------------------------------------------------------------------------------------------
-      25 |        3.12 | (mysqld)      | Disk (Uninterruptible) | fsync     | _xfs_log_force_lsn
-      16 |        2.00 | (mysqld)      | Running (ON CPU)       | [running] | 0                            
-      14 |        1.75 | (mysqld)      | Disk (Uninterruptible) | pwrite64  | call_rwsem_down_write_failed
-       8 |        1.00 | (mysqld)      | Disk (Uninterruptible) | fsync     | submit_bio_wait              
-       4 |        0.50 | (mysqld)      | Disk (Uninterruptible) | pread64   | io_schedule                  
-       4 |        0.50 | (mysqld)      | Disk (Uninterruptible) | pwrite64  | io_schedule                  
-       3 |        0.38 | (mysqld)      | Disk (Uninterruptible) | pread64   | 0                            
-       3 |        0.38 | (mysqld)      | Running (ON CPU)       | [running] | io_schedule                  
-       3 |        0.38 | (mysqld)      | Running (ON CPU)       | pread64   | 0                            
-       2 |        0.25 | (mysqld)      | Disk (Uninterruptible) | [running] | 0                            
-       1 |        0.12 | (kworker/*:*) | Running (ON CPU)       | read      | worker_thread                
-       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | fsync     | io_schedule                  
-       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | futex     | call_rwsem_down_write_failed 
-       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | poll      | 0                            
-       1 |        0.12 | (mysqld)      | Disk (Uninterruptible) | pwrite64  | _xfs_log_force_lsn           
-       1 |        0.12 | (mysqld)      | Running (ON CPU)       | fsync     | submit_bio_wait              
-       1 |        0.12 | (mysqld)      | Running (ON CPU)       | futex     | futex_wait_queue_me
+git clone https://github.com/tanelpoder/0xtools.git
+cd 0xtools
 ```
-**Usage info** and more details here:
-* https://0x.tools
 
-**Twitter:**
-* https://twitter.com/0xtools
+Make sure you cd to the **`next`** directory, the repo root is currently the old code (which includes an old `xcapture` v1 version that is just a C program sampling whatever is available in the `/proc/PID/task/TID` pseudofiles and saves the output into hourly CSV files.
 
-**Author:**
-* https://tanelpoder.com
+```
+cd next
+```
+
+To install the system packages (on Ubuntu 24.04) for compiling the binary, run:
+
+```
+sudo apt install make gcc pkg-config libbpf-dev libbpf-tools clang llvm libbfd-dev libelf1 libelf-dev zlib1g-dev
+```
+
+On RHEL9:
+
+```
+sudo dnf install libbpf libbpf-tools clang llvm-devel binutils-devel elfutils-libelf elfutils-libelf-devel zlib-devel
+
+```
+
+
+To install required libbpf dependencies for the GitHub repo, run:
+
+```
+git submodule update --init --recursive
+```
+
+## Running xcapture in developer mode
+
+By default, xcapture prints some of its fields as formatted output to your terminal screen:
+
+
+```
+cd xcapture
+make
+sudo ./xcapture
+```
+
+The eventual "always-on" production mode for appending samples to hourly CSV files is enabled by the `-o DIRNAME` option. You can use `-o .` to output to your current directory.
+
+> While XCapture requires root privileges to load its eBPF programs and do its sampling, the consumers of the output CSV files **do not have to be root**! They can be any regular user who has the Unix filesystem permissions to read the output directory and CSV files. This provides a nice separation of duties. And you can analyze the "dimensional data warehouse" of Linux thread activity from any angle _you_ want, without having to update or change XCapture itself.
+
+You can also run `./xcapture --help` to get some idea of its current functionality.
+
+**NB!** While all the syscall & IO _tracking_ action happens automatically in the kernel space, the simulatneous _sampling_ of the tracked events is driven by the userspace `xcapture` program. The thread state sampling loop actually runs completely inside the kernel too, thanks to eBPF _task iterators_, but the invocation and frequency of the sampling is driven by the userspace program.
+
+Therefore it makes sense to schedule the userspace "sampling driver" with a high scheduling priority, to get consistently reoccurring samples from it. I run it like this and recommend that you do too:
+
+```
+$ sudo TZ=:/etc/localtime chrt -r 30 ./xcapture -vo DIRNAME
+
+```
+
+The `chrt` puts the userspace xcapture program into real-time scheduling class. It's a single, single-threaded prodess and you'll only need to run only one in the host and it can monitor all threads in the system. By default it wakes up once per second and tells the eBPF task iterator to do its sampling, gets results via an eBPF ringbuf and writes the records either to STDOUT or CSV files.
+
+The entire sampling loop itself is very quick, from ~100us in my laptop VMs, to ~20ms per wakeup in a large NUMA machine with 384 CPUs. So, XCapture _passive sampling_ at 1Hz without _active tracking_ of event latencies has only taken between 0.01% and 2% _**of a single CPU**__ in my servers! (The _2% of-a-single-CPU_ result is from my AMD EPYC server with 384 CPUs :-)
+
+The `TZ:=/etc/localtime` setting gives you two things:
+
+1) You can choose your own human wall-clock timezone in which to print out various timestamps. You can set `TZ=` (to empty value) to get times in UTC. The kernel and eBPF programs don't deal with human time internally, the CLOCK\_MONOTONIC clock-source I'm using is just stored as number of nanoseconds from some arbitrary point in the past.
+2) The timezone environment variable also reduces `xcapture` userspace CPU usage, as otherwise it would go and check some `/etc/localtimezone` file or something like that on every `snprintf()` library call.
+
+
+## That's all!
+
+Back to [0x.tools](https://0x.tools)
 
