@@ -1,5 +1,13 @@
 # 0x.tools changelog
 
+3.0.0-alpha-preview
+=====================
+* Moved older xcapture versions (and experiemental prototypes to `experiments/`) directory
+ - xcapture-v0-proc still works just fine (reading /proc files) and is useful for always-on thread sampling on older Linux kernels without eBPF
+ - xcapture-v1-bpftrace is a simple hack + prototype
+ - xcapture-v2-bcc is a more functional version, but also prototype-grade (but you can see how the "xtop" tool could work with stack tracing etc)
+ - xcapture-v3: The current `bin/xcapture` is now the final, modern eBPF + libbpf based tool for efficient, always-on thread activity tracking that will eventually graduate to production grade (my current plan is to launch it with my talk at [P99CONF 2025](https://www.p99conf.io) (in 22-23 October 2025).
+
 1.2.3
 ======================
 * OS support
