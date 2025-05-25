@@ -21,12 +21,6 @@ git clone https://github.com/tanelpoder/0xtools.git
 cd 0xtools
 ```
 
-Make sure you cd to the **`next`** directory, the repo root is currently the old code (which includes an old `xcapture` v1 version that is just a C program sampling whatever is available in the `/proc/PID/task/TID` pseudofiles and saves the output into hourly CSV files.
-
-```
-cd next
-```
-
 To install the system packages (on Ubuntu 24.04) for compiling the binary, run:
 
 ```
