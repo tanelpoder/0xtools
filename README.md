@@ -31,9 +31,7 @@ On RHEL9:
 
 ```
 sudo dnf install libbpf libbpf-tools clang llvm-devel binutils-devel elfutils-libelf elfutils-libelf-devel zlib-devel
-
 ```
-
 
 To install required libbpf dependencies for the GitHub repo, run:
 
@@ -64,7 +62,6 @@ Therefore it makes sense to schedule the userspace "sampling driver" with a high
 
 ```
 $ sudo TZ=:/etc/localtime chrt -r 30 ./xcapture -vo DIRNAME
-
 ```
 
 The `chrt` puts the userspace xcapture program into real-time scheduling class. It's a single, single-threaded prodess and you'll only need to run only one in the host and it can monitor all threads in the system. By default it wakes up once per second and tells the eBPF task iterator to do its sampling, gets results via an eBPF ringbuf and writes the records either to STDOUT or CSV files.
