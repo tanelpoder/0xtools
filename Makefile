@@ -1,6 +1,15 @@
 CC ?= gcc
 PREFIX ?= /usr
 
+# Default target
+.PHONY: all
+all:
+	@echo "To install the 0xtools utilities, please run:"
+	@echo "  sudo make install"
+	@echo ""
+	@echo "To remove the 0xtools utilities, please run:"
+	@echo "  sudo make uninstall"
+
 install:
 	install -m 0755 -d ${PREFIX}/bin
 	install -m 0755 bin/psn ${PREFIX}/bin/psn
@@ -22,5 +31,4 @@ uninstall:
 	rm -fv  ${PREFIX}/bin/schedlat ${PREFIX}/bin/vmtop ${PREFIX}/bin/syscallargs ${PREFIX}/bin/tracepointargs
 	rm -fv  ${PREFIX}/bin/cpumhz ${PREFIX}/bin/cpumhzturbo ${PREFIX}/bin/cpuactturbo ${PREFIX}/bin/lsds
 	rm -fv  ${PREFIX}/lib/0xtools/psnproc.py ${PREFIX}/lib/0xtools/psnreport.py ${PREFIX}/lib/0xtools/argparse.py
-	rm -rfv ${PREFIX}/lib/0xtools 
-
+	rm -rfv ${PREFIX}/lib/0xtools
