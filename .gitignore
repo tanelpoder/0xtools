@@ -4,8 +4,8 @@ bin/xcapture
 bin/xcap/*
 *.tar.gz
 *.o
-next/xcapture/.output/
-next/xcapture/out/
-next/xcapture/xcapture
-next/xcapture/tests/md5_test
-next/xcapture/.clangd
+xcapture/.output/
+xcapture/out/
+xcapture/xcapture
+xcapture/tests/md5_test
+xcapture/.clangd
