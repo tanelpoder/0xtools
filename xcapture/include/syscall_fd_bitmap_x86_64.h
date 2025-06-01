@@ -134,7 +134,7 @@ static const uint64_t syscall_fd_bitmap[SYSCALL_FD_BITMAP_SIZE] = {
 #define SYSCALL_HAS_FD_ARG1(syscall_nr) ({ \
     int __has_fd = 0; \
     if ((syscall_nr) < 512) { \
-        __has_fd = !!(syscall_fd_bitmap[(syscall_nr) / 64] & (1ULL << ((syscall_nr) % 64))); \
+        __has_fd = !!(syscall_fd_bitmap[((unsigned int)(syscall_nr)) / 64] & (1ULL << (((unsigned int)(syscall_nr)) % 64))); \
     } \
     __has_fd; \
 })
