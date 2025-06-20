@@ -440,7 +440,14 @@ def parse_cmdline_sample(proc_source,sample):
     # the split [] hack is due to postgres having some extra spaces in its cmdlines
     return [sample.split('\000')[0].strip()] 
 
-cmdline = ProcSource('cmdline', '/proc/%s/task/%s/cmdline', [('cmdline', str, 0)], ['cmdline'], task_level=True, parse_sample=parse_cmdline_sample)
+
+trim_cmdline = re.compile(r'\d+')
+
+cmdline = ProcSource('cmdline', '/proc/%s/task/%s/cmdline', [
+    ('cmdline', str, 0, lambda c: re.sub(trim_cmdline, '*', c)),
+    ('cmdline2', str, 0),
+], None,
+task_level=True, parse_sample=parse_cmdline_sample)
 
 ### wchan ###
 wchan = ProcSource('wchan', '/proc/%s/task/%s/wchan', [('wchan', str, 0)], ['wchan'], task_level=True)
