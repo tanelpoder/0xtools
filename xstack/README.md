@@ -116,12 +116,14 @@ timestamp,tid,tgid,comm,state,ustack,kstack
 
 ## FlameGraph Generation
 
+An example of how I feed xstack output to the [flamelens](https://github.com/YS-L/flamelens) terminal UI app is in my blog:
+
+* https://tanelpoder.com/posts/xstack-passive-linux-stack-sampler-ebpf/
 
 ## Architecture Support
 
 - **x86_64** - Full support with frame pointer unwinding
 - **ARM64/aarch64** - Full support with frame pointer unwinding
-- Other architectures may work with kernel stacks only
 
 ## Limitations
 
