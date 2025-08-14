@@ -2,12 +2,12 @@
 OUTPUT := .output
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
-LIBBPF_SRC := $(abspath ../../libbpf-bootstrap/libbpf/src)
-BPFTOOL_SRC := $(abspath ../../libbpf-bootstrap/bpftool/src)
+LIBBPF_SRC := $(abspath ../libbpf-bootstrap/libbpf/src)
+BPFTOOL_SRC := $(abspath ../libbpf-bootstrap/bpftool/src)
 LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 BPFTOOL_OUTPUT ?= $(abspath $(OUTPUT)/bpftool)
 BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
-LIBBLAZESYM_SRC := $(abspath ../../libbpf-bootstrap/blazesym/)
+LIBBLAZESYM_SRC := $(abspath ../libbpf-bootstrap/blazesym/)
 LIBBLAZESYM_INC := $(abspath $(LIBBLAZESYM_SRC)/capi/include)
 LIBBLAZESYM_OBJ := $(abspath $(OUTPUT)/libblazesym_c.a)
 
@@ -19,7 +19,7 @@ ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/riscv64/riscv/' \
 			 | sed 's/loongarch64/loongarch/')
 
-VMLINUX := ../../libbpf-bootstrap/vmlinux.h/include/$(ARCH)/vmlinux.h
+VMLINUX := ../libbpf-bootstrap/vmlinux.h/include/$(ARCH)/vmlinux.h
 
 # Check for existence of vmlinux.h
 ifeq ($(wildcard $(VMLINUX)),)
@@ -27,7 +27,7 @@ $(error vmlinux.h not found at $(VMLINUX). Please check libbpf-bootstrap setup)
 endif
 
 INCLUDES := -I$(OUTPUT) \
-	    -I../../libbpf-bootstrap/libbpf/include/uapi \
+	    -I../libbpf-bootstrap/libbpf/include/uapi \
 	    -I$(dir $(VMLINUX)) \
 	    -I$(LIBBLAZESYM_INC) \
 	    -I.
