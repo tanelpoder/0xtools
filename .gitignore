@@ -9,3 +9,5 @@ xcapture/out/
 xcapture/xcapture
 xcapture/tests/md5_test
 xcapture/.clangd
+xstack/.output/
+xstack/xstack
