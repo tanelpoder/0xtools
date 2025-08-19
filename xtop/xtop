@@ -1,0 +1,2351 @@
+#!/usr/bin/env python3
+"""
+X Process Snapper TUI - Interactive terminal UI for xtop with drill-down navigation
+Uses Textual for proper keyboard handling without requiring root privileges
+"""
+
+import argparse
+import sys
+import os
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
+import platform
+import logging
+
+from textual import events
+from textual.app import App, ComposeResult
+from textual.widgets import Header, Footer, DataTable, Static, OptionList, Label
+from textual.widgets.option_list import Option
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer, VerticalScroll
+from textual.screen import Screen, ModalScreen
+from textual.reactive import reactive
+from textual.message import Message
+from textual import on
+
+# Add parent directory to path for imports
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Import core components
+from core import (
+    XCaptureDataSource,
+    QueryEngine,
+    QueryParams,
+    TableFormatter,
+    ChartGenerator,
+    NavigationState
+)
+
+# Import TUI components
+from tui.cell_peek_modal import HistogramPeekModal
+from tui.stack_peek_modal import StackPeekModal
+from tui.json_viewer_modal import JSONViewerModal
+
+# (tab functionality removed for simplicity)
+
+__version__ = "1.0"
+__author__ = "Tanel Poder"
+
+
+class FilterMenuScreen(ModalScreen):
+    """Modal screen for include/exclude filter selection"""
+    
+    CSS = """
+    FilterMenuScreen {
+        align: center middle;
+    }
+    
+    #filter-container {
+        background: $panel;
+        border: thick $primary;
+        padding: 1;
+        width: 40;
+        height: 10;
+    }
+    
+    #filter-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    
+    OptionList {
+        height: 4;
+    }
+    """
+    
+    def __init__(self, column: str, value: Any, **kwargs):
+        """Initialize filter menu with column and value"""
+        super().__init__(**kwargs)
+        self.column = column
+        self.value = value
+        self.choice = None
+    
+    def compose(self) -> ComposeResult:
+        """Create the menu UI"""
+        with Container(id="filter-container"):
+            yield Label(f"Filter: {self.column} = {self.value}", id="filter-title")
+            option_list = OptionList(
+                Option(f"Include {self.value}", id="include"),
+                Option(f"Exclude {self.value}", id="exclude"),
+            )
+            option_list.focus()
+            yield option_list
+    
+    @on(OptionList.OptionSelected)
+    def on_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Handle option selection"""
+        # Stop event propagation to prevent it from reaching parent screen
+        event.stop()
+        
+        self.choice = "exclude" if event.option_id == "exclude" else "include"
+        self.dismiss(self.choice)
+    
+    def on_key(self, event: events.Key) -> None:
+        """Handle key events in the modal"""
+        if event.key == "escape":
+            event.stop()  # Stop event propagation
+            self.dismiss(None)
+
+
+class LatencyColumnsScreen(ModalScreen):
+    """Modal screen for selecting latency/aggregate columns to display"""
+    
+    CSS = """
+    LatencyColumnsScreen {
+        align: center middle;
+    }
+    
+    #latency-container {
+        background: $panel;
+        border: thick $primary;
+        padding: 1;
+        width: 60;
+        height: 22;
+    }
+    
+    #latency-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    
+    #current-latency {
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+    
+    #search-display {
+        margin-bottom: 1;
+        color: $text-muted;
+        text-align: center;
+    }
+    
+    #instructions {
+        margin-bottom: 1;
+        text-align: center;
+        color: $text-muted;
+    }
+    
+    OptionList {
+        height: 12;
+        scrollbar-size: 1 1;
+    }
+    """
+    
+    def __init__(self, available_columns: Dict[str, List[str]], selected_columns: List[str], 
+                 query_engine=None, **kwargs):
+        """Initialize latency columns menu"""
+        super().__init__(**kwargs)
+        # Build unified list from available_columns dict
+        self.all_columns = []
+        
+        # Map categories to source labels
+        source_map = {
+            "System Call Latency": "syscall",
+            "I/O Latency": "iorq",
+            "Histograms": "histogram"
+        }
+        
+        for category, columns in available_columns.items():
+            source_label = source_map.get(category, category.lower())
+            for col in columns:
+                display_name = f"{col.lower()} ({source_label})"
+                self.all_columns.append((col, display_name, col))
+        
+        # Sort alphabetically by display name
+        self.all_columns.sort(key=lambda x: x[1].lower())
+        
+        self.selected_columns = set(selected_columns)
+        self.query_engine = query_engine
+        self.search_pattern = ""
+    
+    def compose(self) -> ComposeResult:
+        """Create the latency columns UI"""
+        with Container(id="latency-container"):
+            yield Label("Select Latency/Aggregate Columns", id="latency-title")
+            
+            # Show current selection
+            current_text = "Current: " + ", ".join(sorted(self.selected_columns)) if self.selected_columns else "Current: None"
+            yield Label(current_text, id="current-latency")
+            
+            # Show search pattern
+            yield Label("Type to search, BACKSPACE to clear", id="search-display")
+            
+            yield Label("Use SPACE to toggle, ENTER to apply, ESC to cancel", id="instructions")
+            
+            # Create option list - will be populated by on_mount
+            option_list = OptionList()
+            option_list.focus()
+            yield option_list
+    
+    def on_mount(self) -> None:
+        """Called when the widget is mounted to the app."""
+        # Populate the initial column list after the widget is mounted
+        self.refresh_column_list()
+    
+    def refresh_column_list(self):
+        """Refresh the column list based on current search pattern"""
+        from core.column_utils import filter_columns_by_pattern
+        
+        # Get the option list widget
+        try:
+            option_list = self.query_one(OptionList)
+        except:
+            return
+        
+        # Clear current options
+        option_list.clear_options()
+        
+        # Filter columns based on search pattern
+        filtered_columns = filter_columns_by_pattern(self.all_columns, self.search_pattern)
+        
+        # Add filtered columns to the list
+        for col_name, display_name, col_id in filtered_columns:
+            # Check if selected
+            if col_id in self.selected_columns:
+                option_text = f"[x] {display_name}"
+            else:
+                option_text = f"[ ] {display_name}"
+            
+            option_list.add_option(Option(option_text, id=col_id))
+        
+        # Update search display
+        try:
+            search_label = self.query_one("#search-display", Label)
+            if self.search_pattern:
+                search_label.update(f"Search: '{self.search_pattern}' ({len(filtered_columns)} matches)")
+            else:
+                search_label.update("Type characters to search, BACKSPACE to clear")
+        except:
+            pass
+        
+        # Update current selection display
+        try:
+            current_label = self.query_one("#current-latency", Label)
+            current_text = "Current: " + ", ".join(sorted(self.selected_columns)) if self.selected_columns else "Current: None"
+            current_label.update(current_text)
+        except:
+            pass
+    
+    def on_key(self, event: events.Key) -> None:
+        """Handle key presses"""
+        if event.key == "escape":
+            event.stop()  # Stop event propagation
+            self.dismiss(None)
+        elif event.key == "enter":
+            event.stop()  # Stop event propagation
+            # Return the selected columns
+            self.dismiss(list(self.selected_columns))
+        elif event.key == "backspace":
+            event.stop()  # Stop event propagation
+            # Remove last character from search pattern
+            if self.search_pattern:
+                self.search_pattern = self.search_pattern[:-1]
+                self.refresh_column_list()
+        elif event.key == "space":
+            event.stop()  # Stop event propagation
+            # Toggle the current selection
+            option_list = self.query_one(OptionList)
+            highlighted_index = option_list.highlighted
+            if highlighted_index is not None:
+                try:
+                    option = option_list.get_option_at_index(highlighted_index)
+                    col_id = option.id
+                    
+                    # Skip headers
+                    if col_id.startswith('_header_'):
+                        return
+                    
+                    # Toggle selection (keep original case)
+                    if col_id in self.selected_columns:
+                        self.selected_columns.remove(col_id)
+                    else:
+                        self.selected_columns.add(col_id)
+                    
+                    # Refresh the list to update checkbox display
+                    self.refresh_column_list()
+                    
+                    # Restore the highlighted position
+                    option_list.highlighted = highlighted_index
+                    
+                except Exception:
+                    pass
+                
+                # Prevent navigation on space
+                event.prevent_default()
+        elif event.character and event.character.isprintable():
+            # Add character to search pattern
+            event.stop()  # Stop event propagation
+            self.search_pattern += event.character
+            self.refresh_column_list()
+
+
+class GroupingMenuScreen(ModalScreen):
+    """Modal screen for selecting group-by columns with search functionality"""
+    
+    CSS = """
+    GroupingMenuScreen {
+        align: center middle;
+    }
+    
+    #grouping-container {
+        background: $panel;
+        border: thick $primary;
+        padding: 1;
+        width: 60;
+        height: 22;
+    }
+    
+    #grouping-title {
+        text-align: center;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    
+    #current-grouping {
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+    
+    #search-display {
+        margin-bottom: 1;
+        color: $text-muted;
+        text-align: center;
+    }
+    
+    #instructions {
+        margin-bottom: 1;
+        text-align: center;
+        color: $text-muted;
+    }
+    
+    OptionList {
+        height: 12;
+        scrollbar-size: 1 1;
+    }
+    
+    #button-container {
+        align: center middle;
+        margin-top: 1;
+        height: 3;
+    }
+    """
+    
+    def __init__(self, columns_by_source: Dict[str, List[str]], current_columns: List[str], 
+                 query_engine=None, initial_highlight: Optional[str] = None, **kwargs):
+        """Initialize grouping menu with columns grouped by source and current columns"""
+        super().__init__(**kwargs)
+        from core.column_utils import get_unified_column_list
+        
+        self.columns_by_source = columns_by_source
+        self.current_columns = current_columns  # Keep as list to preserve order
+        self.query_engine = query_engine  # For accessing DATA_SOURCES
+        # Store selected columns in lowercase for case-insensitive comparison
+        self.selected_columns = set(col.lower() for col in current_columns)
+        # But also keep original case mapping
+        self.selected_columns_original = {col.lower(): col for col in current_columns}
+        self.initial_highlight = initial_highlight  # Column to highlight initially
+        self.choice_made = False
+        
+        # Build unified column list
+        self.all_columns = get_unified_column_list(columns_by_source, query_engine)
+        
+        # Search pattern
+        self.search_pattern = ""
+    
+    def compose(self) -> ComposeResult:
+        """Create the grouping UI"""
+        with Container(id="grouping-container"):
+            yield Label("Select Grouping Columns", id="grouping-title")
+            
+            # Show current grouping
+            current_text = "Current: " + ", ".join(self.current_columns) if self.current_columns else "Current: None"
+            yield Label(current_text, id="current-grouping")
+            
+            # Show search pattern
+            yield Label("Type to search, BACKSPACE to clear", id="search-display")
+            
+            yield Label("Use SPACE to toggle, ENTER to apply, ESC to cancel", id="instructions")
+            
+            # Create option list - will be populated by on_mount
+            option_list = OptionList()
+            
+            option_list.focus()
+            yield option_list
+    
+    def on_mount(self) -> None:
+        """Called when the widget is mounted to the app."""
+        # Populate the initial column list after the widget is mounted
+        self.refresh_column_list()
+    
+    def refresh_column_list(self):
+        """Refresh the column list based on current search pattern"""
+        from core.column_utils import filter_columns_by_pattern
+        
+        # Get the option list widget
+        try:
+            option_list = self.query_one(OptionList)
+        except:
+            return
+        
+        # Clear current options
+        option_list.clear_options()
+        
+        # Filter columns based on search pattern
+        filtered_columns = filter_columns_by_pattern(self.all_columns, self.search_pattern)
+        
+        # Add filtered columns to the list
+        initial_index = None
+        for idx, (col_name, display_name, col_id) in enumerate(filtered_columns):
+            # Check if selected (case-insensitive)
+            if col_id.lower() in self.selected_columns:
+                option_text = f"[x] {display_name}"
+            else:
+                option_text = f"[ ] {display_name}"
+           
+            option_list.add_option(Option(option_text, id=col_id))
+            
+            # Track the index of the column to highlight
+            if self.initial_highlight and col_id == self.initial_highlight:
+                initial_index = idx
+        
+        # Set initial highlight if found
+        if initial_index is not None:
+            option_list.highlighted = initial_index
+        
+        # Update search display
+        try:
+            search_label = self.query_one("#search-display", Label)
+            if self.search_pattern:
+                search_label.update(f"Search: '{self.search_pattern}' ({len(filtered_columns)} matches)")
+            else:
+                search_label.update("Type to search, BACKSPACE to clear")
+        except:
+            pass
+    
+    def on_key(self, event: events.Key) -> None:
+        """Handle key presses"""
+        if event.key == "escape":
+            event.stop()  # Stop event propagation
+            self.dismiss(None)
+        elif event.key == "enter":
+            event.stop()  # Stop event propagation
+            # Apply the selection
+            if self.selected_columns:  # Ensure at least one column selected
+                self.choice_made = True
+                # Build result from selected columns, preserving original case
+                result_columns = []
+                
+                # First, preserve any originally selected columns in their order
+                for col in self.current_columns:
+                    if col.lower() in self.selected_columns:
+                        result_columns.append(col)
+                
+                # Then add any newly selected columns
+                for col_lower in self.selected_columns:
+                    # Get the original case version
+                    original_col = self.selected_columns_original.get(col_lower, col_lower)
+                    
+                    # Remove any prefix (e.g., "samples.tid" -> "tid")
+                    if '.' in original_col:
+                        base_col = original_col.split('.')[1]
+                    else:
+                        base_col = original_col
+                    
+                    # Check if already added (case-insensitive)
+                    already_added = False
+                    for res_col in result_columns:
+                        if res_col.lower() == base_col.lower():
+                            already_added = True
+                            break
+                    
+                    if not already_added:
+                        result_columns.append(base_col)
+                
+                self.dismiss(result_columns)
+            else:
+                # Don't allow empty selection
+                self.notify("At least one column must be selected", severity="warning")
+        elif event.key == "backspace":
+            event.stop()  # Stop event propagation
+            # Remove last character from search pattern
+            if self.search_pattern:
+                self.search_pattern = self.search_pattern[:-1]
+                self.refresh_column_list()
+        elif event.key == "space":
+            event.stop()  # Stop event propagation
+            # Toggle the current selection
+            option_list = self.query_one(OptionList)
+            # Get the currently highlighted index
+            highlighted_index = option_list.highlighted
+            if highlighted_index is not None:
+                # Get the option at this index
+                try:
+                    option = option_list.get_option_at_index(highlighted_index)
+                    col_id = option.id
+                    
+                    # Skip headers
+                    if col_id.startswith('_header_'):
+                        return
+                    
+                    # Toggle selection (case-insensitive)
+                    col_lower = col_id.lower()
+                    if col_lower in self.selected_columns:
+                        self.selected_columns.remove(col_lower)
+                        if col_lower in self.selected_columns_original:
+                            del self.selected_columns_original[col_lower]
+                    else:
+                        self.selected_columns.add(col_lower)
+                        self.selected_columns_original[col_lower] = col_id
+                    
+                    # Refresh the list to update checkbox display
+                    self.refresh_column_list()
+                    
+                    # Restore the highlighted position
+                    option_list.highlighted = highlighted_index
+                    
+                except Exception as e:
+                    # If there's an issue with the API, log it
+                    pass
+                
+                # Prevent navigation on space
+                event.prevent_default()
+        elif event.character and event.character.isprintable():
+            # Add character to search pattern
+            event.stop()  # Stop event propagation
+            self.search_pattern += event.character
+            self.refresh_column_list()
+    
+    @on(OptionList.OptionSelected)
+    def on_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Handle option selection (Enter key)"""
+        # Don't process this event - let the on_key handler deal with Enter
+        # This prevents double-handling of the Enter key
+        event.prevent_default()
+        event.stop()
+
+
+class XTopTUI(App):
+    """Interactive TUI for xtop with drill-down navigation"""
+    
+    TITLE = "X Process Snapper TUI"
+    SUB_TITLE = "Interactive System Analysis"
+    
+    CSS = """
+    Screen {
+        layout: vertical;
+    }
+    
+    DataTable {
+        scrollbar-size: 1 1;
+        height: 1fr;
+        border: solid green;
+    }
+    
+    DataTable > .datatable--header {
+        background: $primary;
+        color: $text;
+    }
+    
+    DataTable > .datatable--cursor {
+        background: $secondary;
+    }
+    
+    VerticalScroll {
+        height: 1fr;
+    }
+    
+    #global-breadcrumb {
+        dock: top;
+        height: 3;
+        padding: 0 1;
+        border: solid cyan;
+        background: $primary;
+        color: $text;
+        text-style: bold;
+    }
+    
+    #status {
+        dock: bottom;
+        height: 1;
+        padding: 0 1;
+        background: $surface;
+    }
+    
+    # Tab-related CSS removed for simplicity
+    """
+    
+    BINDINGS = [
+        ("enter", "drill_down", "Drill down"),
+        ("backspace", "back_out", "Remove last filter"),
+        ("space", "show_filter_menu", "Filter menu"),
+        # Tab bindings removed for simplicity
+        ("r", "refresh", "Refresh"),
+        # Removed query type selection - always uses dynamic queries
+        ("g", "change_grouping", "Grouping"),
+        ("u", "undo_grouping", "Undo last grouping"),
+        ("l", "latency_columns", "Latency columns"),
+        ("d", "remove_column", "Remove column"),
+        ("<", "move_column_left", "Move column left"),
+        (">", "move_column_right", "Move column right"),
+        ("?", "peek_cell", "Peek cell details"),
+        ("h", "toggle_help", "Help"),
+        ("ctrl+c", "quit", "Quit"),
+    ]
+    
+    def __init__(self, datadir: str,
+                 low_time: Optional[datetime] = None, high_time: Optional[datetime] = None,
+                 debug_log: Optional[str] = None, initial_group_by: Optional[List[str]] = None,
+                 append_group_by: Optional[List[str]] = None, duckdb_threads: Optional[int] = None):
+        """Initialize TUI with data directory and time range"""
+        super().__init__()
+        self.datadir = datadir
+        self.low_time = low_time
+        self.high_time = high_time
+        self.initial_group_by = initial_group_by
+        self.append_group_by = append_group_by
+        
+        # Setup debug logging if requested
+        self.logger = None
+        if debug_log:
+            logging.basicConfig(
+                filename=debug_log,
+                level=logging.DEBUG,
+                format='%(asctime)s - %(levelname)s - %(message)s'
+            )
+            self.logger = logging.getLogger('xtop-tui')
+            self.logger.info(f"Starting xtop-tui with datadir={datadir}")
+            self.logger.info(f"Time range: {low_time} to {high_time}")
+        
+        # Initialize core components
+        self.data_source = XCaptureDataSource(datadir, duckdb_threads=duckdb_threads)
+        self.query_engine = QueryEngine(self.data_source)
+        self.formatter = TableFormatter()
+        self.visualizer = ChartGenerator()
+        
+        # Initialize navigation and query state directly
+        self.navigation = NavigationState()
+        self.query_params = QueryParams()
+        self.last_result = None
+        self.display_columns = []
+        self.selected_latency_columns = []  # Track selected latency/aggregate columns
+        
+        # If no time range specified, use available data range
+        if not low_time and not high_time:
+            data_min, data_max = self.data_source.get_time_range()
+            if data_min and data_max:
+                low_time = data_min
+                high_time = data_max
+                if self.logger:
+                    self.logger.info(f"Using data time range: {data_min} to {data_max}")
+        
+        # Set query type to dynamic (the only type now) and time range
+        self.query_params.query_type = 'dynamic'
+        self.query_params.low_time = low_time
+        self.query_params.high_time = high_time
+        
+        # Use custom group by columns if provided, otherwise use defaults
+        if self.initial_group_by:
+            # Standardize to lowercase for consistency
+            group_cols = [col.lower() for col in self.initial_group_by]
+            if self.logger:
+                self.logger.info(f"Using custom GROUP BY columns: {group_cols}")
+        else:
+            # Start with default columns (already lowercase in DEFAULT_GROUP_COLS)
+            default_cols = self.query_engine.DEFAULT_GROUP_COLS.get('dynamic', [])
+            group_cols = list(default_cols)  # Make a copy
+            
+            # Append additional columns if -G was used
+            if self.append_group_by:
+                # Convert to lowercase and append
+                append_cols = [col.lower() for col in self.append_group_by]
+                # Only append columns that aren't already in the list
+                for col in append_cols:
+                    if col not in group_cols:
+                        group_cols.append(col)
+                if self.logger:
+                    self.logger.info(f"Appending GROUP BY columns: {append_cols}")
+                    self.logger.info(f"Final GROUP BY columns: {group_cols}")
+            
+        self.navigation.reset(group_cols)
+        
+        # Platform detection
+        self.is_macos = platform.system() == "Darwin"
+        self.cmd_key = "cmd" if self.is_macos else "ctrl"
+        
+        # Status message
+        self.status_message = ""
+        
+        # Flag to prevent immediate drill-down after grouping change
+        self._just_changed_grouping = False
+    
+    def compose(self) -> ComposeResult:
+        """Create the UI layout"""
+        yield Header()
+        
+        # Breadcrumb display
+        yield Static("Filters: No filters applied\nPath: Loading...", id="global-breadcrumb")
+        
+        # Single data table (no tabs)
+        yield DataTable(id="main-table", zebra_stripes=True)
+                    
+        yield Static("Ready", id="status")
+        yield Footer()
+    
+    def on_mount(self) -> None:
+        """Initialize when app is mounted"""
+        if self.logger:
+            self.logger.info("App mounted, refreshing data...")
+        
+        # Initial data refresh with a small delay
+        self.set_timer(0.1, self.refresh_data)
+    
+    def execute_current_query(self) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """Execute query and return results"""
+        # Update query params with current navigation state
+        self.query_params.where_clause = self.navigation.get_current_where_clause()
+        self.query_params.group_cols = self.navigation.get_current_group_cols()
+        
+        # Set reasonable limit for TUI display
+        self.query_params.limit = 100
+        
+        try:
+            # Log query execution
+            if self.logger:
+                self.logger.info(f"Executing query type: {self.query_params.query_type}")
+                self.logger.info(f"Where clause: {self.query_params.where_clause}")
+                self.logger.info(f"Group columns: {self.query_params.group_cols}")
+                self.logger.info(f"Time range: {self.query_params.low_time} to {self.query_params.high_time}")
+            
+            # Execute query
+            result = self.query_engine.execute_with_params(
+                self.query_params,
+                debug=self.logger is not None,
+                latency_columns=self.selected_latency_columns  # Always use latency columns with dynamic queries
+            )
+            
+            # Log results
+            if self.logger:
+                self.logger.info(f"Query returned {result.row_count} rows")
+                self.logger.info(f"Columns: {result.columns}")
+                self.logger.info(f"Execution time: {result.execution_time:.3f}s")
+                # Don't log data to keep log concise
+            
+            # Cache result
+            self.last_result = result
+            
+            # Process data for display
+            data = result.data
+            columns = result.columns
+            
+            # Add visualizations for dynamic queries
+            # Dynamic queries handle all visualization needs
+            if False:  # Removed old query type specific code
+                # Add histogram visualization
+                max_samples = max([row.get('total_samples', 0) or 0 for row in data]) if data else 0
+                for row in data:
+                    samples = row.get('total_samples', 0) or 0
+                    row['time_bar'] = self.visualizer.make_bar(samples, max_samples, width=10)
+                    
+                    hist_str = row.get('sclat_histogram', '')
+                    row['histogram_viz'] = self.visualizer.make_histogram_with_embedded_max(hist_str)
+                
+                if 'time_bar' not in columns:
+                    columns.append('time_bar')
+                    
+                if 'sclat_histogram' in columns:
+                    idx = columns.index('sclat_histogram')
+                    columns.insert(idx + 1, 'histogram_viz')
+                    columns.remove('sclat_histogram')
+                
+                # Remove internal columns
+                if 'global_max_bucket_time' in columns:
+                    columns.remove('global_max_bucket_time')
+            
+            elif False:  # Removed old iolathist specific code
+                # Add histogram visualization for I/O latency
+                max_samples = max([row.get('total_samples', 0) or 0 for row in data]) if data else 0
+                for row in data:
+                    samples = row.get('total_samples', 0) or 0
+                    row['time_bar'] = self.visualizer.make_bar(samples, max_samples, width=10)
+                    
+                    hist_str = row.get('iolat_histogram', '')
+                    row['histogram_viz'] = self.visualizer.make_histogram_with_embedded_max(hist_str)
+                
+                if 'time_bar' not in columns:
+                    columns.append('time_bar')
+                    
+                if 'iolat_histogram' in columns:
+                    idx = columns.index('iolat_histogram')
+                    columns.insert(idx + 1, 'histogram_viz')
+                    columns.remove('iolat_histogram')
+                
+                # Remove internal columns
+                if 'global_max_bucket_time' in columns:
+                    columns.remove('global_max_bucket_time')
+            
+            # Process histogram columns (always for dynamic queries)
+            if True:  # Always process for dynamic queries
+                # Add time_bar visualization for dynamic queries (similar to sclathist/iolathist)
+                # Check for both 'samples' (used by dynamic query) and 'total_samples' (used by others)
+                if any(col in columns for col in ['samples', 'total_samples']):
+                    # Find max samples value from any of the possible column names
+                    max_samples = 0
+                    for row in data:
+                        sample_val = (row.get('samples', 0) or 
+                                     row.get('total_samples', 0) or 0)
+                        max_samples = max(max_samples, sample_val)
+                    
+                    # Generate time_bar for each row
+                    for row in data:
+                        samples = (row.get('samples', 0) or 
+                                  row.get('total_samples', 0) or 0)
+                        row['time_bar'] = self.visualizer.make_bar(samples, max_samples, width=10)
+                    
+                    # Insert time_bar right after avg_threads
+                    if 'time_bar' not in columns:
+                        if 'avg_threads' in columns:
+                            idx = columns.index('avg_threads')
+                            columns.insert(idx + 1, 'time_bar')
+                        elif 'avg_threads' in columns:
+                            idx = columns.index('avg_threads')
+                            columns.insert(idx + 1, 'time_bar')
+                        else:
+                            columns.append('time_bar')
+                
+                # Process histogram columns
+                for hist_col in ['sclat_histogram', 'iolat_histogram']:
+                    if hist_col in columns:
+                        viz_col = hist_col.replace('_histogram', '_histogram_viz')
+                        for row in data:
+                            hist_data = row.get(hist_col)
+                            if hist_data:
+                                # Convert DuckDB histogram dict to visualization
+                                row[viz_col] = self._convert_histogram_to_viz(hist_data)
+                            else:
+                                row[viz_col] = ' ' * 26
+                        
+                        # Replace histogram column with visualization
+                        idx = columns.index(hist_col)
+                        columns[idx] = viz_col
+            
+            # Reorder columns
+            columns = self.formatter.reorder_columns_samples_first(columns)
+            
+            # IMPORTANT: Store the display columns order that matches what's rendered
+            self.display_columns = columns
+            
+            if self.logger:
+                self.logger.info(f"Processed {len(data)} rows for display")
+                self.logger.debug(f"Display columns: {columns}")
+            
+            return data, columns
+            
+        except Exception as e:
+            error_msg = f"Query error: {str(e)}"
+            self.update_status(error_msg)
+            if self.logger:
+                self.logger.error(f"Query execution failed: {str(e)}", exc_info=True)
+            
+            # Capture the error message before the exception goes out of scope
+            error_str = str(e)
+            
+            # Show error in a modal popup after refresh
+            def show_error_modal():
+                from tui.error_modal import ErrorModal
+                error_modal = ErrorModal(
+                    title="Query Execution Error",
+                    error_message=error_str,
+                    details="Check the debug.log for the full SQL query and error details."
+                )
+                self.push_screen(error_modal)
+            
+            # Schedule the modal to be shown after the current refresh
+            self.call_after_refresh(show_error_modal)
+            
+            return [], []
+    
+    def _convert_histogram_to_viz(self, hist_str: str, width: int = 26) -> str:
+        """Convert histogram string to unicode visualization
+        
+        The histogram format is: bucket:count:time:global_max,bucket:count:time:global_max,...
+        This matches the format from the original sclathist.sql
+        
+        Args:
+            hist_str: Histogram string in bucket:count:time:max format
+            width: Width of the visualization
+            
+        Returns:
+            Unicode string visualization
+        """
+        # Use the existing visualizer method that handles this format
+        return self.visualizer.make_histogram_with_embedded_max(hist_str)
+    
+    def refresh_data(self) -> None:
+        """Refresh data display"""
+        
+        # Get data
+        data, columns = self.execute_current_query()
+        
+        # Update global breadcrumb
+        try:
+            breadcrumb = self.query_one("#global-breadcrumb", Static)
+            
+            # Get filter display and navigation path
+            filter_display = self.navigation.get_filter_display()
+            nav_path = self.navigation.get_breadcrumb_path()
+            
+            # Combine both in the breadcrumb area (two lines)
+            breadcrumb_text = f"Filters: {filter_display}\nPath: {nav_path}"
+            
+            if self.logger:
+                self.logger.info(f"Updating global breadcrumb with: {breadcrumb_text.replace(chr(10), ' | ')}")
+            
+            breadcrumb.update(breadcrumb_text)
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to update breadcrumb: {e}", exc_info=True)
+        
+        # Update data table
+        try:
+            table = self.query_one("#main-table", DataTable)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to find main table: {e}")
+            return
+        
+        # Clear and repopulate table
+        table.clear(columns=True)
+        
+        # Store current data for cell peek functionality
+        self.current_data = data
+        
+        if data and columns:
+            if self.logger:
+                self.logger.info(f"Adding {len(columns)} columns and {len(data)} rows to table")
+            
+            # Generate headers first
+            headers = self.formatter.generate_headers(columns)
+            
+            # Determine column widths for alignment
+            col_widths = {}
+            numeric_cols = set()
+            
+            # Identify numeric columns and calculate max widths
+            for col in columns:
+                col_lower = col.lower()
+                # Check if this is a numeric column
+                if (col_lower in ['est_sc_cnt', 'min_lat_us', 'avg_lat_us', 'max_lat_us',
+                                 'p50_us', 'p95_us', 'p99_us', 'p999_us', 'samples', 
+                                 'total_samples', 'avg_threads', 'est_iorq_cnt'] or
+                    col_lower.endswith('_us') or col_lower.endswith('_ms') or 
+                    col_lower.endswith('_cnt') or col_lower.endswith('_s')):
+                    numeric_cols.add(col)
+                
+                # Calculate max width for this column
+                max_width = len(headers.get(col, col))  # Start with header width
+                
+                # Check all rows for proper width calculation (not just first 20)
+                # But limit iteration for very large datasets
+                rows_to_check = min(len(data), 100)  # Check up to 100 rows
+                for row in data[:rows_to_check]:
+                    val = self.formatter._format_value(col, row.get(col))
+                    max_width = max(max_width, len(val))
+                
+                # Apply appropriate width limits
+                # For numeric columns, ensure minimum width of 8
+                if col in numeric_cols:
+                    col_widths[col] = max(max_width + 1, 8)
+                elif col.lower() == 'extra_info':
+                    # Extra_info gets more width to show JSON data
+                    col_widths[col] = min(max_width + 1, 60)
+                else:
+                    # For text columns, allow more width but cap at reasonable limit
+                    col_widths[col] = min(max_width + 1, 40)  # Increased cap from 20 to 40
+            
+            # Add columns with proper alignment and width
+            for col in columns:
+                header = headers.get(col, col)
+                # Right-align numeric column headers to match data alignment
+                if col in numeric_cols:
+                    header = header.rjust(col_widths[col])
+                # Check if column already exists (shouldn't happen after clear, but be safe)
+                try:
+                    # Pass the calculated width to ensure proper initial sizing
+                    table.add_column(header, key=col, width=col_widths[col])
+                    if self.logger:
+                        self.logger.debug(f"Added column: {col} (header: {header}, width: {col_widths[col]})")
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"Could not add column {col}: {e}")
+            
+            # Add rows
+            for i, row in enumerate(data):
+                row_values = []
+                for col in columns:
+                    value = self.formatter._format_value(col, row.get(col))
+                    # Right-align numeric columns
+                    if col in numeric_cols:
+                        value = value.rjust(col_widths[col])
+                    row_values.append(value)
+                table.add_row(*row_values)
+                if self.logger and i < 3:  # Log first 3 rows for debugging
+                    self.logger.debug(f"Added row {i}: {row_values[:3]}...")  # Log first 3 values
+        
+        # Force refresh the table
+        table.refresh()
+        
+        # Debug: Check table state after adding data
+        if self.logger:
+            self.logger.debug(f"Table row count: {table.row_count}")
+            self.logger.debug(f"Table column count: {len(table.columns)}")
+            self.logger.debug(f"Table visible: {table.visible}")
+            self.logger.debug(f"Table has focus: {table.has_focus}")
+            self.logger.debug(f"Table size: {table.size}")
+            self.logger.debug(f"Table region: {table.region}")
+            
+            # Check parent container
+            try:
+                tab_pane = table.parent
+                if tab_pane:
+                    self.logger.debug(f"Tab pane visible: {tab_pane.visible}")
+                    self.logger.debug(f"Tab pane size: {tab_pane.size}")
+                    self.logger.debug(f"Tab pane class: {tab_pane.__class__.__name__}")
+            except Exception as e:
+                self.logger.debug(f"Error checking parent containers: {e}")
+        
+        # Focus the table to enable keyboard navigation
+        table.focus()
+        
+        # Try to force a layout update
+        self.refresh(layout=True)
+        
+        if len(data) > 0:
+            self.update_status(f"Showing {len(data)} rows")
+        else:
+            status_msg = "No data to display"
+            if self.query_params:
+                status_msg += f" (Query: dynamic"
+                if self.query_params.low_time and self.query_params.high_time:
+                    status_msg += f", Time: {self.query_params.low_time.strftime('%Y-%m-%d %H:%M')} to {self.query_params.high_time.strftime('%H:%M')}"
+                status_msg += ")"
+            self.update_status(status_msg)
+    
+    def update_status(self, message: str) -> None:
+        """Update status bar message"""
+        status = self.query_one("#status", Static)
+        status.update(message)
+    
+    def action_show_filter_menu(self) -> None:
+        """Show filter menu for include/exclude on SPACE key"""
+        if not self.last_result:
+            return
+        
+        # Get the current table
+        try:
+            table = self.query_one("#main-table", DataTable)
+        except Exception:
+            return
+        
+        # Get cursor position
+        if not table.cursor_coordinate:
+            self.update_status("No cell selected")
+            return
+            
+        cursor_row = table.cursor_coordinate.row
+        cursor_col = table.cursor_coordinate.column
+        
+        # Get the column name and value
+        try:
+            # Get the actual value from the data
+            if cursor_row < len(self.last_result.data):
+                row_data = self.last_result.data[cursor_row]
+                # Use display columns which match the rendered table
+                columns = self.display_columns if self.display_columns else self.last_result.columns
+                
+                if cursor_col < len(columns):
+                    col_key = columns[cursor_col]
+                    value = row_data.get(col_key)
+                    
+                    if value is not None:
+                        # Check if this column is a GROUP BY column (case-insensitive)
+                        group_cols = self.navigation.get_current_group_cols()
+                        col_key_lower = col_key.lower()
+                        if col_key_lower not in [gc.lower() for gc in group_cols]:
+                            self.update_status(f"Cannot filter on '{col_key}' - only GROUP BY columns can be filtered")
+                            return
+                        
+                        # Show the filter menu
+                        def handle_choice(choice: Optional[str]) -> None:
+                            """Handle menu choice"""
+                            if choice:
+                                # Apply the filter
+                                exclude = (choice == "exclude")
+                                self.navigation.drill_down(col_key, value, exclude=exclude)
+                                self.refresh_data()
+                                
+                                if exclude:
+                                    self.update_status(f"Excluded {col_key}!={value}")
+                                else:
+                                    self.update_status(f"Filtered by {col_key}={value}")
+                        
+                        # Push the filter menu screen
+                        self.push_screen(FilterMenuScreen(col_key, value), handle_choice)
+                    else:
+                        self.update_status("Cannot filter on empty value")
+                else:
+                    self.update_status("Invalid column selection")
+            else:
+                self.update_status("Invalid row selection")
+                
+        except Exception as e:
+            self.update_status(f"Error: {str(e)}")
+            if self.logger:
+                self.logger.error(f"Error showing filter menu: {e}", exc_info=True)
+    
+    def action_drill_down(self) -> None:
+        """Handle ENTER key to drill down on current cell"""
+        if self.logger:
+            self.logger.info("=== action_drill_down called ===")
+        
+        # Check if we just changed grouping - if so, ignore this Enter key
+        if hasattr(self, '_just_changed_grouping') and self._just_changed_grouping:
+            self._just_changed_grouping = False
+            if self.logger:
+                self.logger.info("Ignoring ENTER - just changed grouping")
+            return
+        
+        if not self.last_result:
+            if self.logger:
+                self.logger.warning("No last_result - returning")
+            return
+        
+        try:
+            # Get the current table
+            table = self.query_one("#main-table", DataTable)
+            if not table.cursor_coordinate:
+                if self.logger:
+                    self.logger.warning("No cursor coordinate - returning")
+                return
+            
+            cursor_row = table.cursor_coordinate.row
+            cursor_col = table.cursor_coordinate.column
+            
+            if self.logger:
+                self.logger.info(f"Cursor position: row={cursor_row}, col={cursor_col}")
+            
+            # Get the data for the current row
+            if cursor_row >= len(self.last_result.data):
+                if self.logger:
+                    self.logger.warning(f"Cursor row {cursor_row} >= data length {len(self.last_result.data)}")
+                return
+            
+            row_data = self.last_result.data[cursor_row]
+            # Use display columns which match the rendered table
+            columns = self.display_columns if self.display_columns else self.last_result.columns
+            
+            if self.logger:
+                self.logger.info(f"Display columns: {columns}")
+                self.logger.info(f"Row data keys: {list(row_data.keys())[:10]}...")  # First 10 keys
+            
+            if cursor_col >= len(columns):
+                if self.logger:
+                    self.logger.warning(f"Cursor col {cursor_col} >= columns length {len(columns)}")
+                return
+            
+            col_key = columns[cursor_col]
+            value = row_data.get(col_key)
+            
+            if self.logger:
+                self.logger.info(f"Selected column: {col_key}, value: {value}")
+            
+            if value is not None and value != '-':
+                # Check if this column is a GROUP BY column
+                group_cols = self.navigation.get_current_group_cols()
+                
+                if self.logger:
+                    self.logger.info(f"GROUP BY columns: {group_cols}")
+                
+                # Handle prefixed columns and case-insensitive matching
+                is_group_column = False
+                filter_column = col_key  # The column to use for filtering
+                
+                # Standardize to lowercase for comparison
+                col_key_lower = col_key.lower()
+                group_cols_lower = [gc.lower() for gc in group_cols]
+                
+                if self.logger:
+                    self.logger.info(f"Checking if '{col_key_lower}' is in group columns (lowercase): {group_cols_lower}")
+                
+                # Direct match (case-insensitive)
+                if col_key_lower in group_cols_lower:
+                    is_group_column = True
+                    # Find the original case version
+                    for gc in group_cols:
+                        if gc.lower() == col_key_lower:
+                            filter_column = gc
+                            break
+                elif '.' in col_key:
+                    # Check if base name is in group cols
+                    base_name = col_key.split('.', 1)[1]
+                    base_name_lower = base_name.lower()
+                    if base_name_lower in group_cols_lower:
+                        is_group_column = True
+                        # Find the original case version
+                        for gc in group_cols:
+                            if gc.lower() == base_name_lower:
+                                filter_column = gc
+                                break
+                else:
+                    # Check if any prefixed version is in group cols
+                    for group_col in group_cols:
+                        if '.' in group_col:
+                            gc_base = group_col.split('.', 1)[1]
+                            if gc_base.lower() == col_key_lower:
+                                is_group_column = True
+                                filter_column = group_col
+                                break
+                
+                if not is_group_column:
+                    msg = f"Cannot drill down on '{col_key}' - only GROUP BY columns can be filtered"
+                    self.update_status(msg)
+                    if self.logger:
+                        self.logger.info(msg)
+                    return
+                
+                # Add filter and drill down
+                if self.logger:
+                    self.logger.info(f"Column IS a GROUP BY column! Adding filter: {filter_column} = {value}")
+                self.navigation.drill_down(filter_column, value)
+                self.refresh_data()
+                self.update_status(f"Filtered on {filter_column} = {value}")
+                if self.logger:
+                    self.logger.info(f"Successfully added filter and refreshed data")
+                
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error drilling down: {e}", exc_info=True)
+            self.update_status("Error drilling down")
+    
+    def action_back_out(self) -> None:
+        """Handle BACKSPACE key to remove last WHERE filter only"""
+        if self.navigation.remove_last_filter():
+            self.refresh_data()
+            self.update_status("Removed last filter")
+        else:
+            self.update_status("No filters to remove")
+    
+    # Tab-related actions removed for simplicity
+    
+    def action_refresh(self) -> None:
+        """Refresh current data"""
+        self.refresh_data()
+    
+    def action_undo_grouping(self) -> None:
+        """Undo the last grouping change"""
+        if self.navigation.undo_last_grouping():
+            self.refresh_data()
+            self.update_status("Undid last grouping change")
+        else:
+            self.update_status("No grouping history to undo")
+    
+    def action_remove_column(self) -> None:
+        """Remove current column from the group by list or latency columns"""
+        # Get current cursor position
+        try:
+            table = self.query_one("#main-table", DataTable)
+            if not table or not table.cursor_coordinate:
+                return
+                
+            cursor_col_index = table.cursor_coordinate.column
+            cursor_row = table.cursor_coordinate.row
+            if not self.display_columns or cursor_col_index >= len(self.display_columns):
+                return
+                
+            cursor_column = self.display_columns[cursor_col_index]
+            cursor_column_lower = cursor_column.lower()
+            
+            # Get current group columns
+            current_group_cols = self.navigation.get_current_group_cols()
+            
+            # First check if it's a latency/histogram column
+            is_latency_column = False
+            matched_latency_column = None
+            
+            # Check against selected latency columns
+            for lat_col in self.selected_latency_columns:
+                if lat_col.lower() == cursor_column_lower:
+                    is_latency_column = True
+                    matched_latency_column = lat_col
+                    break
+                # Also check visualization columns (e.g., sclat_histogram_viz)
+                if cursor_column_lower == f"{lat_col.lower()}_viz":
+                    is_latency_column = True
+                    matched_latency_column = lat_col
+                    break
+            
+            if is_latency_column:
+                # Remove from latency columns
+                new_latency_cols = [col for col in self.selected_latency_columns 
+                                   if col != matched_latency_column]
+                self.selected_latency_columns = new_latency_cols
+                self.refresh_data()
+                self.update_status(f"Removed latency column: {matched_latency_column}")
+                return
+            
+            # Check if cursor is on a group column (case-insensitive)
+            # Need to handle both exact matches and base column names for prefixed columns
+            is_group_column = False
+            matched_group_column = None
+            
+            group_cols_lower = {gc.lower(): gc for gc in current_group_cols}
+            
+            if cursor_column_lower in group_cols_lower:
+                # Direct match
+                is_group_column = True
+                matched_group_column = group_cols_lower[cursor_column_lower]
+            else:
+                # Check if it's a prefixed column that matches a base group column
+                if '.' in cursor_column:
+                    base_name = cursor_column.split('.', 1)[1].lower()
+                    if base_name in group_cols_lower:
+                        is_group_column = True
+                        matched_group_column = group_cols_lower[base_name]
+                else:
+                    # Check if any prefixed group column matches this base name
+                    for group_col_lower, group_col_orig in group_cols_lower.items():
+                        if '.' in group_col_orig and group_col_orig.split('.', 1)[1].lower() == cursor_column_lower:
+                            is_group_column = True
+                            matched_group_column = group_col_orig
+                            break
+            
+            # Check if cursor is on a latency/histogram column
+            is_latency_column = False
+            matched_latency_column = None
+            
+            # Check various histogram visualization column names
+            histogram_viz_columns = ['sclat_histogram_viz', 'iolat_histogram_viz', 'histogram_viz']
+            if cursor_column.lower() in histogram_viz_columns:
+                # Map visualization column back to its data column
+                if cursor_column.lower() == 'sclat_histogram_viz':
+                    matched_latency_column = 'sclat_histogram'
+                elif cursor_column.lower() == 'iolat_histogram_viz':
+                    matched_latency_column = 'iolat_histogram'
+                is_latency_column = matched_latency_column in self.selected_latency_columns
+            elif cursor_column in self.selected_latency_columns:
+                # Direct match with latency column
+                is_latency_column = True
+                matched_latency_column = cursor_column
+            else:
+                # Check prefixed latency columns (e.g., sc.avg_lat_us)
+                for lat_col in self.selected_latency_columns:
+                    if lat_col == cursor_column or (lat_col.startswith('sc.') and cursor_column == lat_col) or \
+                       (lat_col.startswith('io.') and cursor_column == lat_col):
+                        is_latency_column = True
+                        matched_latency_column = lat_col
+                        break
+            
+            if not is_group_column and not is_latency_column:
+                self.update_status(f"Column '{cursor_column.lower()}' is not a grouping or latency column")
+                return
+            
+            # Handle group column removal
+            if is_group_column:
+                # Don't allow removing if it's the only column
+                if len(current_group_cols) <= 1:
+                    self.update_status("Cannot remove the last grouping column")
+                    return
+                
+                # Find the position of the removed column in the group columns
+                removed_col_group_index = current_group_cols.index(matched_group_column)
+                
+                # Remove the column
+                new_group_cols = [col for col in current_group_cols if col != matched_group_column]
+                
+                # Determine which column to move cursor to after removal
+                # If there's a column after the removed one, use that; otherwise use the last column
+                if removed_col_group_index < len(new_group_cols):
+                    next_column = new_group_cols[removed_col_group_index]
+                else:
+                    next_column = new_group_cols[-1] if new_group_cols else None
+                
+                # Update grouping with history (so user can backspace to restore)
+                self.navigation.update_grouping(new_group_cols, create_history=True)
+                
+                # Refresh the display
+                self.refresh_data()
+                
+                # Restore cursor position to the next column
+                if next_column:
+                    self._restore_cursor_to_column(next_column, cursor_row)
+                
+                self.update_status(f"Removed '{cursor_column.lower()}' from grouping")
+            
+            # Handle latency column removal
+            elif is_latency_column:
+                # Remove from selected latency columns
+                self.selected_latency_columns = [col for col in self.selected_latency_columns if col != matched_latency_column]
+                
+                # Refresh the display
+                self.refresh_data()
+                
+                # Try to restore cursor to a nearby column
+                # Find the current column's position in display columns
+                try:
+                    current_index = self.display_columns.index(cursor_column)
+                    # Try to move to the previous column, or next if at start
+                    if current_index > 0:
+                        next_column = self.display_columns[current_index - 1]
+                    elif current_index < len(self.display_columns) - 1:
+                        next_column = self.display_columns[current_index + 1]
+                    else:
+                        next_column = self.display_columns[0] if self.display_columns else None
+                    
+                    if next_column:
+                        self._restore_cursor_to_column(next_column, cursor_row)
+                except (ValueError, IndexError):
+                    pass
+                
+                self.update_status(f"Removed '{cursor_column.lower()}' from latency columns")
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error removing column: {e}")
+            self.update_status("Error removing column")
+    
+    def action_move_column_left(self) -> None:
+        """Move current column left in the grouping"""
+        self._move_column(-1)
+    
+    def action_move_column_right(self) -> None:
+        """Move current column right in the grouping"""
+        self._move_column(1)
+    
+    def _restore_cursor_to_column(self, column_name: str, row: int = 0) -> None:
+        """Restore cursor to a specific column after refresh"""
+        try:
+            table = self.query_one("#main-table", DataTable)
+            if not table or not self.display_columns:
+                return
+                
+            # Find the column index in the display columns
+            col_index = -1
+            
+            # Direct match
+            if column_name in self.display_columns:
+                col_index = self.display_columns.index(column_name)
+            else:
+                # Try to match by base name (for prefixed columns)
+                if '.' in column_name:
+                    base_name = column_name.split('.', 1)[1]
+                    for i, display_col in enumerate(self.display_columns):
+                        if display_col == base_name or (
+                            '.' in display_col and display_col.split('.', 1)[1] == base_name
+                        ):
+                            col_index = i
+                            break
+                else:
+                    # Look for a prefixed version
+                    for i, display_col in enumerate(self.display_columns):
+                        if display_col == column_name or (
+                            '.' in display_col and display_col.split('.', 1)[1] == column_name
+                        ):
+                            col_index = i
+                            break
+            
+            if col_index >= 0:
+                # Move cursor to the column, keeping the same row if possible
+                table.move_cursor(row=min(row, table.row_count - 1), column=col_index)
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Could not restore cursor position: {e}")
+    
+    def _move_column(self, direction: int) -> None:
+        """Move column in the specified direction (-1 for left, 1 for right)"""
+        # Get current cursor position
+        try:
+            table = self.query_one("#main-table", DataTable)
+            if not table or not table.cursor_coordinate:
+                return
+                
+            cursor_col_index = table.cursor_coordinate.column
+            if not self.display_columns or cursor_col_index >= len(self.display_columns):
+                return
+                
+            cursor_column = self.display_columns[cursor_col_index]
+            cursor_column_lower = cursor_column.lower()
+            
+            # First check if it's a latency/histogram column
+            is_latency_column = False
+            matched_latency_column = None
+            
+            # Check against selected latency columns
+            for lat_col in self.selected_latency_columns:
+                if lat_col.lower() == cursor_column_lower:
+                    is_latency_column = True
+                    matched_latency_column = lat_col
+                    break
+                # Also check visualization columns
+                if cursor_column_lower == f"{lat_col.lower()}_viz":
+                    is_latency_column = True
+                    matched_latency_column = lat_col
+                    break
+                # Check for formatted names (e.g., sc_p99_us for sc.p99_us)
+                formatted_name = lat_col.replace('.', '_').lower()
+                if cursor_column_lower == formatted_name:
+                    is_latency_column = True
+                    matched_latency_column = lat_col
+                    break
+            
+            if is_latency_column:
+                # Move latency column
+                old_index = self.selected_latency_columns.index(matched_latency_column)
+                new_index = old_index + direction
+                
+                # Check bounds
+                if new_index < 0 or new_index >= len(self.selected_latency_columns):
+                    self.update_status(f"Cannot move latency column {'left' if direction < 0 else 'right'}")
+                    return
+                
+                # Reorder the latency columns
+                new_latency_cols = self.selected_latency_columns.copy()
+                new_latency_cols[old_index], new_latency_cols[new_index] = new_latency_cols[new_index], new_latency_cols[old_index]
+                self.selected_latency_columns = new_latency_cols
+                
+                # Refresh the display
+                self.refresh_data()
+                
+                # Try to keep cursor on the same column after refresh
+                self.call_after_refresh(lambda: self._restore_cursor_position(cursor_column))
+                
+                self.update_status(f"Moved latency column '{matched_latency_column}' {'left' if direction < 0 else 'right'}")
+                return
+            
+            # Get current group columns
+            current_group_cols = self.navigation.get_current_group_cols()
+            
+            # Check if cursor is on a group column (handle prefixed columns, case-insensitive)
+            is_group_column = False
+            matched_group_column = None
+            
+            group_cols_lower = {gc.lower(): gc for gc in current_group_cols}
+            
+            if cursor_column_lower in group_cols_lower:
+                is_group_column = True
+                matched_group_column = group_cols_lower[cursor_column_lower]
+            else:
+                # Handle prefixed column matching
+                if '.' in cursor_column:
+                    base_name = cursor_column.split('.', 1)[1].lower()
+                    if base_name in group_cols_lower:
+                        is_group_column = True
+                        matched_group_column = group_cols_lower[base_name]
+                else:
+                    for group_col_lower, group_col_orig in group_cols_lower.items():
+                        if '.' in group_col_orig and group_col_orig.split('.', 1)[1].lower() == cursor_column_lower:
+                            is_group_column = True
+                            matched_group_column = group_col_orig
+                            break
+            
+            if not is_group_column:
+                self.update_status(f"Column '{cursor_column.lower()}' is not a movable column")
+                return
+            
+            # Find position in group columns
+            old_index = current_group_cols.index(matched_group_column)
+            new_index = old_index + direction
+            
+            # Check bounds
+            if new_index < 0 or new_index >= len(current_group_cols):
+                self.update_status(f"Cannot move column {'left' if direction < 0 else 'right'}")
+                return
+            
+            # Reorder the columns
+            new_group_cols = current_group_cols.copy()
+            new_group_cols[old_index], new_group_cols[new_index] = new_group_cols[new_index], new_group_cols[old_index]
+            
+            # Update grouping without creating history (this is just a reorder)
+            self.navigation.update_grouping(new_group_cols, create_history=False)
+            
+            # Refresh the display
+            self.refresh_data()
+            
+            # Try to keep cursor on the same column after refresh
+            self.call_after_refresh(lambda: self._restore_cursor_position(cursor_column))
+            
+            self.update_status(f"Moved '{cursor_column.lower()}' {'left' if direction < 0 else 'right'}")
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error moving column: {e}")
+            self.update_status("Error moving column")
+    
+    def _restore_cursor_position(self, column_name: str) -> None:
+        """Restore cursor to specific column after refresh"""
+        if not self.display_columns:
+            return
+            
+        try:
+            table = self.query_one("#main-table", DataTable)
+            if table and column_name in self.display_columns:
+                new_col_index = self.display_columns.index(column_name)
+                # Keep same row, move to new column position
+                if table.cursor_coordinate:
+                    table.move_cursor(column=new_col_index)
+        except Exception:
+            pass
+    
+    def action_toggle_help(self) -> None:
+        """Toggle help display"""
+        # TODO: Implement help overlay
+        self.update_status("Help not yet implemented")
+    
+    def action_peek_cell(self) -> None:
+        """Show detailed information about the current cell"""
+        if self.logger:
+            self.logger.info("action_peek_cell called")
+        
+        try:
+            table = self.query_one("#main-table", DataTable)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to get table: {e}", exc_info=True)
+            self.update_status("Failed to get table")
+            return
+        if not table.cursor_coordinate:
+            if self.logger:
+                self.logger.debug("No cursor coordinate")
+            return
+        
+        row_key, column_key = table.cursor_coordinate
+        if self.logger:
+            self.logger.debug(f"Cursor at row_key={row_key}, column_key={column_key}")
+        
+        # Get the column information
+        try:
+            # cursor_coordinate returns indices, need to get actual keys
+            column_keys = list(table.columns.keys())
+            row_keys = list(table.rows.keys())
+            
+            if self.logger:
+                self.logger.debug(f"Column index: {column_key}, total columns: {len(column_keys)}")
+            
+            # Get the actual keys from indices
+            if column_key < len(column_keys) and row_key < len(row_keys):
+                actual_column_key = column_keys[column_key]
+                actual_row_key = row_keys[row_key]
+                
+                column = table.columns[actual_column_key]
+                column_name = column.label.plain
+                
+                if self.logger:
+                    self.logger.debug(f"Column found: {column_name}")
+            else:
+                if self.logger:
+                    self.logger.error(f"Indices out of range: row={row_key}, col={column_key}")
+                return
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Unexpected error getting column: {e}", exc_info=True)
+            return
+        
+        # Get the cell value
+        try:
+            # Use the actual keys
+            cell_value = table.get_cell(actual_row_key, actual_column_key)
+            if self.logger:
+                self.logger.debug(f"Cell value retrieved: {cell_value[:20] if isinstance(cell_value, str) else cell_value}")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to get cell value: {e}")
+            return
+        
+        # Get the full row data
+        # IMPORTANT: row_key from cursor_coordinate is just the visual row index,
+        # but the table might have internal row keys. We need to map properly.
+        row_data = None
+        if self.logger:
+            self.logger.debug("Attempting to get row data")
+        
+        if hasattr(self, 'current_data') and self.current_data:
+            try:
+                # Get the actual row index from table's row keys
+                # The row_key from cursor_coordinate is the index into row_keys list
+                row_keys = list(table.rows.keys())
+                if row_key < len(row_keys):
+                    # Since we add rows without explicit keys, they get auto-generated keys
+                    # The order should match self.current_data order
+                    # Use row_key directly as index into current_data
+                    if row_key < len(self.current_data):
+                        row_data = self.current_data[row_key]
+                        if self.logger:
+                            self.logger.debug(f"Row data retrieved at index {row_key}, keys: {list(row_data.keys()) if row_data else 'None'}")
+                            # Log actual values for debugging
+                            if row_data and 'state' in row_data:
+                                self.logger.debug(f"Row state value: {row_data['state']}")
+            except (ValueError, IndexError) as e:
+                if self.logger:
+                    self.logger.error(f"Failed to get row data: {e}")
+        else:
+            if self.logger:
+                self.logger.debug("No current_data available")
+        
+        # Log column information for debugging
+        if self.logger:
+            self.logger.debug(f"Peek cell - column_name: '{column_name}', column_key: {column_key}")
+            if row_data:
+                self.logger.debug(f"Row data keys: {list(row_data.keys())}")
+        
+        # Special handling for histogram columns
+        # Check both the column name and the display header
+        # We know from logs the histogram column shows as "<1us__32us_1ms__32ms_1s_8∞"
+        if self.logger:
+            self.logger.debug(f"Checking if histogram column: '{column_name}'")
+        
+        if (column_name.strip() == '<1us__32us_1ms__32ms_1s_8∞' or 
+            column_name.lower() == 'histogram_viz' or
+            column_name.lower() in ['sclat_histogram_viz', 'iolat_histogram_viz']):
+            # Find the corresponding histogram data and determine the actual column type
+            hist_data = None
+            actual_histogram_column = None
+            
+            if row_data:
+                # Check for histogram data in row (always dynamic query now)
+                if 'sclat_histogram' in row_data:
+                    hist_data = row_data['sclat_histogram']
+                    actual_histogram_column = 'sclat_histogram'
+                elif 'iolat_histogram' in row_data:
+                    hist_data = row_data['iolat_histogram']
+                    actual_histogram_column = 'iolat_histogram'
+                
+                # Also check based on the column name itself
+                if column_name.lower() == 'sclat_histogram_viz':
+                    actual_histogram_column = 'sclat_histogram'
+                elif column_name.lower() == 'iolat_histogram_viz':
+                    actual_histogram_column = 'iolat_histogram'
+                
+                if self.logger:
+                    self.logger.debug(f"Found histogram data: {bool(hist_data)}, actual column: {actual_histogram_column}")
+            
+            # Instead of using the pre-aggregated histogram, we'll run a query
+            try:
+                if self.logger:
+                    self.logger.debug(f"Creating histogram peek modal with query context")
+                
+                # Build filter conditions ONLY from the current row's GROUP BY columns
+                # Do NOT include navigation filters - we want to see the histogram for this specific row
+                filter_conditions = []
+                current_group_cols = self.navigation.get_current_group_cols()
+                
+                if self.logger:
+                    self.logger.debug(f"Current GROUP BY columns: {current_group_cols}")
+                    self.logger.debug(f"Row data keys: {list(row_data.keys())}")
+                
+                for key in current_group_cols:
+                    # Handle case-insensitive matching
+                    key_lower = key.lower()
+                    
+                    # Find matching column in row_data (case-insensitive)
+                    value = None
+                    for row_key, row_value in row_data.items():
+                        if row_key.lower() == key_lower:
+                            value = row_value
+                            break
+                    
+                    if value is not None and str(value) != '-':
+                        # Escape single quotes in values
+                        escaped_value = str(value).replace("'", "''")
+                        filter_conditions.append(f"{key} = '{escaped_value}'")
+                        if self.logger:
+                            self.logger.debug(f"Added filter: {key} = '{escaped_value}'")
+                
+                where_clause = " AND ".join(filter_conditions) if filter_conditions else "1=1"
+                
+                if self.logger:
+                    self.logger.debug(f"Histogram peek where clause: {where_clause}")
+                
+                # Create modal with query context
+                # Use the actual histogram column name (sclat_histogram or iolat_histogram) 
+                # instead of the display header
+                modal = HistogramPeekModal(
+                    column_name=actual_histogram_column or column_name,
+                    query_type='dynamic',  # Always dynamic now
+                    datadir=self.datadir,
+                    where_clause=where_clause,
+                    low_time=self.query_params.low_time,
+                    high_time=self.query_params.high_time,
+                    engine=self.query_engine,
+                    histogram_data=hist_data
+                )
+                
+                if self.logger:
+                    self.logger.debug("Modal created, pushing screen")
+                self.push_screen(modal)
+                if self.logger:
+                    self.logger.debug("Modal pushed successfully")
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Failed to create/push modal: {e}", exc_info=True)
+                self.update_status(f"Error showing histogram: {str(e)}")
+        # Check for percentile columns (e.g., sc.p95_us, io.p99_us, sc_p95_us, io_p99_us)
+        elif ('p50' in column_name.lower() or 'p95' in column_name.lower() or 
+              'p99' in column_name.lower() or 'p999' in column_name.lower()):
+            # Determine if it's syscall or I/O latency based on column prefix
+            is_syscall = column_name.lower().startswith('sc') or 'sysc' in column_name.lower()
+            
+            if self.logger:
+                self.logger.debug(f"Percentile column detected: {column_name}, is_syscall: {is_syscall}")
+            
+            # Build filter conditions ONLY from the current row's GROUP BY columns
+            # Do NOT include navigation filters - we want to see the histogram for this specific row
+            filter_conditions = []
+            current_group_cols = self.navigation.get_current_group_cols()
+            
+            if self.logger:
+                self.logger.debug(f"Percentile peek - Current GROUP BY columns: {current_group_cols}")
+                self.logger.debug(f"Percentile peek - Row data keys: {list(row_data.keys())}")
+            
+            for key in current_group_cols:
+                # Handle case-insensitive matching
+                key_lower = key.lower()
+                
+                # Find matching column in row_data (case-insensitive)
+                value = None
+                for row_key, row_value in row_data.items():
+                    if row_key.lower() == key_lower:
+                        value = row_value
+                        break
+                
+                if value is not None and str(value) != '-':
+                    # Escape single quotes in values
+                    escaped_value = str(value).replace("'", "''")
+                    filter_conditions.append(f"{key} = '{escaped_value}'")
+                    if self.logger:
+                        self.logger.debug(f"Percentile peek - Added filter: {key} = '{escaped_value}'")
+            
+            where_clause = " AND ".join(filter_conditions) if filter_conditions else "1=1"
+            
+            # Determine which histogram type to show
+            histogram_column = 'sclat_histogram' if is_syscall else 'iolat_histogram'
+            
+            # Get histogram data if available
+            hist_data = None
+            if row_data:
+                if histogram_column in row_data:
+                    hist_data = row_data[histogram_column]
+            
+            try:
+                # Create histogram modal for percentile drill-down
+                modal = HistogramPeekModal(
+                    column_name=histogram_column,
+                    query_type='dynamic',
+                    datadir=self.datadir,
+                    where_clause=where_clause,
+                    low_time=self.query_params.low_time,
+                    high_time=self.query_params.high_time,
+                    engine=self.query_engine,
+                    histogram_data=hist_data
+                )
+                
+                if self.logger:
+                    self.logger.debug(f"Created histogram modal for percentile column {column_name}")
+                self.push_screen(modal)
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Failed to create percentile peek modal: {e}", exc_info=True)
+                self.update_status(f"Error showing percentile details: {str(e)}")
+        # Check for stack hash columns
+        elif column_name.lower() in ['kstack_hash', 'ustack_hash']:
+            # Determine if it's kernel or user stack
+            is_kernel = column_name.lower() == 'kstack_hash'
+            
+            # Look up the stack trace
+            if cell_value and cell_value != '0' and cell_value != '-':
+                try:
+                    stack_trace = self.query_engine.lookup_stack_trace(cell_value, is_kernel)
+                    
+                    if self.logger:
+                        self.logger.debug(f"Looking up {'kernel' if is_kernel else 'user'} stack hash: {cell_value}")
+                        self.logger.debug(f"Found stack trace: {bool(stack_trace)}")
+                    
+                    # Show the stack peek modal
+                    modal = StackPeekModal(
+                        stack_hash=cell_value,
+                        is_kernel=is_kernel,
+                        stack_trace=stack_trace
+                    )
+                    self.push_screen(modal)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"Failed to lookup stack trace: {e}", exc_info=True)
+                    self.update_status(f"Error looking up stack trace: {str(e)}")
+            else:
+                self.update_status("No stack trace available (empty or zero hash)")
+        # Check for extra_info column (JSON data)
+        elif column_name.lower() == 'extra_info':
+            if cell_value and cell_value != '-':
+                try:
+                    if self.logger:
+                        self.logger.debug(f"Opening JSON viewer for extra_info: {cell_value[:50]}...")
+                    
+                    # Show the JSON viewer modal
+                    modal = JSONViewerModal(
+                        column_name=column_name,
+                        json_data=cell_value,
+                        row_context=row_data
+                    )
+                    self.push_screen(modal)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"Failed to create JSON viewer modal: {e}", exc_info=True)
+                    self.update_status(f"Error showing JSON data: {str(e)}")
+            else:
+                self.update_status("No JSON data available (empty or dash)")
+        else:
+            self.update_status(f"Cell peek not implemented for column: {column_name}")
+    
+    # Removed action_change_query - no longer needed with only dynamic queries
+    
+    def action_change_grouping(self) -> None:
+        """Change grouping columns"""
+        # Get current cursor position to determine where to insert new columns
+        cursor_column = None
+        try:
+            table = self.query_one("#main-table", DataTable)
+            if table and table.cursor_coordinate:
+                cursor_col_index = table.cursor_coordinate.column
+                if self.display_columns and cursor_col_index < len(self.display_columns):
+                    cursor_column = self.display_columns[cursor_col_index]
+                    if self.logger:
+                        self.logger.info(f"Cursor is on column: {cursor_column} (index {cursor_col_index})")
+        except Exception:
+            pass
+        
+        # Get available columns dynamically from query engine
+        # Always use dynamic column discovery now
+        columns_by_source = self.query_engine.get_columns_by_source()
+        
+        # Get current grouping columns
+        current_columns = self.navigation.get_current_group_cols()
+        
+        def handle_grouping_choice(new_columns: Optional[List[str]]) -> None:
+            """Handle grouping menu result"""
+            # Compare columns case-insensitively
+            if new_columns and [col.lower() for col in new_columns] != [col.lower() for col in current_columns]:
+                # Store current cursor info before refresh
+                saved_cursor_row = None
+                saved_cursor_column = None
+                try:
+                    table = self.query_one("#main-table", DataTable)
+                    if table and table.cursor_coordinate:
+                        saved_cursor_row = table.cursor_coordinate.row
+                        saved_cursor_column = self.display_columns[table.cursor_coordinate.column] if self.display_columns and table.cursor_coordinate.column < len(self.display_columns) else None
+                except Exception:
+                    pass
+                # Smart insertion: if we're adding columns and cursor was on a column,
+                # insert new columns after the cursor position
+                if cursor_column and len(new_columns) > len(current_columns):
+                    # Find which columns were added (case-insensitive comparison)
+                    current_columns_lower = [col.lower() for col in current_columns]
+                    added_columns = [col for col in new_columns if col.lower() not in current_columns_lower]
+                    
+                    if added_columns:
+                        # Remove added columns from their default positions
+                        reordered_columns = [col for col in new_columns if col not in added_columns]
+                        
+                        # Find cursor column position in the result
+                        if cursor_column in reordered_columns:
+                            insert_index = reordered_columns.index(cursor_column) + 1
+                        else:
+                            # If cursor column was removed, insert at the end
+                            insert_index = len(reordered_columns)
+                        
+                        # Insert the new columns after cursor position
+                        for col in added_columns:
+                            reordered_columns.insert(insert_index, col)
+                            insert_index += 1
+                        
+                        new_columns = reordered_columns
+                        
+                        if self.logger:
+                            self.logger.info(f"Reordered columns for smart insertion: {new_columns}")
+                # Get current filters before changing grouping
+                current_filters = self.navigation.get_current_filters()
+                current_exclude_filters = self.navigation.current_frame.exclude_filters.copy() if self.navigation.current_frame else {}
+                
+                # Identify aggregate columns that should be removed from filters
+                # These are columns that are computed by GROUP BY, not raw data columns
+                aggregate_columns = {'total_samples', 'avg_threads', 'est_sc_cnt', 
+                                   'min_lat_us', 'avg_lat_us', 'max_lat_us',
+                                   'p50_us', 'p95_us', 'p99_us', 'p999_us',
+                                   'est_time_s', 'sclat_histogram', 'iolat_histogram'}
+                
+                # Update navigation with new grouping FIRST (this creates the history)
+                self.navigation.update_grouping(new_columns, create_history=True)
+                
+                # THEN remove any filters on aggregate columns (both include and exclude)
+                # This ensures the filters are removed from the current frame, not the historical one
+                all_filter_columns = list(current_filters.keys()) + list(current_exclude_filters.keys())
+                for col in all_filter_columns:
+                    if col in aggregate_columns:
+                        self.navigation.remove_filter(col)
+                        if self.logger:
+                            self.logger.info(f"Removed filter on aggregate column: {col}")
+                
+                # Set flag to prevent immediate drill-down
+                self._just_changed_grouping = True
+                
+                # Refresh the display
+                self.refresh_data()
+                
+                # Restore cursor position
+                if saved_cursor_column:
+                    # If the saved column was removed, find the next appropriate column
+                    if saved_cursor_column not in new_columns:
+                        # Find where the removed column would have been
+                        old_col_index = current_columns.index(saved_cursor_column) if saved_cursor_column in current_columns else -1
+                        if old_col_index >= 0:
+                            # Find the next column that still exists
+                            for i in range(old_col_index, len(current_columns)):
+                                if current_columns[i] in new_columns:
+                                    saved_cursor_column = current_columns[i]
+                                    break
+                            else:
+                                # If no column found after, try before
+                                for i in range(old_col_index - 1, -1, -1):
+                                    if current_columns[i] in new_columns:
+                                        saved_cursor_column = current_columns[i]
+                                        break
+                                else:
+                                    # Fall back to last column in new columns
+                                    saved_cursor_column = new_columns[-1] if new_columns else None
+                    
+                    # Restore to the column
+                    if saved_cursor_column:
+                        self._restore_cursor_to_column(saved_cursor_column, saved_cursor_row or 0)
+                
+                # Show status with warning if filters were removed
+                removed_filters = []
+                for col in all_filter_columns:
+                    if col in aggregate_columns and col not in removed_filters:
+                        removed_filters.append(col)
+                
+                if removed_filters:
+                    self.update_status(f"Grouped by: {', '.join(new_columns)} (removed filters on: {', '.join(removed_filters)})")
+                else:
+                    self.update_status(f"Grouped by: {', '.join(new_columns)}")
+            elif new_columns is None:
+                self.update_status("Grouping cancelled")
+        
+        # Show the grouping menu with the cursor column for auto-selection
+        self.push_screen(
+            GroupingMenuScreen(columns_by_source, current_columns,
+                             query_engine=self.query_engine, initial_highlight=cursor_column),
+            handle_grouping_choice
+        )
+    
+    def action_latency_columns(self) -> None:
+        """Show latency/aggregate columns selector"""
+        # Define available latency columns based on data sources
+        available_latency_columns = {
+            "System Call Latency": [],
+            "I/O Latency": [],
+            "Histograms": []
+        }
+        
+        # Check which data sources are in use
+        current_group_cols = self.navigation.get_current_group_cols()
+        columns_in_use = set()
+        
+        # Check if syscend columns are available
+        for col in current_group_cols:
+            if col.startswith('sc.') or col in ['syscall', 'syscall_name']:
+                columns_in_use.add('syscend')
+            elif col.startswith('io.') or col == 'devname':
+                columns_in_use.add('iorqend')
+        
+        # Add syscall latency columns (always available with dynamic queries)
+        if True:  # Always available with dynamic queries
+            available_latency_columns["System Call Latency"] = [
+                'sc.min_lat_us',
+                'sc.avg_lat_us', 
+                'sc.max_lat_us',
+                'sc.p50_us',
+                'sc.p95_us',
+                'sc.p99_us',
+                'sc.p999_us'
+            ]
+            available_latency_columns["Histograms"].append('sclat_histogram')
+        
+        # Add I/O latency columns (always available with dynamic queries)
+        if True:  # Always available with dynamic queries
+            available_latency_columns["I/O Latency"] = [
+                'io.min_lat_us',
+                'io.avg_lat_us',
+                'io.max_lat_us',
+                'io.p50_us',
+                'io.p95_us',
+                'io.p99_us',
+                'io.p999_us'
+            ]
+            available_latency_columns["Histograms"].append('iolat_histogram')
+        
+        # If no specific data source is detected, show all options
+        if not any(available_latency_columns.values()):
+            available_latency_columns = {
+                "System Call Latency": [
+                    'sc.min_lat_us',
+                    'sc.avg_lat_us', 
+                    'sc.max_lat_us',
+                    'sc.p50_us',
+                    'sc.p95_us',
+                    'sc.p99_us',
+                    'sc.p999_us'
+                ],
+                "I/O Latency": [
+                    'io.min_lat_us',
+                    'io.avg_lat_us',
+                    'io.max_lat_us',
+                    'io.p50_us',
+                    'io.p95_us',
+                    'io.p99_us',
+                    'io.p999_us'
+                ],
+                "Histograms": ['sclat_histogram', 'iolat_histogram']
+            }
+        
+        def handle_latency_choice(selected_columns: Optional[List[str]]) -> None:
+            """Handle latency columns selection"""
+            if selected_columns is not None:
+                self.selected_latency_columns = selected_columns
+                # Refresh to show the new columns
+                self.refresh_data()
+                if selected_columns:
+                    self.update_status(f"Selected {len(selected_columns)} latency columns")
+                else:
+                    self.update_status("Cleared latency columns")
+        
+        # Show the latency columns menu
+        self.push_screen(
+            LatencyColumnsScreen(available_latency_columns, self.selected_latency_columns,
+                               query_engine=self.query_engine),
+            handle_latency_choice
+        )
+    
+    @on(DataTable.CellSelected)
+    def on_cell_selected(self, event: DataTable.CellSelected) -> None:
+        """Handle cell selection for drill-down"""
+        if not self.last_result:
+            return
+        
+        # Get selected cell info
+        table = event.data_table
+        if event.coordinate.row < len(self.last_result.data):
+            row_data = self.last_result.data[event.coordinate.row]
+            # Use display columns which match the rendered table
+            columns = self.display_columns if self.display_columns else self.last_result.columns
+            
+            if event.coordinate.column < len(columns):
+                col_key = columns[event.coordinate.column]
+                value = row_data.get(col_key)
+                
+                # Check if this is a filterable column
+                group_cols = self.navigation.get_current_group_cols()
+                
+                # Handle prefixed columns
+                is_filterable = False
+                if col_key in group_cols:
+                    is_filterable = True
+                elif '.' in col_key:
+                    # Check base name
+                    base_name = col_key.split('.', 1)[1]
+                    is_filterable = base_name in group_cols
+                else:
+                    # Check if any prefixed version is in group cols
+                    for group_col in group_cols:
+                        if '.' in group_col and group_col.split('.', 1)[1] == col_key:
+                            is_filterable = True
+                            break
+                
+                if is_filterable:
+                    self.update_status(f"Selected: {col_key}={value} (Press Enter to filter)")
+                else:
+                    self.update_status(f"Selected: {col_key}={value} (aggregate column - not filterable)")
+    
+    def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
+        """Handle DataTable cell selection (ENTER key on cell)"""
+        if self.logger:
+            self.logger.info(f"=== DataTable.CellSelected event: row={event.coordinate.row}, col={event.coordinate.column} ===")
+        
+        # Call our drill down action
+        self.action_drill_down()
+        
+        # Prevent default handling
+        event.stop()
+    
+    def on_key(self, event: events.Key) -> None:
+        """Handle key press events"""
+        if self.logger:
+            self.logger.debug(f"on_key called with key: {event.key}")
+        
+        # Don't process keys if a modal screen is active
+        # In Textual, when a modal is showing, the app's screen_stack will have more than 1 screen
+        if hasattr(self, 'screen_stack') and len(self.screen_stack) > 1:
+            if self.logger:
+                self.logger.debug(f"Modal active, ignoring key: {event.key}")
+            return
+            
+        # Clear the just_changed_grouping flag on any key press except Enter
+        if event.key != "enter" and self._just_changed_grouping:
+            self._just_changed_grouping = False
+            if self.logger:
+                self.logger.debug("Cleared _just_changed_grouping flag")
+        
+        if event.key == "enter":
+            if self.logger:
+                self.logger.info("ENTER key detected in on_key")
+            # Check if we just changed grouping - if so, ignore this Enter key
+            if self._just_changed_grouping:
+                self._just_changed_grouping = False
+                if self.logger:
+                    self.logger.info("Ignoring ENTER in on_key - just changed grouping")
+                return
+            # Let the binding handle the ENTER key - don't process it here
+            if self.logger:
+                self.logger.info("on_key: Letting binding handle ENTER key")
+
+
+def parse_args():
+    """Parse command-line arguments"""
+    parser = argparse.ArgumentParser(
+        description='X Process Snapper TUI - Interactive terminal UI for xtop',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # Use XCAPTURE_DATADIR environment variable as default, or None if not set
+    default_datadir = os.environ.get('XCAPTURE_DATADIR')
+    
+    parser.add_argument('-d', '--datadir', default=default_datadir,
+                        help='Directory containing xcapture CSV files (default: $XCAPTURE_DATADIR or required if not set)')
+    
+    # Query type is always 'dynamic' now - removed -q option
+    
+    parser.add_argument('--from', dest='from_time', type=str, metavar='TIME',
+                        help='Start time (ISO format: YYYY-MM-DD HH:MM:SS or HH:MM:SS for today)')
+    
+    parser.add_argument('--to', dest='to_time', type=str, metavar='TIME',
+                        help='End time (ISO format: YYYY-MM-DD HH:MM:SS or HH:MM:SS for today)')
+    
+    parser.add_argument('-g', '--group', dest='group_by', type=str, metavar='COLS',
+                        help='Initial GROUP BY columns (comma-separated, case-insensitive). '
+                             'Replaces default columns. Example: -g "state,user,exe"')
+    
+    parser.add_argument('-G', '--append-group', dest='append_group_by', type=str, metavar='COLS',
+                        help='Append to default GROUP BY columns (comma-separated, case-insensitive). '
+                             'Example: -G "pid,tid" adds PID and TID to default columns')
+    
+    parser.add_argument('--debuglog', dest='debug_log', type=str, metavar='FILE',
+                        help='Enable debug logging to specified file')
+    
+    parser.add_argument('--duckdb-threads', type=int, default=None, metavar='N',
+                        help='Number of DuckDB threads (1 for deterministic results, default: auto)')
+    
+    parser.add_argument('--version', action='version',
+                        version=f'%(prog)s {__version__}')
+    
+    return parser.parse_args()
+
+
+def parse_time(time_str: str) -> Optional[datetime]:
+    """Parse time string to datetime"""
+    if not time_str:
+        return None
+    
+    # Try different formats
+    formats = [
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%dT%H:%M:%S',
+        '%H:%M:%S',  # Today's date will be added
+        '%H:%M'      # Today's date will be added
+    ]
+    
+    for fmt in formats:
+        try:
+            if len(time_str) <= 8:  # Time only, add today's date
+                today = datetime.now().strftime('%Y-%m-%d')
+                time_str = f"{today} {time_str}"
+                fmt = '%Y-%m-%d %H:%M:%S' if ':' in time_str.split()[1] else '%Y-%m-%d %H:%M'
+            return datetime.strptime(time_str, fmt)
+        except ValueError:
+            continue
+    
+    raise ValueError(f"Cannot parse time: {time_str}")
+
+
+def main():
+    """Main entry point"""
+    args = parse_args()
+    
+    # Check if datadir is provided (either via command line or environment variable)
+    if not args.datadir:
+        print("Error: Data directory not specified.", file=sys.stderr)
+        print("Please either:", file=sys.stderr)
+        print("  1. Set the XCAPTURE_DATADIR environment variable", file=sys.stderr)
+        print("  2. Use the -d/--datadir command line option", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        # Parse time arguments
+        low_time = parse_time(args.from_time) if args.from_time else None
+        high_time = parse_time(args.to_time) if args.to_time else None
+        
+        # Parse group by columns if provided (normalize to lowercase)
+        initial_group_by = None
+        if args.group_by:
+            # Split by comma, strip whitespace, convert to lowercase
+            initial_group_by = [col.strip().lower() for col in args.group_by.split(',') if col.strip()]
+        
+        # Parse append group by columns if provided (normalize to lowercase)
+        append_group_by = None
+        if args.append_group_by:
+            # Split by comma, strip whitespace, convert to lowercase
+            append_group_by = [col.strip().lower() for col in args.append_group_by.split(',') if col.strip()]
+        
+        # Create and run TUI (removed query argument - always uses dynamic)
+        app = XTopTUI(args.datadir, low_time, high_time, args.debug_log, 
+                      initial_group_by, append_group_by, args.duckdb_threads)
+        app.run()
+        
+    except KeyboardInterrupt:
+        print("\nInterrupted by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
