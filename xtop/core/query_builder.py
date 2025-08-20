@@ -461,14 +461,14 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         
         if 'kstacks' in required_sources:
             select_cols.extend([
-                "ks.KSTACK_HASH",
-                "ks.KSTACK_SYMS"
+                "ks.STACK_HASH AS KSTACK_HASH",
+                "ks.STACK_SYMS AS KSTACK_SYMS"
             ])
         
         if 'ustacks' in required_sources:
             select_cols.extend([
-                "us.USTACK_HASH",
-                "us.USTACK_SYMS"
+                "us.STACK_HASH AS USTACK_HASH",
+                "us.STACK_SYMS AS USTACK_SYMS"
             ])
         
         if 'partitions' in required_sources:
@@ -509,7 +509,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                     'kstacks', low_time, high_time
                 )
                 from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{kstacks_pattern}')) ks"
-            from_clause += "\n        ON es.kstack_hash = ks.KSTACK_HASH"
+            from_clause += "\n        ON es.kstack_hash = ks.STACK_HASH"
         
         if 'ustacks' in required_sources:
             if self.use_materialized:
@@ -520,7 +520,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                     'ustacks', low_time, high_time
                 )
                 from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{ustacks_pattern}')) us"
-            from_clause += "\n        ON es.ustack_hash = us.USTACK_HASH"
+            from_clause += "\n        ON es.ustack_hash = us.STACK_HASH"
         
         if 'partitions' in required_sources:
             if self.use_materialized:

@@ -67,20 +67,18 @@ xtop/
 │   └── error_modal.py       # Error display modal
 │
 ├── tests/                    # Test suite
-│   ├── test_tui_basic.py    # Basic TUI tests using Textual's Pilot
-│   ├── test_tui_mapping.py  # CLI parameter mapping tests
-│   ├── run_tests.sh         # Run basic test suite
-│   ├── run_extended_tests.sh# Run extended test suite
-│   ├── run_tui_tests.sh     # Run TUI headless tests
-│   └── run_before_after_tests.py # Comprehensive testing
+│   ├── test_runner.py       # Core test implementation
+│   ├── README.md            # Test documentation
+│   └── test_tui_basic.py    # TUI tests (optional)
 │
 ├── sql/                      # SQL query templates (legacy)
 │   ├── fragments/           # Reusable SQL fragments
 │   └── *.sql               # Legacy query templates
 │
-├── xtop-tui.py              # Main TUI application
+├── run_tests.py             # Main test runner
+├── xtop                     # Main TUI application
 ├── xtop-test.py             # CLI test interface
-├── xtop.py                  # CLI tool (non-interactive)
+├── xtop-tui.py             # Symlink to xtop (for compatibility)
 └── *.md                     # Documentation files
 ```
 
@@ -136,30 +134,33 @@ Example flow:
 ### Basic Usage
 
 ```bash
-# Interactive TUI with dynamic query
-./xtop-tui.py -d out -q dynamic
+# Set data directory
+export XCAPTURE_DATADIR=/path/to/xcapture/out
+
+# Interactive TUI
+./xtop -d $XCAPTURE_DATADIR
 
 # With time range
-./xtop-tui.py -d out -q dynamic --from "2025-08-03T03:40:00" --to "2025-08-03T04:07:00"
+./xtop -d $XCAPTURE_DATADIR --from "2025-08-11T16:25:00" --to "2025-08-11T17:05:00"
 
 # With initial grouping
-./xtop-tui.py -d out -q dynamic -g "state,user,exe,syscall"
+./xtop -d $XCAPTURE_DATADIR -g "state,username,exe,syscall"
 
 # With debug logging
-./xtop-tui.py -d out -q dynamic --debuglog debug.log
+./xtop -d $XCAPTURE_DATADIR --debuglog debug.log
 ```
 
-### Command-Line Interface (Non-Interactive)
+### Command-Line Test Interface (Non-Interactive)
 
 ```bash
-# Basic top-like view
-./xtop.py -d out
+# Basic query test
+./xtop-test.py -d $XCAPTURE_DATADIR --limit 10
 
-# System call latency analysis
-./xtop.py -d out -q sclat
+# With GROUP BY and latency columns
+./xtop-test.py -d $XCAPTURE_DATADIR -g "state,syscall" -l "sc.p95_us,sclat_histogram"
 
-# I/O latency histogram
-./xtop.py -d out -q iolathist
+# With WHERE clause filtering
+./xtop-test.py -d $XCAPTURE_DATADIR -w "state IN ('SLEEP', 'RUN')" --limit 5
 ```
 
 ## Implementation Details
@@ -184,34 +185,35 @@ Example flow:
 
 ## Testing
 
-### Standardized Test Runner
+### Streamlined Test Infrastructure
 
-XTOP includes a comprehensive test suite with a single-command test runner:
+XTOP features a modern, streamlined test suite that runs all tests in ~13 seconds:
 
 ```bash
-# Run ALL test suites (recommended)
-./run_tests.sh
+# Set data directory
+export XCAPTURE_DATADIR=/path/to/xcapture/out
 
-# Run specific test suites
-./run_tests.sh basic        # Basic functionality tests
-./run_tests.sh extended     # Extended feature tests
-./run_tests.sh tui         # TUI headless tests
-./run_tests.sh before-after # Regression tests
-./run_tests.sh quick       # Quick verification test
+# Run all tests (recommended)
+./run_tests.py
 
-# Verbose output
-./run_tests.sh -v          # Show detailed test output
+# Run specific test suite
+./run_tests.py basic        # Core functionality (5 tests)
+./run_tests.py latency     # Latency analysis (4 tests)
+./run_tests.py stack       # Stack traces (3 tests)
+./run_tests.py advanced    # Complex queries (4 tests)
+
+# Options
+./run_tests.py -v          # Verbose output
+./run_tests.py --save      # Save results to JSON
 ```
 
 The test suite includes:
-- **Basic Tests**: 12 core functionality tests
-- **Extended Tests**: 13 advanced feature tests
-- **TUI Tests**: Headless UI interaction tests using Textual's Pilot
-- **Before/After Tests**: 22 comprehensive regression tests
+- **16 comprehensive tests** covering all functionality
+- **Color-coded output** with real-time progress
+- **JSON export** for CI/CD integration
+- **Single entry point** for all testing
 
-All tests complete in approximately 75 seconds and provide color-coded output with a summary report.
-
-For detailed testing information, see [TESTING_GUIDE.md](TESTING_GUIDE.md).
+For detailed testing information, see [TESTING.md](TESTING.md).
 
 ## Technical Stack
 
