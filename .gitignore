@@ -11,3 +11,4 @@ xcapture/tests/md5_test
 xcapture/.clangd
 xstack/.output/
 xstack/xstack
+xstack/xintr

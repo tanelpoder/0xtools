@@ -51,7 +51,7 @@ else
     BLAZESYM_DEP :=
 endif
 
-APPS = xstack
+APPS = xstack xintr
 
 # Get Clang's default includes on this system
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
@@ -77,7 +77,7 @@ clean:
 .PHONY: cleanx
 cleanx:
 	$(call msg,CLEANX)
-	$(Q)rm -f $(APPS) $(OUTPUT)/xstack.o $(OUTPUT)/xstack.skel.h $(OUTPUT)/xstack.bpf.o
+	$(Q)rm -f $(APPS) $(OUTPUT)/xstack.o $(OUTPUT)/xstack.skel.h $(OUTPUT)/xstack.bpf.o $(OUTPUT)/xintr.o $(OUTPUT)/xintr.skel.h $(OUTPUT)/xintr.bpf.o
 
 $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 	$(call msg,MKDIR,$@)
@@ -87,7 +87,7 @@ $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
 	$(call msg,LIB,$@)
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1 \
-		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@) \
+		    OBJDIR=$(dir $@)libbpf DESTDIR=$(dir $@) \
 		    INCLUDEDIR= LIBDIR= UAPIDIR= \
 		    install
 
@@ -130,6 +130,16 @@ xstack: $(OUTPUT)/xstack.o $(LIBBPF_OBJ) $(BLAZESYM_DEP)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $< $(LIBBPF_OBJ) $(ALL_LDFLAGS) -lelf -lz -o $@
 
+# Build xintr user-space code (depends on skeleton)
+$(OUTPUT)/xintr.o: xintr.c $(OUTPUT)/xintr.skel.h $(wildcard *.h) | $(OUTPUT)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c xintr.c -o $@
+
+# Build xintr binary
+xintr: $(OUTPUT)/xintr.o $(LIBBPF_OBJ) $(BLAZESYM_DEP)
+	$(call msg,BINARY,$@)
+	$(Q)$(CC) $(CFLAGS) $< $(LIBBPF_OBJ) $(ALL_LDFLAGS) -lelf -lz -o $@
+
 # Keep intermediate files
 .SECONDARY:
 
@@ -138,9 +148,9 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all       - Build xstack (default)"
+	@echo "  all       - Build xstack xintr (default)"
 	@echo "  clean     - Remove all built files"
-	@echo "  cleanx    - Remove only xstack binary (fast rebuild)"
+	@echo "  cleanx    - Remove only binaries (fast rebuild)"
 	@echo "  help      - Show this help message"
 	@echo ""
 	@echo "Options:"
