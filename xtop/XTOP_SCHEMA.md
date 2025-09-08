@@ -13,8 +13,8 @@ The `xcapture_samples_*.csv` files are the core data source that drives all xtop
 | **Samples** | `xcapture_samples_*.csv` | Core task state sampling data with timestamps, process info, syscalls, filenames | **Independent** - Primary fact table | N/A - This is the base table |
 | **System Call Completions** | `xcapture_syscend_*.csv` | System call completion events with duration measurements | Requires join to samples | `LEFT OUTER JOIN xcapture_syscend_*.csv sc ON samples.tid = sc.tid AND samples.sysc_seq_num = sc.sysc_seq_num` |
 | **I/O Request Completions** | `xcapture_iorqend_*.csv` | Block I/O request completions with timing, bytes, device info | Requires join to samples | `LEFT OUTER JOIN xcapture_iorqend_*.csv io ON samples.tid = io.insert_tid AND samples.iorq_seq_num = io.iorq_seq_num` |
-| **Kernel Stack Traces** | `xcapture_kstacks_*.csv` | Kernel stack trace symbols with hash mapping | Requires join to samples | `LEFT OUTER JOIN xcapture_kstacks_*.csv ks ON samples.kstack_hash = ks.stack_hash` |
-| **Userspace Stack Traces** | `xcapture_ustacks_*.csv` | Userspace stack trace symbols with hash mapping | Requires join to samples | `LEFT OUTER JOIN xcapture_ustacks_*.csv us ON samples.ustack_hash = us.stack_hash` |
+| **Kernel Stack Traces** | `xcapture_kstacks_*.csv` | Kernel stack trace symbols with hash mapping | Requires join to samples | `LEFT OUTER JOIN xcapture_kstacks_*.csv ks ON samples.kstack_hash = ks.kstack_hash` |
+| **Userspace Stack Traces** | `xcapture_ustacks_*.csv` | Userspace stack trace symbols with hash mapping | Requires join to samples | `LEFT OUTER JOIN xcapture_ustacks_*.csv us ON samples.ustack_hash = us.ustack_hash` |
 | **Block Device Metadata** | `/proc/partitions` | Maps device major/minor numbers to device names | External metadata | `LEFT OUTER JOIN partitions part ON io.dev_maj = part.dev_maj AND io.dev_min = part.dev_min` |
 
 ## Key Fields for Joining
@@ -52,9 +52,13 @@ Core columns always available:
 - `dev_maj`, `dev_min` - Device major/minor numbers
 - `bytes` - Bytes transferred
 
-**xcapture_kstacks_*.csv** and **xcapture_ustacks_*.csv**:
-- `stack_hash` - MD5 hash of stack trace (join key)
-- `stack_syms` - Semicolon-separated function symbols with offsets
+**xcapture_kstacks_*.csv**:
+- `kstack_hash` - MD5 hash of kernel stack trace (join key)
+- `kstack_syms` - Semicolon-separated kernel function symbols with offsets
+
+**xcapture_ustacks_*.csv**:
+- `ustack_hash` - MD5 hash of userspace stack trace (join key)
+- `ustack_syms` - Semicolon-separated userspace function symbols with offsets
 
 ## Computed Columns
 
@@ -86,8 +90,8 @@ When user requests `KSTACK_HASH` in GROUP BY:
 -- System automatically adds:
 LEFT OUTER JOIN (
     SELECT DISTINCT
-        STACK_HASH AS KSTACK_HASH,
-        STACK_SYMS AS KSTACK_SYMS
+        KSTACK_HASH,
+        KSTACK_SYMS
     FROM read_csv_auto('xcapture_kstacks_*.csv')
 ) ks ON samples.kstack_hash = ks.kstack_hash
 ```
