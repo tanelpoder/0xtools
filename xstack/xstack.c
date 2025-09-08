@@ -219,7 +219,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     char *usyms = symbolize_stack(e->ustack, e->ustack_sz, e->pid, false);
 
     // Print CSV values: timestamp,tid,tgid,comm,state,ustack,kstack
-    printf("%s,%u,%u,%s,%s,%s,%s\n",
+    printf("%s|%u|%u|%s|%s|%s|%s\n",
            timestamp,
            e->pid,
            e->tgid,
@@ -427,7 +427,7 @@ int main(int argc, char **argv)
 #endif
 
     if (!quiet) {
-        printf("timestamp,tid,tgid,comm,state,ustack,kstack\n");
+        printf("timestamp|tid|tgid|comm|state|ustack|kstack\n");
         fflush(stdout);
     }
 
