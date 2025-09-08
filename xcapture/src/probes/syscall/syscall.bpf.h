@@ -7,7 +7,7 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
-#include "xcapture_maps.h"
+#include "maps/xcapture_maps_common.h"
 
 // platform specific syscall stuff
 #if defined(__TARGET_ARCH_arm64)

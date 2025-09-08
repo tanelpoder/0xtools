@@ -9,6 +9,8 @@
 #include "vmlinux.h"
 #endif
 
+#include "tcp_stats.h"
+
 #define TASK_COMM_LEN 16
 #define MAX_STACK_LEN 127
 #define MAX_FILENAME_LEN 256
@@ -84,7 +86,9 @@ struct aio_ctx_info {
 enum event_type {
     EVENT_TASK_INFO = 1,
     EVENT_SYSCALL_COMPLETION = 2,
-    EVENT_IORQ_COMPLETION = 3
+    EVENT_IORQ_COMPLETION = 3,
+    EVENT_STACK_TRACE = 4,
+    EVENT_IORQ_MAP = 5  // Removed EVENT_IORQ_COMPLETION_Q
 };
 
 // Structure for tracking in-flight block I/O requests
@@ -97,9 +101,8 @@ struct iorq_info {
     pid_t issue_tgid;          // Process that issued the I/O
 };
 
-// This is the central "extended Task State Array" (eTSA)
-// to be used with BPF_MAP_TYPE_TASK_STORAGE
-struct task_storage {
+// Fields that need to be emitted to userspace (Extended Task State)
+struct task_state {
     pid_t pid;                    // having pid/tgid duplicated here allow tracking probes
     pid_t tgid;                   // to avoid looking up the task_struct if they get the task_storage anyway
     __u64 sample_start_ktime;     // CLOCK_MONOTONIC ns (all tasks have same sample_time)
@@ -113,9 +116,40 @@ struct task_storage {
 
     __u64 iorq_sequence_num;           // sequence number for all iorq submissions by this task
     struct request *last_iorq_rq;      // Last iorq submitted, task_iter updates iorq_sampled=true for this
+    __u32 last_iorq_dev;               // Device (MKDEV) for last iorq
+    __u64 last_iorq_sector;            // Sector for last iorq
     struct request *last_iorq_sampled; // save the rq address that was ongoing during sample (for emitting later)
+    __u32 last_iorq_dev_sampled;       // Saved device for sampled iorq
+    __u64 last_iorq_sector_sampled;    // Saved sector for sampled iorq
+    __u64 last_iorq_sequence_num;      // snapshot used by sampler for interesting IORQs (rq + seq)
 
     __u32 aio_inflight_reqs;      // number of inflight requests in aio ring (0 means idle, waiting for work)
+    __u32 io_uring_sq_pending;    // number of pending submissions in io_uring SQ
+    __u32 io_uring_cq_pending;    // number of pending completions in io_uring CQ
+
+    // Context switch tracking for stack trace optimization
+    __u64 nvcsw;                  // voluntary context switches
+    __u64 nivcsw;                 // involuntary context switches
+    __u64 last_total_ctxsw;       // nvcsw + nivcsw from previous sample
+
+    // Namespace and cgroup information
+    __u32 pid_ns_id;               // PID namespace inode number
+    __u64 cgroup_id;               // Cgroup v2 ID from task->cgroups->dfl_cgrp->kn->id
+};
+
+// Fields for BPF internal task local caching only
+struct task_cache {
+    int cached_kstack_len;              // Cached kernel stack length
+    __u64 cached_kstack[MAX_STACK_LEN]; // Cached kernel stack (127 entries)
+    int cached_ustack_len;              // Cached user stack length  
+    __u64 cached_ustack[MAX_STACK_LEN]; // Cached user stack (127 entries)
+};
+
+// This is the central "extended Task State Array" (eTSA)
+// to be used with BPF_MAP_TYPE_TASK_STORAGE for maximum awesomeness
+struct task_storage {
+    struct task_state state;   // ~160 bytes - what we emit to userspace
+    struct task_cache cache;   // ~2032 bytes - internal BPF use only
 };
 
 // Syscall completion event structure for ringbuf
@@ -133,6 +167,7 @@ struct sc_completion_event {
 // Block I/O completion event structure for ringbuf
 struct iorq_completion_event {
     enum event_type type;
+    void *rq;                 // request pointer (for debugging/reference)
     pid_t insert_pid;
     pid_t insert_tgid;
     pid_t issue_pid;
@@ -150,10 +185,13 @@ struct iorq_completion_event {
     __s32 iorq_error;
 };
 
+
 // network connection tracking
 struct socket_info {
     __u16 family;     // AF_INET or AF_INET6
     __u16 protocol;   // IPPROTO_TCP or IPPROTO_UDP
+    __u8  state;      // TCP socket state (TCP_LISTEN, TCP_ESTABLISHED, etc.)
+    __u8  reserved;   // Padding for alignment
     union {
         __u32 saddr_v4;
         __u8  saddr_v6[16];  // Changed from __int128
@@ -188,6 +226,28 @@ struct task_output_event {
     // Socket info
     struct socket_info sock_info;
     bool has_socket_info:1;
+    bool has_tcp_stats:1;
+
+    // TCP statistics (only populated for TCP sockets)
+    struct tcp_stats_info tcp_stats;
+
+    // I/O file descriptor (for AIO operations, libaio only for now)
+    int aio_fd;
+
+    // io_uring CQE filename (when CQ has pending completions)
+    char ur_filename[MAX_FILENAME_LEN];
+
+    // AIO filename (when in io_submit/io_getevents syscalls)
+    char aio_filename[MAX_FILENAME_LEN];
+
+    // io_uring operation details (populated when CQ has pending completions)
+    __s32 uring_fd;        // File descriptor from io_uring SQE (-1 for registered files)
+    __s32 uring_reg_idx;   // Registered file index (when IOSQE_FIXED_FILE is set)
+    __u64 uring_offset;    // File offset for io_uring operation
+    __u32 uring_len;       // Buffer size for io_uring operation
+    __u8 uring_opcode;     // io_uring operation code
+    __u8 uring_flags;      // IOSQE_* flags
+    __u32 uring_rw_flags;  // RWF_* flags for io_uring operation
 
     // Task's scheduler state
     int on_cpu;
@@ -198,20 +258,22 @@ struct task_output_event {
     bool in_thrashing:1;
     bool sched_remote_wakeup:1;
 
-    // Extended task state storage
-    struct task_storage storage;
+    // Extended task state storage (only the state portion)
+    struct task_state storage;  // Was: struct task_storage storage
 
-    // Stack trace info
-    int kstack_len;
-    __u64 kstack[MAX_STACK_LEN];
+    // Stack trace hashes (actual stacks are written separately to kstacks file)
+    __u64 kstack_hash;  // Hash of kernel stack (0 = no stack)
+    __u64 ustack_hash;  // Hash of userspace stack (0 = no stack)
 };
 
-
-// task filtering based on command line options
-struct filter_config {
-    bool show_all;      // Show all tasks including sleeping ones when true
-    __u32 state_mask;   // Bitmap of states to show
+// Stack trace event for unique stacks
+struct stack_trace_event {
+    enum event_type type;
+    __u64 stack_hash;         // Unique hash of this stack
+    bool is_kernel:1;         // true = kernel stack, false = userspace stack
+    int stack_len;            // Number of addresses
+    pid_t pid;                // PID for userspace stack symbolization
+    __u64 stack[MAX_STACK_LEN]; // Stack addresses
 };
-
 
 #endif /* __XCAPTURE_H */

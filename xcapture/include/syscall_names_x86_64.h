@@ -35,7 +35,7 @@ typedef struct sysent {
     const char *name;
 } struct_sysent;
 
-const struct_sysent sysent0[] = {
+static const struct_sysent sysent0[] = {
 [   0] = {"common", "read"},
 [   1] = {"common", "write"},
 [   2] = {"common", "open"},

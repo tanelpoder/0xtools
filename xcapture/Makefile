@@ -36,23 +36,56 @@ INCLUDES := -I$(OUTPUT) \
 	    -Isrc/user \
 	    -I$(OUTPUT)/src/probes
 
+# Optional BlazeSym support for symbol resolution (default enabled)
+USE_BLAZESYM ?= 1
+
+# Base flags - always build for modern kernels (6.x)
 CFLAGS := -g -Wall
+BPF_CFLAGS := -g -O2
+
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
+
+# Add BlazeSym support if enabled
+ifeq ($(USE_BLAZESYM),1)
+    # Check for Rust/Cargo
+    CARGO := $(shell which cargo 2>/dev/null)
+    ifeq ($(CARGO),)
+        $(error "Rust/Cargo not found. Please install Rust or set USE_BLAZESYM=0")
+    endif
+    
+    CFLAGS += -DUSE_BLAZESYM
+    # BlazeSym requires these additional libraries
+    ALL_LDFLAGS += $(LIBBLAZESYM_OBJ) -lrt -ldl -lpthread -lm
+    
+    # Add BlazeSym as a dependency
+    BLAZESYM_DEP := $(LIBBLAZESYM_OBJ)
+else
+    BLAZESYM_DEP :=
+endif
 
 APPS = xcapture
 
 # Define BPF source files with their full paths
-BPF_SRCS := src/probes/task/task.bpf.c \
-	    src/probes/syscall/syscall.bpf.c \
-	    src/probes/io/iorq.bpf.c
+BPF_TASK_SRC := src/probes/task/task.bpf.c
+BPF_IORQ_SRC := src/probes/io/iorq_hashmap.bpf.c
+BPF_SYS_SRC  := src/probes/syscall/syscall.bpf.c
 
-# Define BPF object and skeleton paths explicitly to avoid confusion
-BPF_OBJS := $(patsubst %.bpf.c,$(OUTPUT)/%.bpf.o,$(BPF_SRCS))
-BPF_SKELS := $(patsubst $(OUTPUT)/%.bpf.o,$(OUTPUT)/%.skel.h,$(BPF_OBJS))
+BPF_OBJS := \
+	$(OUTPUT)/src/probes/task/task.bpf.o \
+	$(OUTPUT)/src/probes/syscall/syscall.bpf.o \
+	$(OUTPUT)/src/probes/io/iorq.bpf.o
+
+BPF_SKELS := \
+	$(OUTPUT)/src/probes/task/task.skel.h \
+	$(OUTPUT)/src/probes/syscall/syscall.skel.h \
+	$(OUTPUT)/src/probes/io/iorq.skel.h
 
 # Explicitly define the object files needed for the final binary
 OBJS := $(OUTPUT)/src/user/main.o $(OUTPUT)/src/utils/md5.o \
-	$(OUTPUT)/src/user/task_handler.o $(OUTPUT)/src/user/tracking_handler.o
+	$(OUTPUT)/src/user/task_handler.o $(OUTPUT)/src/user/tracking_handler.o \
+	$(OUTPUT)/src/user/socket_info.o $(OUTPUT)/src/user/iorq_info.o \
+	$(OUTPUT)/src/user/syscall_info.o $(OUTPUT)/src/user/columns.o \
+	$(OUTPUT)/src/user/cgroup_cache.o
 
 # Get Clang's default includes on this system
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
@@ -138,28 +171,37 @@ $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
 	$(Q)$(MAKE) ARCH= CROSS_COMPILE= OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap
 
-# Generic rule for building BPF objects
-$(OUTPUT)/src/probes/task/task.bpf.o: src/probes/task/task.bpf.c \
-		include/xcapture.h src/maps/xcapture_maps.h src/utils/xcapture_helpers.h src/helpers/file_helpers.h \
-		$(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT)/src/probes/task $(BPFTOOL)
+# Build BlazeSym if enabled
+ifeq ($(USE_BLAZESYM),1)
+$(LIBBLAZESYM_SRC)/target/release/libblazesym_c.a:
+	$(call msg,CARGO,$@)
+	$(Q)cd $(LIBBLAZESYM_SRC) && $(CARGO) build --package=blazesym-c --release
+
+$(LIBBLAZESYM_OBJ): $(LIBBLAZESYM_SRC)/target/release/libblazesym_c.a | $(OUTPUT)
+	$(call msg,LIB,$@)
+	$(Q)cp $(LIBBLAZESYM_SRC)/target/release/libblazesym_c.a $@
+endif
+
+# Build BPF objects
+$(OUTPUT)/src/probes/task/task.bpf.o: $(BPF_TASK_SRC) include/xcapture.h src/maps/xcapture_maps_common.h src/maps/xcapture_maps_iorq_classic.h src/utils/xcapture_helpers.h src/helpers/file_helpers.h $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT)/src/probes/task $(BPFTOOL)
 	$(call msg,BPF,$@)
-	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -D__TARGET_ARCH_$(ARCH) \
+		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		     -c $(BPF_TASK_SRC) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
+	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
+
+$(OUTPUT)/src/probes/syscall/syscall.bpf.o: src/probes/syscall/syscall.bpf.c include/xcapture.h src/maps/xcapture_maps_common.h $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT)/src/probes/syscall $(BPFTOOL)
+	$(call msg,BPF,$@)
+	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -D__TARGET_ARCH_$(ARCH) \
 		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		     -c $< -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 
-$(OUTPUT)/src/probes/syscall/syscall.bpf.o: src/probes/syscall/syscall.bpf.c include/xcapture.h src/maps/xcapture_maps.h $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT)/src/probes/syscall $(BPFTOOL)
+$(OUTPUT)/src/probes/io/iorq.bpf.o: $(BPF_IORQ_SRC) include/xcapture.h src/maps/xcapture_maps_common.h src/maps/xcapture_maps_iorq_classic.h $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT)/src/probes/io $(BPFTOOL)
 	$(call msg,BPF,$@)
-	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -D__TARGET_ARCH_$(ARCH) \
 		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
-		     -c $< -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
-	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
-
-$(OUTPUT)/src/probes/io/iorq.bpf.o: src/probes/io/iorq.bpf.c include/xcapture.h src/maps/xcapture_maps.h $(LIBBPF_OBJ) $(VMLINUX) | $(OUTPUT)/src/probes/io $(BPFTOOL)
-	$(call msg,BPF,$@)
-	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
-		     $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
-		     -c $< -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
+		     -c $(BPF_IORQ_SRC) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 	$(Q)$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
 
 # Generate BPF skeletons
@@ -189,15 +231,35 @@ MAIN_DEPS := src/user/main.c \
 	     $(OUTPUT)/src/probes/syscall/syscall.skel.h \
 	     $(OUTPUT)/src/probes/io/iorq.skel.h
 
-
 # Ringbuf event handlers
 $(OUTPUT)/src/user/task_handler.o: src/user/task_handler.c src/user/task_handler.h | $(OUTPUT)/src/user
 	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -D__TARGET_ARCH_$(ARCH) -c $< -o $@
 
 $(OUTPUT)/src/user/tracking_handler.o: src/user/tracking_handler.c src/user/tracking_handler.h | $(OUTPUT)/src/user
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+# New modular source files
+$(OUTPUT)/src/user/socket_info.o: src/user/socket_info.c | $(OUTPUT)/src/user
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OUTPUT)/src/user/iorq_info.o: src/user/iorq_info.c | $(OUTPUT)/src/user
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OUTPUT)/src/user/syscall_info.o: src/user/syscall_info.c | $(OUTPUT)/src/user
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -D__TARGET_ARCH_$(ARCH) -c $< -o $@
+
+$(OUTPUT)/src/user/columns.o: src/user/columns.c include/columns.h | $(OUTPUT)/src/user
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -D__TARGET_ARCH_$(ARCH) -c $< -o $@
+
+$(OUTPUT)/src/user/cgroup_cache.o: src/user/cgroup_cache.c include/cgroup_cache.h | $(OUTPUT)/src/user
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -D__TARGET_ARCH_$(ARCH) -c $< -o $@
 
 # Build main.o with explicit dependency on all BPF skeletons
 $(OUTPUT)/src/user/main.o: $(MAIN_DEPS) | $(OUTPUT)/src/user
@@ -205,19 +267,26 @@ $(OUTPUT)/src/user/main.o: $(MAIN_DEPS) | $(OUTPUT)/src/user
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -D__TARGET_ARCH_$(ARCH) -c src/user/main.c -o $@
 
 # Build final binary with explicit objects
-xcapture: $(OBJS) $(LIBBPF_OBJ) | $(OUTPUT)
+xcapture: $(OBJS) $(LIBBPF_OBJ) $(BLAZESYM_DEP) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) -D__TARGET_ARCH_$(ARCH) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
 
 # Print debug info (useful for troubleshooting)
 .PHONY: debug
 debug:
-	@echo "BPF_SRCS: $(BPF_SRCS)"
 	@echo "BPF_OBJS: $(BPF_OBJS)"
 	@echo "BPF_SKELS: $(BPF_SKELS)"
 	@echo "OBJS: $(OBJS)"
 	@echo "MAIN_DEPS: $(MAIN_DEPS)"
 	@ls -la $(OUTPUT)/src/probes/task/ 2>/dev/null || echo "Task probe directory not created yet"
+
+# Show build configuration
+.PHONY: show-config
+show-config:
+	@echo "Build configuration:"
+	@echo "  BPF_CFLAGS: $(BPF_CFLAGS)"
+	@echo "  CFLAGS: $(CFLAGS)"
+	@echo "  USE_BLAZESYM: $(USE_BLAZESYM)"
 
 # delete failed targets
 .DELETE_ON_ERROR:

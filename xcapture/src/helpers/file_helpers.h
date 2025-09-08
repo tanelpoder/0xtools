@@ -20,8 +20,6 @@
 // get file dentry name only
 static void __always_inline get_file_name(struct file *file, char *dest, size_t size, const char *fallback) {
     if (file) {
-        struct path file_path;
-        BPF_CORE_READ_INTO(&file_path, file, f_path);
         struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
 
         if (dentry) {
@@ -78,6 +76,13 @@ static __always_inline bool get_socket_info(struct file *file, struct socket_inf
     // Read ports
     si->sport = BPF_CORE_READ(inet, inet_sport);
     si->dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
+
+    // Read socket state (for TCP sockets)
+    if (si->protocol == IPPROTO_TCP) {
+        si->state = BPF_CORE_READ(sk, __sk_common.skc_state);
+    } else {
+        si->state = 0;  // UDP doesn't have states
+    }
 
     return true;
 }

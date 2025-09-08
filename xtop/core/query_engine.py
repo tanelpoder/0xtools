@@ -208,10 +208,14 @@ class QueryEngine:
         csv_pattern = f'xcapture_{csv_type}_*.csv'
         csv_path = str(self.data_source.datadir / csv_pattern)
         
+        # Use the correct column names based on stack type
+        hash_col = 'KSTACK_HASH' if is_kernel else 'USTACK_HASH'
+        syms_col = 'KSTACK_SYMS' if is_kernel else 'USTACK_SYMS'
+        
         query = f"""
-        SELECT STACK_SYMS 
+        SELECT {syms_col} 
         FROM read_csv_auto('{csv_path}')
-        WHERE STACK_HASH = '{stack_hash}'
+        WHERE {hash_col} = '{stack_hash}'
         LIMIT 1
         """
         

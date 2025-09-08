@@ -11,11 +11,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <string.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-
-#include <arpa/inet.h>  // For inet_ntop()
-#include <netinet/in.h> // For IPPROTO_* constants
 
 #include "task/task.skel.h"
 #include "syscall/syscall.skel.h"
@@ -24,6 +22,8 @@
 #include "blk_types.h"
 #include "xcapture.h"
 #include "xcapture_user.h"
+#include "columns.h"
+#include "cgroup_cache.h"
 
 // platform specific syscall NR<->name mapping
 #if defined(__TARGET_ARCH_arm64)
@@ -37,21 +37,98 @@
 #include "user/task_handler.h"
 #include "user/tracking_handler.h"
 
+#ifdef USE_BLAZESYM
+#include "blazesym.h"
+#endif
+
 // globals, set once or only by one function
 pid_t mypid = 0;
 bool output_csv = false;
 bool output_verbose = false;
-bool dump_stack_traces = false;
+bool dump_kernel_stack_traces = false;
+bool dump_user_stack_traces = false;
+bool wide_output = false;
+bool narrow_output = false;  // Minimal columns output mode
+bool print_stack_traces = false;  // Print stack traces in stdout mode
+bool print_cgroups = false;  // Print cgroup paths in stdout mode
+char *custom_columns = NULL;  // Custom column selection from -g option
+long sample_weight_us = 0;  // Sample weight in microseconds
+
+#ifdef USE_BLAZESYM
+blaze_symbolizer *g_symbolizer = NULL;
+bool symbolize_stacks = true;  // Default to true when blazesym is available
+#endif
+
+// Track unique stack hashes seen in current iteration
+#define MAX_UNIQUE_STACKS 131072
+struct unique_stack {
+    __u64 hash;
+    bool is_kernel;
+};
+static struct unique_stack unique_stacks[MAX_UNIQUE_STACKS];
+static int unique_stack_count = 0;
+
+// Add a stack hash to the unique list if not already present
+void add_unique_stack(__u64 hash, bool is_kernel) {
+    if (hash == 0) return;
+    
+    // Check if already in list
+    for (int i = 0; i < unique_stack_count; i++) {
+        if (unique_stacks[i].hash == hash && unique_stacks[i].is_kernel == is_kernel) {
+            return;
+        }
+    }
+    
+    // Add to list if space available
+    if (unique_stack_count < MAX_UNIQUE_STACKS) {
+        unique_stacks[unique_stack_count].hash = hash;
+        unique_stacks[unique_stack_count].is_kernel = is_kernel;
+        unique_stack_count++;
+    }
+}
+
+// Reset unique stack list for new iteration
+void reset_unique_stacks() {
+    unique_stack_count = 0;
+}
+
+// Print all unique stacks collected during this iteration
+void print_unique_stacks() {
+    if (unique_stack_count == 0 || output_csv || !print_stack_traces) {
+        return;
+    }
+    
+    printf("\nStack traces:\n");
+    
+    for (int i = 0; i < unique_stack_count; i++) {
+        const char *stack_str = lookup_cached_stack(unique_stacks[i].hash, unique_stacks[i].is_kernel);
+        if (stack_str && stack_str[0]) {
+            printf("%c:%016llx %s\n", 
+                   unique_stacks[i].is_kernel ? 'K' : 'U',
+                   unique_stacks[i].hash,
+                   stack_str);
+        } else {
+            // No symbolized version available, just show the hash
+            printf("%c:%016llx [no symbols]\n", 
+                   unique_stacks[i].is_kernel ? 'K' : 'U',
+                   unique_stacks[i].hash);
+        }
+    }
+}
 
 static int  sample_freq = 1;        // default 1 Hz
 static bool show_all = false;       // show tasks in any state (except idle kernel workers)
 static bool passive_only = false;   // allow only passive sampling with no overhead to other tasks
 static bool track_syscalls = false; // but for maximum awesomeness you can enable
 static bool track_iorq = false;     // tracking for additional events (syscall, iorq)
+// Queue-based IORQ tracking has been removed - using hashtable approach
+static int daemon_ports = 10000;    // default daemon ports heuristic threshold
+static int max_iterations = -1;     // -1 means run forever, >0 means run N iterations
+static pid_t filter_tgid = 0;       // filter by TGID (0 means no filter)
 
 static char *output_dirname;
+static bool queue_mode = false;    // internal: reserved for future use
 struct output_files files = {0};
-static char *kallsyms_path = "/proc/kallsyms";
 struct time_correlation tcorr = {0};
 
 // XCAP_BUFSIZE is later used in setbuffer() calls too
@@ -60,7 +137,8 @@ struct time_correlation tcorr = {0};
 char samplebuf[XCAP_BUFSIZ];
 char syscbuf[XCAP_BUFSIZ];
 char iorqbuf[XCAP_BUFSIZ];
-char stackbuf[XCAP_BUFSIZ];
+char kstackbuf[XCAP_BUFSIZ];
+char ustackbuf[XCAP_BUFSIZ];
 
 // Version and help string
 const char *argp_program_version = "xcapture 3.0.0";
@@ -68,24 +146,37 @@ const char *argp_program_bug_address = "https://github.com/tanelpoder/0xtools";
 const char argp_program_doc[] =
 "xcapture thread state tracking & sampling by Tanel Poder [0x.tools]\n"
 "\n"
-"USAGE: xcapture [--help] [-o OUTPUT_DIRNAME] [-t TID] [-p PID]\n"
+"USAGE: xcapture [--help] [-o OUTPUT_DIRNAME] [-F HZ] [-p PID]\n"
 "\n"
 "EXAMPLES:\n"
 "    xcapture              # output formatted text to stdout\n"
 "    xcapture -F 20        # sample at 20 Hz\n"
+"    xcapture -p 1234      # show only tasks with TGID 1234\n"
 "    xcapture -o /tmp/data # write CSV files to /tmp/data directory\n";
 
 // Command line options
 static const struct argp_option opts[] = {
     { "all", 'a', NULL, 0, "Show all tasks including sleeping ones" },
-    { "passive", 'p', NULL, 0, "Allow only passive task state sampling" },
+    { "passive", 'P', NULL, 0, "Allow only passive task state sampling" },
+    { "pgid", 'p', "PID", 0, "Filter by process ID/thread group ID (shows all threads)" },
     { "track", 't', "iorq,syscall", 0, "Enable active tracking with tracepoints & probes" },
     { "track-all", 'T', NULL, 0, "Enable all available tracking components" },
+    { "daemon-ports", 'd', "PORT", 0, "Port threshold for daemon connections (default: 10000)" },
     { "freq", 'F', "HZ", 0, "Sampling frequency in Hz (default: 1)" },
     { "output-dir", 'o', "DIR", 0, "Write CSV files to specified directory" },
-    { "stack-traces", 's', NULL, 0, "Dump kernel stack traces to CSV files" },
-    { "kallsyms-file", 'k', "FILE", 0, "kallsyms file (default: /proc/kallsyms)" },
+    { "kernel-stacks", 'k', NULL, 0, "Dump kernel stack traces to CSV files" },
+    { "print-stacks", 's', NULL, 0, "Print stack traces in stdout mode (requires -k and/or -u)" },
+    { "print-cgroups", 'c', NULL, 0, "Print cgroup paths in stdout mode" },
+    { "user-stacks", 'u', NULL, 0, "Dump userspace stack traces (requires -fno-omit-frame-pointer)" },
     { "verbose", 'v', NULL, 0, "Report sampling metrics even in CSV output mode" },
+    { "wide-output", 'w', NULL, 0, "Show additional syscall timing columns in stdout mode" },
+    { "narrow-output", 'n', NULL, 0, "Show minimal columns (TID, TGID, STATE, USERNAME, EXE, COMM, SYSCALL, FILENAME)" },
+    { "get-columns", 'g', "COLUMNS", 0, "Custom column selection (comma-separated list or 'all')" },
+    { "list", 'l', NULL, 0, "List all available columns and exit" },
+    { "iterations", 'i', "NUMBER", 0, "Exit after NUMBER sampling iterations (default: run forever)" },
+#ifdef USE_BLAZESYM
+    { "no-symbolize", 'N', NULL, 0, "Disable stack trace symbolization (show raw addresses)" },
+#endif
     {},
 };
 
@@ -108,17 +199,53 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
         case 'a':
             show_all = true;
             break;
-        case 's':
-            dump_stack_traces = true;
+        case 'd':
+            errno = 0;
+            daemon_ports = strtol(arg, NULL, 10);
+            if (errno || daemon_ports < 0 || daemon_ports > 65535) {
+                fprintf(stderr, "Invalid daemon ports threshold. Must be 0-65535.\n");
+                argp_usage(state);
+            }
             break;
         case 'k':
-            kallsyms_path = arg;
+            dump_kernel_stack_traces = true;
+            break;
+        case 's':
+            print_stack_traces = true;
+            break;
+        case 'c':
+            print_cgroups = true;
+            break;
+        case 'u':
+            dump_user_stack_traces = true;
             break;
         case 'v':
             output_verbose = true;
             break;
-        case 'p':
+        case 'w':
+            wide_output = true;
+            break;
+        case 'n':
+            narrow_output = true;
+            break;
+        case 'g':
+            custom_columns = strdup(arg);
+            break;
+        case 'l':
+            // This will be handled after argp_parse to use the columns module
+            list_available_columns();
+            exit(0);
+            break;
+        case 'P':
             passive_only = true;
+            break;
+        case 'p':
+            errno = 0;
+            filter_tgid = strtol(arg, NULL, 10);
+            if (errno || filter_tgid <= 0) {
+                fprintf(stderr, "Invalid process ID. Must be a positive integer.\n");
+                argp_usage(state);
+            }
             break;
         case 't':
             // Parse comma-separated tracking components
@@ -131,9 +258,22 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
             track_syscalls = true;
             track_iorq = true;
             break;
+        case 'i':
+            errno = 0;
+            max_iterations = strtol(arg, NULL, 10);
+            if (errno || max_iterations <= 0) {
+                fprintf(stderr, "Invalid iterations count. Must be a positive integer.\n");
+                argp_usage(state);
+            }
+            break;
         case ARGP_KEY_ARG:
             argp_usage(state);
             break;
+#ifdef USE_BLAZESYM
+        case 'N':
+            symbolize_stacks = false;
+            break;
+#endif
         default:
             return ARGP_ERR_UNKNOWN;
     }
@@ -219,94 +359,42 @@ const char *getusername(uid_t uid)
     return username_cache[bucket].username;
 }
 
-const char *format_task_state(__u32 state)
+const char *format_task_state(__u32 state, int on_rq, int on_cpu, void *migration_pending)
 {
-    static char hex_state[32];  // Buffer for unknown states
-
+    static char state_str[64];  // Buffer for state string with flags
+    const char *base_state;
+    
+    // Determine base state string
     switch (state & 0xFF) {
-    case 0x0000: return "RUN";   // RUNNING
-    case 0x0001: return "SLEEP"; // INTERRUPTIBLE
-    case 0x0002: return "DISK";  // UNINTERRUPTIBLE
-    case 0x0004: return "STOPPED";
-    case 0x0200: return "WAKING";
-    case 0x0400: return "NOLOAD";
-    case 0x0402: return "IDLE";
-    case 0x0800: return "NEW";
+    case 0x0000: base_state = "RUN"; break;   // RUNNING
+    case 0x0001: base_state = "SLEEP"; break; // INTERRUPTIBLE
+    case 0x0002: base_state = "DISK"; break;  // UNINTERRUPTIBLE
+    case 0x0004: base_state = "STOPPED"; break;
+    case 0x0200: base_state = "WAKING"; break;
+    case 0x0400: base_state = "NOLOAD"; break;
+    case 0x0402: base_state = "IDLE"; break;
+    case 0x0800: base_state = "NEW"; break;
     default:
-        snprintf(hex_state, sizeof(hex_state), "0x%x", state);
-        return hex_state;
+        snprintf(state_str, sizeof(state_str), "0x%x", state);
+        base_state = state_str;
     }
-}
-
-const char *get_syscall_info_desc(__u32 syscall_nr)
-{
-    switch (syscall_nr) {
-        case __NR_io_submit:     return "inflight_rqs";
-        case __NR_io_cancel:     return "inflight_rqs";
-        case __NR_io_destroy:    return "inflight_rqs";
-        case __NR_io_getevents:  return "inflight_rqs";
-        case __NR_io_pgetevents: return "inflight_rqs";
-    default:
-        return "-";
+    
+    // Copy base state to result buffer
+    strncpy(state_str, base_state, sizeof(state_str) - 3);
+    state_str[sizeof(state_str) - 3] = '\0';
+    
+    // Append flags
+    // Q = on runqueue but not on CPU (waiting to run)
+    if (on_rq > 0 && on_cpu == 0) {
+        strcat(state_str, "Q");
     }
-}
-
-// Get block I/O operation type and flags as string
-const char *get_iorq_op_flags(__u32 cmd_flags)
-{
-    static char buf[128];
-    buf[0] = '\0';
-
-    if ((cmd_flags & REQ_OP_WRITE) == 0)
-        strcat(buf, "READ");
-    else if (cmd_flags & REQ_OP_WRITE)
-        strcat(buf, "WRITE");
-    else if (cmd_flags & REQ_OP_FLUSH)
-        strcat(buf, "FLUSH");
-    else if (cmd_flags & REQ_OP_DISCARD)
-        strcat(buf, "DISCARD");
-    // TODO add the rest
-    else if (cmd_flags & REQ_OP_SCSI_IN)
-        strcat(buf, "SCSI_IN");
-    else if (cmd_flags & REQ_OP_SCSI_OUT)
-        strcat(buf, "SCSI_OUT");
-    else if (cmd_flags & REQ_OP_DRV_IN)
-        strcat(buf, "DRV_IN");
-    else if (cmd_flags & REQ_OP_DRV_OUT)
-        strcat(buf, "DRV_OUT");
-
-    if (cmd_flags & REQ_SYNC)
-        strcat(buf, "|SYNC");
-    if (cmd_flags & REQ_META)
-        strcat(buf, "|META");
-    if (cmd_flags & REQ_PRIO)
-        strcat(buf, "|PRIO");
-    if (cmd_flags & REQ_FUA)
-        strcat(buf, "|FUA");
-    if (cmd_flags & REQ_RAHEAD)
-        strcat(buf, "|RA");
-    if (cmd_flags & REQ_DRV)
-        strcat(buf, "|DRV");
-    if (cmd_flags & REQ_SWAP)
-        strcat(buf, "|SWAP");
-
-    return buf;
-}
-
-const char *safe_syscall_name(__s32 syscall_nr)
-{
-    static char unknown_str[32];
-
-    if (syscall_nr < 0)
-        return "-";
-
-    if (syscall_nr < NR_SYSCALLS && sysent0[syscall_nr].name != NULL) {
-        return sysent0[syscall_nr].name;
+    if (migration_pending != NULL) {
+        strcat(state_str, "M");
     }
-
-    snprintf(unknown_str, sizeof(unknown_str), "%d", syscall_nr);
-    return unknown_str;
+    
+    return state_str;
 }
+
 
 // subtract nanoseconds from timespec
 struct timespec sub_ns_from_ts(struct timespec ts, __u64 ns)
@@ -391,34 +479,24 @@ void close_output_files(struct output_files *files) {
         fclose(files->iorq_completion_file);
         files->iorq_completion_file = NULL;
     }
+    if (files->iorq_map_file) {
+        fclose(files->iorq_map_file);
+        files->iorq_map_file = NULL;
+    }
     if (files->kstack_file) {
         fclose(files->kstack_file);
         files->kstack_file = NULL;
     }
-}
-
-// socket inet connection endpoints
-const char *format_connection(const struct socket_info *si, char *buf, size_t buflen)
-{
-    char src[INET6_ADDRSTRLEN], dst[INET6_ADDRSTRLEN];
-    const char *proto = (si->protocol == IPPROTO_TCP) ? "TCP" :
-                        (si->protocol == IPPROTO_UDP) ? "UDP" : "[unknown]";
-
-    if (si->family == AF_INET) {
-        struct in_addr src_addr = { .s_addr = si->saddr_v4 };
-        struct in_addr dst_addr = { .s_addr = si->daddr_v4 };
-        inet_ntop(AF_INET, &src_addr, src, sizeof(src));
-        inet_ntop(AF_INET, &dst_addr, dst, sizeof(dst));
-    } else {
-        inet_ntop(AF_INET6, &si->saddr_v6, src, sizeof(src));
-        inet_ntop(AF_INET6, &si->daddr_v6, dst, sizeof(dst));
+    if (files->ustack_file) {
+        fclose(files->ustack_file);
+        files->ustack_file = NULL;
     }
-
-    snprintf(buf, buflen, "%s %s:%u->%s:%u",
-             proto, src, ntohs(si->sport), dst, ntohs(si->dport));
-
-    return buf;
+    if (files->cgroup_file) {
+        fclose(files->cgroup_file);
+        files->cgroup_file = NULL;
+    }
 }
+
 
 FILE* open_csv_file(const char *filename, const char *header) {
     FILE *f = fopen(filename, "a");
@@ -444,10 +522,10 @@ int create_output_files(struct output_files *files, const struct tm *tm) {
     // Open samples file (nanoseconds for CSV output)
     files->sample_file = open_csv_file(
             get_hourly_filename(SAMPLE_CSV_FILENAME, tm),
-            "TIMESTAMP,TID,TGID,STATE,USERNAME,EXE,COMM,SYSCALL,SYSCALL_ACTIVE,"
+            "TIMESTAMP,WEIGHT_US,TID,TGID,PIDNS,CGROUP_ID,STATE,USERNAME,EXE,COMM,SYSCALL,SYSCALL_ACTIVE,"
             "SYSC_ENTRY_TIME,SYSC_NS_SO_FAR,SYSC_SEQ_NUM,IORQ_SEQ_NUM,"
             "SYSC_ARG1,SYSC_ARG2,SYSC_ARG3,SYSC_ARG4,SYSC_ARG5,SYSC_ARG6,"
-            "FILENAME,CONNECTION,SYSC_INF_DSC,SYSC_INF_VAL"
+            "FILENAME,CONNECTION,CONN_STATE,EXTRA_INFO,KSTACK_HASH,USTACK_HASH"
         );
     if (!files->sample_file)
         return -1;
@@ -480,16 +558,54 @@ int create_output_files(struct output_files *files, const struct tm *tm) {
         setbuffer(files->iorq_completion_file, iorqbuf, XCAP_BUFSIZ);
     }
 
-    // Open kernel stack trace file
-    files->kstack_file = open_csv_file(
-        get_hourly_filename(KSTACK_CSV_FILENAME, tm),
-         "TIMESTAMP,TID,TGID,STACK_HASH,ADDR_LIST"
+    // Open iorq map file for tracking I/O request mappings
+    files->iorq_map_file = open_csv_file(
+        get_hourly_filename(IORQ_MAP_CSV_FILENAME, tm),
+        "TYPE,STAGE,RQ,ISSUE_TID,ISSUE_TGID,ISSUE_SEQ,INSERT_TID,INSERT_TGID"
     );
-    if (!files->kstack_file) {
+    if (!files->iorq_map_file) {
         close_output_files(files);
         return -1;
     } else {
-        setbuffer(files->kstack_file, stackbuf, XCAP_BUFSIZ);
+        setbuffer(files->iorq_map_file, iorqbuf, XCAP_BUFSIZ);
+    }
+
+    // Open kernel stack trace file if kernel stacks are enabled
+    if (dump_kernel_stack_traces) {
+        files->kstack_file = open_csv_file(
+            get_hourly_filename(KSTACK_CSV_FILENAME, tm),
+            "KSTACK_HASH,KSTACK_SYMS"
+        );
+        if (!files->kstack_file) {
+            close_output_files(files);
+            return -1;
+        } else {
+            setbuffer(files->kstack_file, kstackbuf, XCAP_BUFSIZ);
+        }
+    }
+
+    // Open userspace stack trace file if user stacks are enabled
+    if (dump_user_stack_traces) {
+        files->ustack_file = open_csv_file(
+            get_hourly_filename(USTACK_CSV_FILENAME, tm),
+            "USTACK_HASH,USTACK_SYMS"
+        );
+        if (!files->ustack_file) {
+            close_output_files(files);
+            return -1;
+        } else {
+            setbuffer(files->ustack_file, ustackbuf, XCAP_BUFSIZ);
+        }
+    }
+
+    // Open cgroup file - always open in CSV mode since we write unique cgroups
+    files->cgroup_file = open_csv_file(
+        get_hourly_filename("xcapture_cgroups", tm),
+        "CGROUP_ID,CGROUP_PATH"
+    );
+    if (!files->cgroup_file) {
+        close_output_files(files);
+        return -1;
     }
 
     // Update current timestamp components
@@ -521,9 +637,12 @@ int check_and_rotate_files(struct output_files *files) {
 int main(int argc, char **argv)
 {
     mypid = getpid();
-    struct task_bpf *task_skel = {0};
-    struct syscall_bpf *syscall_skel = {0};
-    struct iorq_bpf *iorq_skel = {0};
+    struct task_bpf *task_skel = NULL;
+    struct syscall_bpf *syscall_skel = NULL;
+    struct iorq_bpf *iorq_skel = NULL;
+    struct bpf_program *get_tasks_prog = NULL;
+    struct bpf_link *task_iter_link = NULL;
+    int completion_fd = -1, task_samples_fd = -1, stack_traces_fd = -1;
 
     int iter_fd = 0;
     int err = 0;
@@ -541,7 +660,36 @@ int main(int argc, char **argv)
 
     if (passive_only && (track_syscalls || track_iorq)) {
         fprintf(stderr, "Error: conflicting command line arguments\n");
-        fprintf(stderr, "     --passive (-p) does not allow enabling active tracking probes\n\n");
+        fprintf(stderr, "     --passive (-P) does not allow enabling active tracking probes\n\n");
+        return 1;
+    }
+
+    // Check for mutually exclusive filtering options
+    if (show_all && filter_tgid > 0) {
+        fprintf(stderr, "Error: conflicting command line arguments\n");
+        fprintf(stderr, "     Cannot use both --all (-a) and --pgid (-p) options together\n");
+        fprintf(stderr, "     --all shows all tasks, while --pgid filters to a specific process\n\n");
+        return 1;
+    }
+
+    // Check for mutually exclusive output format options
+    int format_options = 0;
+    if (wide_output) format_options++;
+    if (narrow_output) format_options++;
+    if (custom_columns) format_options++;
+    
+    if (format_options > 1) {
+        fprintf(stderr, "Error: conflicting command line arguments\n");
+        fprintf(stderr, "     Cannot use multiple output format options together:\n");
+        fprintf(stderr, "     --wide-output (-w), --narrow-output (-n), --get-columns (-g)\n\n");
+        return 1;
+    }
+    
+    // Check that format options are not used with CSV output
+    if (output_csv && format_options > 0) {
+        fprintf(stderr, "Error: conflicting command line arguments\n");
+        fprintf(stderr, "     Output format options (-w, -n, -g) cannot be used with CSV output (-o)\n");
+        fprintf(stderr, "     CSV always outputs all columns for consistency\n\n");
         return 1;
     }
 
@@ -549,7 +697,9 @@ int main(int argc, char **argv)
         .sample_file = NULL,
         .sc_completion_file = NULL,
         .iorq_completion_file = NULL,
+        .iorq_map_file = NULL,
         .kstack_file = NULL,
+        .ustack_file = NULL,
         .current_year  = -1,
         .current_month = -1,
         .current_day   = -1,
@@ -566,6 +716,9 @@ int main(int argc, char **argv)
             return err;
     }
 
+    // Initialize cgroup cache
+    cgroup_cache_init();
+
     signal(SIGINT,  sig_handler);
     signal(SIGTERM, sig_handler);
     signal(SIGPIPE, sig_handler);
@@ -579,29 +732,95 @@ int main(int argc, char **argv)
     struct ring_buffer *task_rb = NULL;
     struct ring_buffer *tracking_rb = NULL;
 
-    // always load and attach the passive task sampler BPF program
+    // Open the passive task sampler skeleton
     task_skel = task_bpf__open();
-    if (!task_skel) {
-        fprintf(stderr, "Failed to open BPF skeleton: task\n");
-        goto cleanup;
+    if (!task_skel) { 
+        fprintf(stderr, "Failed to open BPF skeleton: task\n"); 
+        goto cleanup; 
     }
-
+    
+    // Set configuration via skeleton rodata before loading
+    task_skel->rodata->xcap_show_all = show_all;
+    task_skel->rodata->xcap_daemon_ports = daemon_ports;
+    task_skel->rodata->xcap_filter_tgid = filter_tgid;
+    task_skel->rodata->xcap_dump_kernel_stack_traces = dump_kernel_stack_traces;
+    task_skel->rodata->xcap_dump_user_stack_traces = dump_user_stack_traces;
+    task_skel->rodata->xcap_xcapture_pid = getpid();
+    task_skel->rodata->xcap_queue_mode = false;  // Reserved for future use
+    
+    // Load the BPF program with the configuration
     err = task_bpf__load(task_skel);
-    if (err) {
-        fprintf(stderr, "Failed to load BPF skeleton: task\n");
-        goto cleanup;
+    if (err) { 
+        fprintf(stderr, "Failed to load BPF skeleton: task\n"); 
+        goto cleanup; 
+    }
+    get_tasks_prog = task_skel->progs.get_tasks;
+    completion_fd = bpf_map__fd(task_skel->maps.completion_events);
+    task_samples_fd = bpf_map__fd(task_skel->maps.task_samples);
+    stack_traces_fd = bpf_map__fd(task_skel->maps.stack_traces);
+
+    // Attach task iterator with kernel-level TGID filtering when requested
+    if (filter_tgid > 0) {
+        // Use kernel-level task iterator filtering
+        DECLARE_LIBBPF_OPTS(bpf_iter_attach_opts, iter_opts);
+        union bpf_iter_link_info linfo;
+        memset(&linfo, 0, sizeof(linfo));
+        
+        // Set up filtering by TGID (pid field filters by thread group)
+        linfo.task.tid = 0;
+        linfo.task.pid = filter_tgid;
+        
+        iter_opts.link_info = &linfo;
+        iter_opts.link_info_len = sizeof(linfo);
+        
+        if (!output_csv || output_verbose) {
+            printf("Using kernel-level task filtering for TGID %d\n", filter_tgid);
+        }
+        
+        // Manually attach the task iterator with filtering options
+        task_iter_link = bpf_program__attach_iter(get_tasks_prog, &iter_opts);
+        if (!task_iter_link) {
+            err = -errno;
+            fprintf(stderr, "Failed to attach task iterator with TGID filter: %s (errno=%d)\n", 
+                    strerror(errno), errno);
+            goto cleanup;
+        }
+    } else {
+        // Standard attachment without filtering
+        err = task_bpf__attach(task_skel);
+        if (err) {
+            fprintf(stderr, "Failed to attach BPF skeleton: task\n");
+            goto cleanup;
+        }
     }
 
-    err = task_bpf__attach(task_skel);
-    if (err) {
-        fprintf(stderr, "Failed to attach BPF skeleton: task\n");
-        goto cleanup;
+#ifdef USE_BLAZESYM
+    /* Initialize BlazeSym symbolizer if requested */
+    if ((dump_kernel_stack_traces || dump_user_stack_traces) && symbolize_stacks) {
+        blaze_symbolizer_opts opts = {
+            .type_size = sizeof(opts),
+            .debug_dirs = NULL,       // Use default debug directories
+            .debug_dirs_len = 0,
+            .auto_reload = true,      // Reload changed binaries
+            .code_info = true,        // Get source file/line info
+            .inlined_fns = true,      // Show inlined functions
+            .demangle = true,         // Demangle C++/Rust symbols
+        };
+        
+        g_symbolizer = blaze_symbolizer_new_opts(&opts);
+        if (!g_symbolizer) {
+            fprintf(stderr, "Warning: Failed to initialize BlazeSym symbolizer: %s\n", 
+                    blaze_err_str(blaze_err_last()));
+            fprintf(stderr, "         Stack traces will show raw addresses only\n");
+            symbolize_stacks = false;
+        }
     }
+#endif
 
     /* Only load active tracking probes if requested */
     if (!passive_only) {
         /* Only set up active tracking ring buffer if needed */
-        tracking_rb = ring_buffer__new(bpf_map__fd(task_skel->maps.completion_events), handle_tracking_event, NULL, NULL);
+        tracking_rb = ring_buffer__new(completion_fd, handle_tracking_event, NULL, NULL);
         if (!tracking_rb) {
             fprintf(stderr, "Failed to create tracking events ring buffer\n");
             goto cleanup;
@@ -621,46 +840,32 @@ int main(int argc, char **argv)
             }
         }
 
-        // currently loading the iorq_tracking skeleton & map anyway
-        // for map unpin & cleanup code simplicity...
-        iorq_skel = iorq_bpf__open_and_load();
-        if (!iorq_skel) {
-            fprintf(stderr, "Failed to open and load BPF skeleton: iorq\n");
-            goto cleanup;
-        }
-
-        // ... but actually attaching to the tracepoint only if iorq_tracking is enabled
-        // there's no CPU overhead if iorq tracking is not actually enabled
+        // Only load and attach iorq tracking if explicitly requested
         if (track_iorq) {
-            err = iorq_bpf__attach(iorq_skel);
-            if (err) {
-                fprintf(stderr, "Failed to attach BPF skeleton: iorq\n");
-                goto cleanup;
-            }
+            iorq_skel = iorq_bpf__open_and_load();
+            if (!iorq_skel) { fprintf(stderr, "Failed to open and load BPF skeleton: iorq\n"); goto cleanup; }
+            if (iorq_bpf__attach(iorq_skel)) { fprintf(stderr, "Failed to attach BPF skeleton: iorq\n"); goto cleanup; }
         }
     }
 
     /* Always set up the passive task sampler ring buffer */
-    task_rb = ring_buffer__new(bpf_map__fd(task_skel->maps.task_samples), handle_task_event, NULL, NULL);
+    task_rb = ring_buffer__new(task_samples_fd, handle_task_event, NULL, NULL);
     if (!task_rb) {
         fprintf(stderr, "Failed to create task samples ring buffer\n");
         goto cleanup;
     }
-
-    /* Interesting task filtering config */
-    struct filter_config cfg = {
-        .show_all = show_all,
-        .state_mask = TASK_INTERRUPTIBLE
-    };
-
-    int filter_fd = bpf_map__fd(task_skel->maps.filter_config_map);
-    int key = 0;
-
-    err = bpf_map_update_elem(filter_fd, &key, &cfg, BPF_ANY);
-    if (err) {
-        fprintf(stderr, "Failed to update filter config map: %d\n", err);
-        goto cleanup;
+    
+    /* Set up stack traces ring buffer if stack collection is enabled */
+    struct ring_buffer *stack_rb = NULL;
+    if (dump_kernel_stack_traces || dump_user_stack_traces) {
+        stack_rb = ring_buffer__new(stack_traces_fd, handle_stack_event, NULL, NULL);
+        if (!stack_rb) {
+            fprintf(stderr, "Failed to create stack traces ring buffer\n");
+            goto cleanup;
+        }
     }
+
+
 
     char timestamp[64];  // human readable timestamp string
 
@@ -672,6 +877,30 @@ int main(int argc, char **argv)
     static struct timespec iter_fd_inner_end_ts;
 
     long target_interval_ns = 1000000000L / sample_freq;
+    int iteration_count = 0;
+    
+    // Calculate sample weight in microseconds based on sampling frequency
+    sample_weight_us = 1000000L / sample_freq;
+
+    // Initialize column selection for stdout output
+    if (!output_csv) {
+        const char *columns_to_parse = NULL;
+        
+        if (custom_columns) {
+            columns_to_parse = custom_columns;
+        } else if (narrow_output) {
+            columns_to_parse = narrow_columns;
+        } else if (wide_output) {
+            columns_to_parse = wide_columns;
+        } else {
+            columns_to_parse = normal_columns;
+        }
+        
+        if (parse_column_list(columns_to_parse) < 0) {
+            fprintf(stderr, "Failed to parse column list\n");
+            goto cleanup;
+        }
+    }
 
     // periodically sample and write task states to ringbuf
     while (!exiting) {
@@ -683,19 +912,19 @@ int main(int argc, char **argv)
         strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", tm);
         snprintf(timestamp + 19, sizeof(timestamp) - 19, ".%06ld", tcorr.wall_time.tv_nsec / 1000);
 
-        // Print headers for every sampling iteration in plain text mode (microseconds for this "dev" mode)
+        // Reset unique stacks for new iteration
+        reset_unique_stacks();
+        
+        // Print headers for every sampling iteration in plain text mode
         if (!output_csv) {
-            printf("%-26s  %6s  %7s  %7s  %-6s  %-6s  %-6s  %-4s  %-16s  %-20s  %-16s  %-20s  %-20s  %16s"
-                   "  %16s  %-20s  %-40s  %-26s  %12s  %12s  %12s\n",
-                   "TIMESTAMP", "OFF_US", "TID", "TGID", "STATE", "ON_CPU", "ON_RQ", "MIGP", "USERNAME",
-                   "EXE", "COMM", "SYSCALL", "SYSCALL_ACTIVE", "SYSC_US_SO_FAR", "SYSC_ARG1", "FILENAME",
-                   "CONNECTION", "SYSC_ENTRY_TIME", "SYSC_SEQ_NUM", "SYSC_INF_DSC", "SYSC_INF_VAL"
-            );
+            print_column_headers();
         }
 
         // Trigger the task iterator to collect data - it will send results to the ring buffer
         clock_gettime(CLOCK_MONOTONIC, &iter_fd_start_ts);
-        iter_fd = bpf_iter_create(bpf_link__fd(task_skel->links.get_tasks));
+        int iter_link_fd = task_iter_link ? bpf_link__fd(task_iter_link) :
+            bpf_link__fd(task_skel->links.get_tasks);
+        iter_fd = bpf_iter_create(iter_link_fd);
         if (iter_fd < 0) {
             err = -1;
             fprintf(stderr, "Failed to create iter\n");
@@ -718,6 +947,15 @@ int main(int argc, char **argv)
             goto cleanup;
         }
 
+        // Poll stack traces ring buffer if stack collection is enabled
+        if (stack_rb) {
+            err = ring_buffer__poll(stack_rb, 0 /* timeout, ms */);
+            if (err < 0) {
+                fprintf(stderr, "Error polling stack ring buffer: %d\n", err);
+                goto cleanup;
+            }
+        }
+
         // Only poll event completion tracking ring buffer if is set up and used
         if (!passive_only && tracking_rb) {
             err = ring_buffer__poll(tracking_rb, 0 /* timeout, ms */);
@@ -727,6 +965,11 @@ int main(int argc, char **argv)
             }
         }
 
+        // Print unique stacks if -s is used
+        if (!output_csv && print_stack_traces) {
+            print_unique_stacks();
+        }
+        
         if (!output_csv || output_verbose) {
             printf("\n");
             printf("Wall clock time: %s\n", timestamp);
@@ -760,6 +1003,17 @@ int main(int argc, char **argv)
                 fflush(NULL);
             }
         }
+
+        // Check if we've reached the maximum number of iterations
+        if (max_iterations > 0) {
+            iteration_count++;
+            if (iteration_count >= max_iterations) {
+                if (!output_csv || output_verbose) {
+                    printf("Reached maximum iterations (%d), exiting...\n", max_iterations);
+                }
+                break;
+            }
+        }
     }
 
 cleanup:
@@ -767,24 +1021,38 @@ cleanup:
     fflush(NULL);
     if (is_fd_open(iter_fd)) close(iter_fd);
     if (output_csv) close_output_files(&files);
+    
+    // Clean up cgroup cache
+    cgroup_cache_destroy();
 
     // Unpin maps before destroying skeletons
     if (task_skel) {
-        bpf_map__unpin(task_skel->maps.filter_config_map, NULL);
         bpf_map__unpin(task_skel->maps.task_storage, NULL);
         bpf_map__unpin(task_skel->maps.completion_events, NULL);
         bpf_map__unpin(task_skel->maps.task_samples, NULL);
+        bpf_map__unpin(task_skel->maps.emitted_stacks, NULL);
+        bpf_map__unpin(task_skel->maps.stack_traces, NULL);
     }
 
     // cleanup BUG: if iorq_tracking prog failed to load due to verifier
     // its map lingers around (sudo rm /sys/fs/bpf/iorq_tracking)
-    if (iorq_skel)    bpf_map__unpin(iorq_skel->maps.iorq_tracking, NULL);
+    if (iorq_skel) bpf_map__unpin(iorq_skel->maps.iorq_tracking, NULL);
+    
+    // Destroy skeletons
     if (syscall_skel) syscall_bpf__destroy(syscall_skel);
-    if (iorq_skel)    iorq_bpf__destroy(iorq_skel);
-    if (task_skel)    task_bpf__destroy(task_skel);
+    if (iorq_skel) iorq_bpf__destroy(iorq_skel);
+    if (task_skel) task_bpf__destroy(task_skel);
 
     if (tracking_rb)  ring_buffer__free(tracking_rb);
     if (task_rb)      ring_buffer__free(task_rb);
+    if (stack_rb)     ring_buffer__free(stack_rb);
+
+#ifdef USE_BLAZESYM
+    if (g_symbolizer) {
+        blaze_symbolizer_free(g_symbolizer);
+        g_symbolizer = NULL;
+    }
+#endif
 
     return err < 0 ? -err : 0;
 }

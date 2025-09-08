@@ -6,5 +6,6 @@
 #include "xcapture_user.h"
 
 int handle_task_event(void *ctx, void *data, size_t data_sz);
+int handle_stack_event(void *ctx, void *data, size_t data_sz);
 
 #endif /* __TASK_HANDLER_H */

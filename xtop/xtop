@@ -121,35 +121,40 @@ class LatencyColumnsScreen(ModalScreen):
         background: $panel;
         border: thick $primary;
         padding: 1;
-        width: 60;
-        height: 22;
+        width: 70;
+        height: 24;
+        max-height: 90%;
     }
     
     #latency-title {
         text-align: center;
         text-style: bold;
-        margin-bottom: 1;
+        margin: 0 0 1 0;
+        height: 1;
     }
     
     #current-latency {
-        margin-bottom: 1;
+        margin: 0 0 1 0;
         color: $text-muted;
+        height: 2;
     }
     
     #search-display {
-        margin-bottom: 1;
+        margin: 0 0 0 0;
         color: $text-muted;
         text-align: center;
+        height: 1;
     }
     
     #instructions {
-        margin-bottom: 1;
+        margin: 0 0 1 0;
         text-align: center;
         color: $text-muted;
+        height: 1;
     }
     
     OptionList {
-        height: 12;
+        height: 1fr;
         scrollbar-size: 1 1;
     }
     """
@@ -284,11 +289,16 @@ class LatencyColumnsScreen(ModalScreen):
                     else:
                         self.selected_columns.add(col_id)
                     
+                    # Get current scroll position to maintain it
+                    current_scroll = option_list.scroll_offset
+                    
                     # Refresh the list to update checkbox display
                     self.refresh_column_list()
                     
-                    # Restore the highlighted position
+                    # Restore the highlighted position and scroll
                     option_list.highlighted = highlighted_index
+                    if current_scroll:
+                        option_list.scroll_to(current_scroll.x, current_scroll.y, animate=False)
                     
                 except Exception:
                     pass
@@ -314,35 +324,40 @@ class GroupingMenuScreen(ModalScreen):
         background: $panel;
         border: thick $primary;
         padding: 1;
-        width: 60;
-        height: 22;
+        width: 70;
+        height: 24;
+        max-height: 90%;
     }
     
     #grouping-title {
         text-align: center;
         text-style: bold;
-        margin-bottom: 1;
+        margin: 0 0 1 0;
+        height: 1;
     }
     
     #current-grouping {
-        margin-bottom: 1;
+        margin: 0 0 1 0;
         color: $text-muted;
+        height: 2;
     }
     
     #search-display {
-        margin-bottom: 1;
+        margin: 0 0 0 0;
         color: $text-muted;
         text-align: center;
+        height: 1;
     }
     
     #instructions {
-        margin-bottom: 1;
+        margin: 0 0 1 0;
         text-align: center;
         color: $text-muted;
+        height: 1;
     }
     
     OptionList {
-        height: 12;
+        height: 1fr;
         scrollbar-size: 1 1;
     }
     
@@ -520,11 +535,16 @@ class GroupingMenuScreen(ModalScreen):
                         self.selected_columns.add(col_lower)
                         self.selected_columns_original[col_lower] = col_id
                     
+                    # Get current scroll position to maintain it
+                    current_scroll = option_list.scroll_offset
+                    
                     # Refresh the list to update checkbox display
                     self.refresh_column_list()
                     
-                    # Restore the highlighted position
+                    # Restore the highlighted position and scroll
                     option_list.highlighted = highlighted_index
+                    if current_scroll:
+                        option_list.scroll_to(current_scroll.x, current_scroll.y, animate=False)
                     
                 except Exception as e:
                     # If there's an issue with the API, log it
@@ -906,6 +926,21 @@ class XTopTUI(App):
     def refresh_data(self) -> None:
         """Refresh data display"""
         
+        # Save current cursor position before refresh
+        saved_cursor_row = None
+        saved_cursor_col = None
+        saved_cursor_col_name = None
+        try:
+            table = self.query_one("#main-table", DataTable)
+            if table and table.cursor_coordinate:
+                saved_cursor_row = table.cursor_coordinate.row
+                saved_cursor_col = table.cursor_coordinate.column
+                # Try to get the column name for better restoration
+                if self.display_columns and saved_cursor_col < len(self.display_columns):
+                    saved_cursor_col_name = self.display_columns[saved_cursor_col]
+        except:
+            pass
+        
         # Get data
         data, columns = self.execute_current_query()
         
@@ -1042,6 +1077,36 @@ class XTopTUI(App):
         
         # Try to force a layout update
         self.refresh(layout=True)
+        
+        # Restore cursor position after refresh
+        if saved_cursor_row is not None and saved_cursor_col is not None:
+            try:
+                # Try to find the column by name first
+                if saved_cursor_col_name and self.display_columns:
+                    # Look for the same column name
+                    if saved_cursor_col_name in self.display_columns:
+                        new_col_index = self.display_columns.index(saved_cursor_col_name)
+                    else:
+                        # Try to find a similar column (e.g., if prefixes changed)
+                        new_col_index = saved_cursor_col
+                        for i, col in enumerate(self.display_columns):
+                            if col.lower() == saved_cursor_col_name.lower() or \
+                               (col.replace('.', '_').lower() == saved_cursor_col_name.replace('.', '_').lower()):
+                                new_col_index = i
+                                break
+                else:
+                    new_col_index = saved_cursor_col
+                
+                # Ensure indices are within bounds
+                max_row = min(saved_cursor_row, table.row_count - 1) if table.row_count > 0 else 0
+                max_col = min(new_col_index, len(table.columns) - 1) if table.columns else 0
+                
+                # Move cursor to saved or adjusted position
+                if table.row_count > 0 and len(table.columns) > 0:
+                    table.move_cursor(row=max_row, column=max_col)
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"Could not restore cursor position: {e}")
         
         if len(data) > 0:
             self.update_status(f"Showing {len(data)} rows")

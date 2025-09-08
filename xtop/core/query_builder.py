@@ -281,10 +281,13 @@ class QueryBuilder:
             select_clause = self._build_simple_histogram_select(histogram_type)
         
         # Combine everything
+        # Add filter for non-NULL bucket values to avoid comparison errors
+        bucket_col = 'sc_lat_bkt_us' if histogram_type == 'sclat' else 'io_lat_bkt_us'
         query = f"""WITH {',\n'.join(ctes)}
 {select_clause}
 FROM base_samples
 WHERE ({where_clause})
+    AND {bucket_col} IS NOT NULL
 GROUP BY {self._get_histogram_group_by(time_granularity)}
 ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         
@@ -461,14 +464,14 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         
         if 'kstacks' in required_sources:
             select_cols.extend([
-                "ks.STACK_HASH AS KSTACK_HASH",
-                "ks.STACK_SYMS AS KSTACK_SYMS"
+                "ks.KSTACK_HASH",
+                "ks.KSTACK_SYMS"
             ])
         
         if 'ustacks' in required_sources:
             select_cols.extend([
-                "us.STACK_HASH AS USTACK_HASH",
-                "us.STACK_SYMS AS USTACK_SYMS"
+                "us.USTACK_HASH",
+                "us.USTACK_SYMS"
             ])
         
         if 'partitions' in required_sources:
@@ -509,7 +512,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                     'kstacks', low_time, high_time
                 )
                 from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{kstacks_pattern}')) ks"
-            from_clause += "\n        ON es.kstack_hash = ks.STACK_HASH"
+            from_clause += "\n        ON es.kstack_hash = ks.KSTACK_HASH"
         
         if 'ustacks' in required_sources:
             if self.use_materialized:
@@ -520,7 +523,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                     'ustacks', low_time, high_time
                 )
                 from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{ustacks_pattern}')) us"
-            from_clause += "\n        ON es.ustack_hash = us.STACK_HASH"
+            from_clause += "\n        ON es.ustack_hash = us.USTACK_HASH"
         
         if 'partitions' in required_sources:
             if self.use_materialized:
@@ -675,7 +678,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
             ELSE 0 
         END) as est_time_s
     FROM base_samples
-    WHERE {duration_col} > 0
+    WHERE {duration_col} > 0 AND {bucket_col} IS NOT NULL
     GROUP BY {', '.join(hist_group_cols)}, {bucket_col}
 )"""
         ctes.append(agg_cte)

@@ -117,16 +117,16 @@ class DataMaterializer:
             query = f"""
             CREATE TABLE {table_name} AS
             SELECT 
-                STACK_HASH AS KSTACK_HASH,
-                STACK_SYMS AS KSTACK_SYMS
+                KSTACK_HASH,
+                KSTACK_SYMS
             FROM read_csv_auto('{self.datadir}/xcapture_kstacks_*.csv')
             """
         elif source == 'ustacks':
             query = f"""
             CREATE TABLE {table_name} AS
             SELECT 
-                STACK_HASH AS USTACK_HASH,
-                STACK_SYMS AS USTACK_SYMS
+                USTACK_HASH,
+                USTACK_SYMS
             FROM read_csv_auto('{self.datadir}/xcapture_ustacks_*.csv')
             """
         elif source == 'partitions':

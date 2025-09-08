@@ -49,16 +49,13 @@ int handle_tracking_event(void *ctx, void *data, size_t data_sz)
                 get_str_from_ts(get_wall_from_mono(&tcorr, e->completed_sc_exit_time), ts_exit, sizeof(ts_exit));
 
                 // syscall error vs large value formatting
-                const char *csv_format_str;
                 const char *printf_format_str;
 
                 // CSV header: TYPE,TID,TGID,SYSCALL_NAME,DURATION_NS,SYSC_RET_VAL,SYSC_SEQ_NUM,SYSC_ENTER_TIME
                 // stdout currently prints microseconds (CSV prints ns)
                 if (e->completed_sc_ret_val >= -4095 && e->completed_sc_ret_val <= (1024*1024*16)) {
-                    csv_format_str = "SYSC_END,%d,%d,%s,%llu,%lld,%llu,%s\n";
                     printf_format_str = "SYSC_END  %7d  %7d  %-20s dur= %-'10llu  ret= %-10lld  seq= %-10llu           %s\n";
                 } else {
-                    csv_format_str = "SYSC_END,%d,%d,%s,%llu,0x%llx,%lld,%s\n";
                     printf_format_str = "SYSC_END  %7d  %7d  %-20s dur= %-'10llu  ret= 0x%llx  seq= %-10llu   %s\n";
                 }
 
@@ -68,14 +65,26 @@ int handle_tracking_event(void *ctx, void *data, size_t data_sz)
                         return -1;
                     }
 
-                    fprintf(files.sc_completion_file, csv_format_str,
-                            e->pid,
-                            e->tgid,
-                            safe_syscall_name(e->completed_syscall_nr),
-                            duration_ns,
-                            e->completed_sc_ret_val,
-                            e->completed_sc_sequence_num,
-                            ts_enter);
+                    // Update CSV format to use single quotes for string fields
+                    if (e->completed_sc_ret_val >= -4095 && e->completed_sc_ret_val <= (1024*1024*16)) {
+                        fprintf(files.sc_completion_file, "SYSC_END,%d,%d,'%s',%llu,%lld,%llu,%s\n",
+                                e->pid,
+                                e->tgid,
+                                safe_syscall_name(e->completed_syscall_nr),
+                                duration_ns,
+                                e->completed_sc_ret_val,
+                                e->completed_sc_sequence_num,
+                                ts_enter);
+                    } else {
+                        fprintf(files.sc_completion_file, "SYSC_END,%d,%d,'%s',%llu,0x%llx,%lld,%s\n",
+                                e->pid,
+                                e->tgid,
+                                safe_syscall_name(e->completed_syscall_nr),
+                                duration_ns,
+                                e->completed_sc_ret_val,
+                                e->completed_sc_sequence_num,
+                                ts_enter);
+                    }
                 } else {
                     printf(printf_format_str,
                             e->pid,
@@ -90,8 +99,8 @@ int handle_tracking_event(void *ctx, void *data, size_t data_sz)
             break;
 
         case EVENT_IORQ_COMPLETION:
-            {
-                const struct iorq_completion_event *e = data;
+        {
+            const struct iorq_completion_event *e = data;
 
                 // if insert_time == issue_time then io queue was bypassed (no queuing time)
                 __u64 duration_ns = (e->iorq_complete_time - e->iorq_insert_time);
@@ -107,9 +116,10 @@ int handle_tracking_event(void *ctx, void *data, size_t data_sz)
                         fprintf(stderr, "Failed to rotate output files\n");
                         return -1;
                     }
+                    
                     // nanosec granularity for csv
                     fprintf(files.iorq_completion_file,
-                        "IORQ_END,%d,%d,%d,%d,%d,%d,%u,%u,%llu,%u,%s,%llu,%llu,%llu,%llu,%s,%d\n",
+                        "IORQ_END,%d,%d,%d,%d,%d,%d,%u,%u,%llu,%u,'%s',%llu,%llu,%llu,%llu,%s,%d\n",
                         e->insert_pid, e->insert_tgid, e->issue_pid, e->issue_tgid,
                         e->complete_pid, e->complete_tgid,
                         MAJOR(e->iorq_dev), MINOR(e->iorq_dev), e->iorq_sector, e->iorq_bytes,

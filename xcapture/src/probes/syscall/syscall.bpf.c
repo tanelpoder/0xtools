@@ -3,7 +3,9 @@
 
 #include "syscall/syscall.bpf.h"
 #include "xcapture.h"
+#include "xcapture_config.h"
 #include "xcapture_helpers.h"
+#include "maps/xcapture_maps_common.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -32,7 +34,7 @@ static __u32 __always_inline get_num_inflight_aios_ring(__u64 ctx_id)
 
 // syscall entry & exit handlers for active tracking mode
 SEC("tp_btf/sys_enter")
-int BPF_PROG(handle_sys_enter, struct pt_regs *regs, long syscall_nr)
+int BPF_PROG(xcap_sys_enter, struct pt_regs *regs, long syscall_nr)
 {
     struct task_storage *storage;
     struct task_struct *task = bpf_get_current_task_btf();
@@ -43,20 +45,20 @@ int BPF_PROG(handle_sys_enter, struct pt_regs *regs, long syscall_nr)
     if (!storage)
         return 0;
 
-    storage->sc_enter_time = bpf_ktime_get_ns();
-    storage->in_syscall_nr = syscall_nr;
-    storage->sc_sequence_num++;
+    storage->state.sc_enter_time = bpf_ktime_get_ns();
+    storage->state.in_syscall_nr = syscall_nr;
+    storage->state.sc_sequence_num++;
 
     if (syscall_nr == __NR_io_getevents || syscall_nr == __NR_io_pgetevents) {
         __u64 ctx_id = PT_REGS_PARM1_CORE_SYSCALL(regs); // aio ctx_id (process-wide mem addr)
-        storage->aio_inflight_reqs = get_num_inflight_aios_ring(ctx_id);
+        storage->state.aio_inflight_reqs = get_num_inflight_aios_ring(ctx_id);
     }
 
     return 0;
 }
 
 SEC("tp_btf/sys_exit")
-int BPF_PROG(handle_sys_exit, struct pt_regs *regs, long ret)
+int BPF_PROG(xcap_sys_exit, struct pt_regs *regs, long ret)
 {
     struct task_storage *storage;
     struct task_struct *task = bpf_get_current_task_btf();
@@ -65,7 +67,7 @@ int BPF_PROG(handle_sys_exit, struct pt_regs *regs, long ret)
     if (!storage)
         return 0;
 
-    if (!storage->sc_sampled) { // only emit syscalls caught by task sampler
+    if (!storage->state.sc_sampled) { // only emit syscalls caught by task sampler
         return 0;
     } else {
         struct sc_completion_event *scevent;
@@ -74,13 +76,13 @@ int BPF_PROG(handle_sys_exit, struct pt_regs *regs, long ret)
         if (scevent) {
             scevent->type = EVENT_SYSCALL_COMPLETION;  // Set scevent type
 
-            // if storage->sc_sampled above is true, then storage->pid/tgid
+            // if storage->state.sc_sampled above is true, then storage->state.pid/tgid
             // have been put in place by task sampler already too
-            scevent->pid = storage->pid;
-            scevent->tgid = storage->tgid;
-            scevent->completed_syscall_nr = storage->in_syscall_nr;
-            scevent->completed_sc_sequence_num = storage->sc_sequence_num;
-            scevent->completed_sc_enter_time = storage->sc_enter_time;
+            scevent->pid = storage->state.pid;
+            scevent->tgid = storage->state.tgid;
+            scevent->completed_syscall_nr = storage->state.in_syscall_nr;
+            scevent->completed_sc_sequence_num = storage->state.sc_sequence_num;
+            scevent->completed_sc_enter_time = storage->state.sc_enter_time;
             scevent->completed_sc_exit_time = bpf_ktime_get_ns();
             scevent->completed_sc_ret_val = ret;
 
@@ -89,8 +91,8 @@ int BPF_PROG(handle_sys_exit, struct pt_regs *regs, long ret)
     }
 
     // clear sampled status as the syscall exits
-    storage->sc_sampled = false;
-    storage->in_syscall_nr = -1;
-    storage->sc_enter_time = 0;
+    storage->state.sc_sampled = false;
+    storage->state.in_syscall_nr = -1;
+    // storage->state.sc_enter_time = 0;
     return 0;
 }
