@@ -1,6 +1,0 @@
-#!/usr/bin/bash
-
-CURDIR="$(dirname "$(realpath "$0")")"
-
-${CURDIR}/xcapture-bpf --xtop --clear-screen $*
-
