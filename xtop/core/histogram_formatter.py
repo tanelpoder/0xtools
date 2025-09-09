@@ -133,6 +133,59 @@ class HistogramFormatter:
         
         return rows
     
+    def format_histogram_chart(self, 
+                               histogram_data: List[Tuple[int, int, float, float]], 
+                               width: int = 40, 
+                               show_percentage: bool = True) -> str:
+        """Create a Unicode bar chart from histogram data
+        
+        Args:
+            histogram_data: List of (bucket_us, count, est_time, global_max) tuples
+            width: Width of the chart in characters
+            show_percentage: Whether to show percentage labels
+            
+        Returns:
+            Unicode bar chart string
+        """
+        if not histogram_data:
+            return ""
+        
+        # Calculate totals
+        total_samples = sum(count for _, count, _, _ in histogram_data)
+        if total_samples == 0:
+            return ""
+        
+        # Unicode block characters for bar chart
+        blocks = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
+        
+        lines = []
+        max_count = max(count for _, count, _, _ in histogram_data)
+        
+        for bucket_us, count, _, _ in histogram_data:
+            # Format label
+            label = self.format_latency_range(bucket_us)
+            
+            # Calculate bar width
+            bar_width = (count / max_count) * width if max_count > 0 else 0
+            full_blocks = int(bar_width)
+            partial = bar_width - full_blocks
+            
+            # Create bar
+            bar = '█' * full_blocks
+            if partial > 0:
+                bar += blocks[min(int(partial * 8), 7)]
+            
+            # Add percentage if requested
+            if show_percentage:
+                pct = (count / total_samples * 100)
+                line = f"{label:>12} {bar:<{width}} {pct:5.1f}%"
+            else:
+                line = f"{label:>12} {bar}"
+            
+            lines.append(line)
+        
+        return '\n'.join(lines)
+    
     def create_unicode_bar_chart(self, 
                                  histogram_data: List[Tuple[int, int, float, float]],
                                  width: int = 30,

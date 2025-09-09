@@ -258,7 +258,9 @@ class TableFormatter:
     
     def format_table(self, data: List[Dict[str, Any]], columns: List[str],
                     headers: Optional[Dict[str, str]] = None,
-                    title: str = "Results") -> str:
+                    title: str = "Results",
+                    reorder: bool = True,
+                    right_align_all: bool = False) -> str:
         """Format results as aligned table with psn-style formatting"""
         if not data:
             return "No data found for the specified criteria.\n"
@@ -266,8 +268,9 @@ class TableFormatter:
         if headers is None:
             headers = self.generate_headers(columns)
         
-        # Reorder columns
-        columns = self.reorder_columns_samples_first(columns)
+        # Reorder columns unless explicitly disabled
+        if reorder:
+            columns = self.reorder_columns_samples_first(columns)
         
         # Calculate column widths
         widths = self.calculate_column_widths(data, columns, headers)
@@ -288,7 +291,7 @@ class TableFormatter:
         header_parts = []
         for col in columns:
             header = headers.get(col, col)
-            if col in numeric_columns:
+            if right_align_all or (col in numeric_columns):
                 # Right-align numeric headers
                 header_parts.append(header.rjust(widths[col]))
             else:
@@ -308,7 +311,7 @@ class TableFormatter:
                 val = self._format_value(col, row.get(col))
                 
                 # Align based on whether column contains numeric data
-                if col in numeric_columns:
+                if right_align_all or (col in numeric_columns):
                     row_parts.append(val.rjust(widths[col]))
                 else:
                     row_parts.append(val.ljust(widths[col]))

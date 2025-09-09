@@ -68,6 +68,97 @@ class CSVTimeFilter:
         
         # Both bounds specified - build optimized glob
         return self._build_glob_pattern(csv_type, low_time, high_time)
+
+    def _iter_hours(self, low_time: datetime, high_time: datetime):
+        """Yield each hour boundary that overlaps [low_time, high_time).
+
+        Example: 16:25–17:05 yields 16:00 and 17:00 hours.
+        """
+        if low_time is None or high_time is None:
+            return
+        # Floor to start hour
+        t = low_time.replace(minute=0, second=0, microsecond=0)
+        # Compute exclusive end boundary
+        end = high_time.replace(minute=0, second=0, microsecond=0)
+        if (high_time.minute != 0) or (high_time.second != 0) or (high_time.microsecond != 0):
+            end = end + timedelta(hours=1)
+        while t < end:
+            yield t
+            t = t + timedelta(hours=1)
+
+    def get_files_for_range(self,
+                            csv_type: str,
+                            low_time: Optional[datetime],
+                            high_time: Optional[datetime]):
+        """Return (parquet_files, csv_files) for the given hourly time window.
+
+        Prefers per-hour .parquet if present, otherwise uses .csv for that hour.
+        Hours without either file are skipped.
+        """
+        parquet_files = []
+        csv_files = []
+
+        # If no complete range is supplied, we can't enumerate hours reliably
+        if not low_time or not high_time:
+            return parquet_files, csv_files
+
+        for hour_dt in self._iter_hours(low_time, high_time):
+            date_str = hour_dt.strftime("%Y-%m-%d")
+            hour_str = hour_dt.strftime("%H")
+            base = f"xcapture_{csv_type}_{date_str}.{hour_str}"
+            parquet_path = self.datadir / f"{base}.parquet"
+            csv_path = self.datadir / f"{base}.csv"
+            try:
+                if parquet_path.exists():
+                    parquet_files.append(str(parquet_path))
+                elif csv_path.exists():
+                    csv_files.append(str(csv_path))
+                else:
+                    # Nothing for this hour; skip
+                    self.logger.debug(f"No files for {base} (type={csv_type})")
+            except Exception as e:
+                self.logger.warning(f"Error checking files for {base}: {e}")
+
+        # Log summary
+        if parquet_files:
+            self.logger.info(f"{csv_type}: using parquet for {len(parquet_files)} hour(s)")
+        if csv_files:
+            self.logger.info(f"{csv_type}: using csv for {len(csv_files)} hour(s)")
+
+        return parquet_files, csv_files
+
+    def build_mixed_source_select(self,
+                                  csv_type: str,
+                                  low_time: Optional[datetime],
+                                  high_time: Optional[datetime]) -> str:
+        """Build a SELECT source that prefers per-hour parquet, falls back to CSV.
+
+        Returns a SELECT statement suitable for use as a subquery, e.g.:
+          SELECT * FROM read_parquet(['file1.parquet','file2.parquet'])
+        or when both exist across hours:
+          (SELECT * FROM read_parquet([...]) UNION ALL SELECT * FROM read_csv_auto([...] ))
+
+        If no time range is provided or no files found, falls back to CSV glob.
+        """
+        pq_files, csv_files = self.get_files_for_range(csv_type, low_time, high_time)
+
+        def _list_literal(files):
+            # Build a DuckDB list literal of quoted file paths
+            return '[' + ', '.join(f"'{p}'" for p in files) + ']'
+
+        if pq_files and csv_files:
+            return (
+                f"(SELECT * FROM read_parquet({_list_literal(pq_files)}) "
+                f"UNION ALL SELECT * FROM read_csv_auto({_list_literal(csv_files)}))"
+            )
+        elif pq_files:
+            return f"SELECT * FROM read_parquet({_list_literal(pq_files)})"
+        elif csv_files:
+            return f"SELECT * FROM read_csv_auto({_list_literal(csv_files)})"
+        else:
+            # Fallback to previous behavior: CSV glob pattern
+            pattern = self.get_hourly_files_in_range(csv_type, low_time, high_time)
+            return f"SELECT * FROM read_csv_auto('{pattern}')"
     
     def _build_glob_pattern(self, 
                            csv_type: str,

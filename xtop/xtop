@@ -7,7 +7,7 @@ Uses Textual for proper keyboard handling without requiring root privileges
 import argparse
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 import platform
 import logging
@@ -36,6 +36,7 @@ from core import (
     ChartGenerator,
     NavigationState
 )
+from core.histogram_formatter import HistogramFormatter
 
 # Import TUI components
 from tui.cell_peek_modal import HistogramPeekModal
@@ -599,7 +600,7 @@ class XTopTUI(App):
     
     #global-breadcrumb {
         dock: top;
-        height: 3;
+        height: 4;
         padding: 0 1;
         border: solid cyan;
         background: $primary;
@@ -657,7 +658,7 @@ class XTopTUI(App):
             )
             self.logger = logging.getLogger('xtop-tui')
             self.logger.info(f"Starting xtop-tui with datadir={datadir}")
-            self.logger.info(f"Time range: {low_time} to {high_time}")
+            self.logger.info(f"Time Range: {low_time} to {high_time}")
         
         # Initialize core components
         self.data_source = XCaptureDataSource(datadir, duckdb_threads=duckdb_threads)
@@ -672,19 +673,23 @@ class XTopTUI(App):
         self.display_columns = []
         self.selected_latency_columns = []  # Track selected latency/aggregate columns
         
-        # If no time range specified, use available data range
+        # If no time range specified, select latest 60 minutes of available data based on files
         if not low_time and not high_time:
-            data_min, data_max = self.data_source.get_time_range()
-            if data_min and data_max:
-                low_time = data_min
-                high_time = data_max
+            try:
+                low_time, high_time = self._detect_default_time_range()
                 if self.logger:
-                    self.logger.info(f"Using data time range: {data_min} to {data_max}")
+                    self.logger.info(f"Auto-selected latest 60 minutes: {low_time} to {high_time}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"Failed to detect default time range: {e}")
         
         # Set query type to dynamic (the only type now) and time range
         self.query_params.query_type = 'dynamic'
         self.query_params.low_time = low_time
         self.query_params.high_time = high_time
+
+        # Store initial time range for display purposes
+        self.initial_time_range = (low_time, high_time)
         
         # Use custom group by columns if provided, otherwise use defaults
         if self.initial_group_by:
@@ -724,8 +729,8 @@ class XTopTUI(App):
     def compose(self) -> ComposeResult:
         """Create the UI layout"""
         yield Header()
-        
-        # Breadcrumb display
+
+        # Breadcrumb display (includes Time Range, Filters and Path)
         yield Static("Filters: No filters applied\nPath: Loading...", id="global-breadcrumb")
         
         # Single data table (no tabs)
@@ -733,6 +738,30 @@ class XTopTUI(App):
                     
         yield Static("Ready", id="status")
         yield Footer()
+
+    def _detect_default_time_range(self) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """Detect latest 60 minutes of available data by scanning samples files (csv/parquet)."""
+        from pathlib import Path as _Path
+        import re as _re
+        datadir = _Path(self.datadir)
+        candidates = []
+        # Consider both parquet and csv
+        for ext in ("parquet", "csv"):
+            for p in datadir.glob(f"xcapture_samples_*.{ext}"):
+                m = _re.search(r"xcapture_samples_(\d{4}-\d{2}-\d{2})\.(\d{2})\.", p.name + '.')
+                if m:
+                    date_str, hh = m.group(1), m.group(2)
+                    try:
+                        hour_dt = datetime.strptime(f"{date_str} {hh}", "%Y-%m-%d %H")
+                        candidates.append(hour_dt)
+                    except Exception:
+                        continue
+        if not candidates:
+            return (None, None)
+        latest_hour = max(candidates)
+        high_time = latest_hour.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        low_time = high_time - timedelta(hours=1)
+        return (low_time, high_time)
     
     def on_mount(self) -> None:
         """Initialize when app is mounted"""
@@ -952,8 +981,20 @@ class XTopTUI(App):
             filter_display = self.navigation.get_filter_display()
             nav_path = self.navigation.get_breadcrumb_path()
             
-            # Combine both in the breadcrumb area (two lines)
-            breadcrumb_text = f"Filters: {filter_display}\nPath: {nav_path}"
+            # Build time range line from current query params
+            tr_low = getattr(self.query_params, 'low_time', None)
+            tr_high = getattr(self.query_params, 'high_time', None)
+            if tr_low and tr_high:
+                try:
+                    mins = int((tr_high - tr_low).total_seconds() // 60)
+                except Exception:
+                    mins = None
+                suffix = f" ({mins} min)" if mins is not None else ""
+                time_line = f"TimeRng: {tr_low.strftime('%Y-%m-%d %H:%M:%S')} -> {tr_high.strftime('%Y-%m-%d %H:%M:%S')}{suffix}"
+            else:
+                time_line = "TimeRng: Unknown"
+            # Combine all into breadcrumb area (three lines)
+            breadcrumb_text = f"{time_line}\nFilters: {filter_display}\nPath: {nav_path}"
             
             if self.logger:
                 self.logger.info(f"Updating global breadcrumb with: {breadcrumb_text.replace(chr(10), ' | ')}")
@@ -2031,7 +2072,7 @@ class XTopTUI(App):
                 except Exception:
                     pass
                 # Smart insertion: if we're adding columns and cursor was on a column,
-                # insert new columns after the cursor position
+                # insert new columns at the cursor position (before it)
                 if cursor_column and len(new_columns) > len(current_columns):
                     # Find which columns were added (case-insensitive comparison)
                     current_columns_lower = [col.lower() for col in current_columns]
@@ -2041,14 +2082,19 @@ class XTopTUI(App):
                         # Remove added columns from their default positions
                         reordered_columns = [col for col in new_columns if col not in added_columns]
                         
-                        # Find cursor column position in the result
+                        # Find insertion index: at the cursor column position
                         if cursor_column in reordered_columns:
-                            insert_index = reordered_columns.index(cursor_column) + 1
+                            insert_index = reordered_columns.index(cursor_column)
                         else:
-                            # If cursor column was removed, insert at the end
-                            insert_index = len(reordered_columns)
+                            # If the cursor column was deselected, try to use its old index
+                            try:
+                                old_idx = current_columns.index(cursor_column)
+                            except ValueError:
+                                old_idx = len(reordered_columns)
+                            # Clamp to current bounds
+                            insert_index = min(max(old_idx, 0), len(reordered_columns))
                         
-                        # Insert the new columns after cursor position
+                        # Insert the new columns at computed index, preserving user-selected order
                         for col in added_columns:
                             reordered_columns.insert(insert_index, col)
                             insert_index += 1
@@ -2056,7 +2102,7 @@ class XTopTUI(App):
                         new_columns = reordered_columns
                         
                         if self.logger:
-                            self.logger.info(f"Reordered columns for smart insertion: {new_columns}")
+                            self.logger.info(f"Reordered columns for smart insertion at cursor: {new_columns}")
                 # Get current filters before changing grouping
                 current_filters = self.navigation.get_current_filters()
                 current_exclude_filters = self.navigation.current_frame.exclude_filters.copy() if self.navigation.current_frame else {}
@@ -2337,6 +2383,28 @@ def parse_args():
     
     parser.add_argument('--duckdb-threads', type=int, default=None, metavar='N',
                         help='Number of DuckDB threads (1 for deterministic results, default: auto)')
+    parser.add_argument('--duckdb-profiling', type=str, default='standard',
+                        help='DuckDB profiling mode when --debuglog is enabled (standard, query_tree, json). Default: standard')
+    
+    # Text mode (non-interactive) and output options
+    parser.add_argument('--textmode', '--testmode', dest='testmode', action='store_true',
+                        help='Run in non-interactive (text) mode and print results to stdout')
+    parser.add_argument('--format', dest='out_format', choices=['table', 'csv', 'json'], default='table',
+                        help='Output format in text mode (default: table)')
+    parser.add_argument('--no-reorder', action='store_true',
+                        help='Do not reorder columns in table output (deterministic order)')
+    parser.add_argument('--peek', nargs='?', const=0, type=int,
+                        help='Peek row index (0-based). If provided without a value, uses 0 (first row).')
+    
+    # Additional query controls useful in text mode
+    parser.add_argument('-L', '--latency', dest='latency_cols', type=str, metavar='COLS',
+                        help='Latency/percentile/histogram columns (comma-separated)')
+    parser.add_argument('-l', '--list', dest='list_columns', action='store_true',
+                        help='List all available columns for grouping (including derived) and exit')
+    parser.add_argument('-w', '--where', dest='where_clause', type=str, default='1=1',
+                        help='SQL WHERE clause filter for dynamic queries')
+    parser.add_argument('--limit', dest='limit', type=int, default=30,
+                        help='Row limit for results (default: 30)')
     
     parser.add_argument('--version', action='version',
                         version=f'%(prog)s {__version__}')
@@ -2374,6 +2442,18 @@ def main():
     """Main entry point"""
     args = parse_args()
     
+    # If listing columns, force textmode and don't execute queries later
+    if getattr(args, 'list_columns', False):
+        setattr(args, 'testmode', True)
+    
+    # Configure debug logging for textmode as well if --debuglog is provided
+    if getattr(args, 'testmode', False) and getattr(args, 'debug_log', None):
+        logging.basicConfig(
+            filename=args.debug_log,
+            level=logging.DEBUG,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+    
     # Check if datadir is provided (either via command line or environment variable)
     if not args.datadir:
         print("Error: Data directory not specified.", file=sys.stderr)
@@ -2387,6 +2467,41 @@ def main():
         low_time = parse_time(args.from_time) if args.from_time else None
         high_time = parse_time(args.to_time) if args.to_time else None
         
+        # If no time range provided, auto-select the latest 60 minutes of available data
+        if not low_time and not high_time:
+            def _detect_default_time_range(datadir: str):
+                from pathlib import Path as _Path
+                import re as _re
+                candidates = []
+                dd = _Path(datadir)
+                for ext in ("parquet", "csv"):
+                    for p in dd.glob(f"xcapture_samples_*.{ext}"):
+                        m = _re.search(r"xcapture_samples_(\d{4}-\d{2}-\d{2})\.(\d{2})\.", p.name + '.')
+                        if m:
+                            date_str, hh = m.group(1), m.group(2)
+                            try:
+                                return datetime.strptime(f"{date_str} {hh}", "%Y-%m-%d %H")
+                            except Exception:
+                                continue
+                return None
+            # Find the latest hour by scanning, then set low/high around it
+            latest_hour = None
+            from pathlib import Path as _Path
+            import re as _re
+            candidates = []
+            for ext in ("parquet", "csv"):
+                for p in _Path(args.datadir).glob(f"xcapture_samples_*.{ext}"):
+                    m = _re.search(r"xcapture_samples_(\d{4}-\d{2}-\d{2})\.(\d{2})\.", p.name + '.')
+                    if m:
+                        try:
+                            candidates.append(datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H"))
+                        except Exception:
+                            pass
+            if candidates:
+                latest_hour = max(candidates)
+                high_time = latest_hour.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                low_time = high_time - timedelta(hours=1)
+
         # Parse group by columns if provided (normalize to lowercase)
         initial_group_by = None
         if args.group_by:
@@ -2398,6 +2513,346 @@ def main():
         if args.append_group_by:
             # Split by comma, strip whitespace, convert to lowercase
             append_group_by = [col.strip().lower() for col in args.append_group_by.split(',') if col.strip()]
+        
+        # If --testmode is specified, run non-interactive path
+        if args.testmode:
+            # Initialize data source and engine once
+            data_source = XCaptureDataSource(args.datadir, duckdb_threads=args.duckdb_threads)
+            engine = QueryEngine(data_source, duckdb_profiling_mode=args.duckdb_profiling)
+            
+            # Column listing mode (formatted, with types)
+            if args.list_columns:
+                schema_by_src = engine._discover_all_schemas() or None
+                # Use existing cache via helper
+                # Build (name,type) dict
+                schema = {}
+                for src, cols in engine.schema_cache.items():
+                    schema[src] = list(cols)
+                # Append derived to samples as VARCHAR
+                try:
+                    from core.query_builder import QueryBuilder as _QB
+                    samples_list = schema.get('samples', [])
+                    lower = {n.lower() for n, _ in samples_list}
+                    for name in _QB.COMPUTED_COLUMNS:
+                        if name.lower() not in lower:
+                            samples_list.append((name, 'VARCHAR'))
+                    schema['samples'] = samples_list
+                except Exception:
+                    pass
+                # Print formatted per source
+                order = ['samples', 'syscend', 'iorqend', 'kstacks', 'ustacks', 'partitions']
+                def norm_type(t: str) -> str:
+                    ts = (t or '').upper()
+                    if 'CHAR' in ts or 'STRING' in ts or 'VARCHAR' in ts or 'TEXT' in ts:
+                        return 'string'
+                    if 'INT' in ts:
+                        return 'int'
+                    if 'DOUBLE' in ts or 'FLOAT' in ts or 'DECIMAL' in ts or 'REAL' in ts:
+                        return 'float'
+                    if 'BOOL' in ts:
+                        return 'bool'
+                    if 'TIMESTAMP' in ts or 'DATE' in ts:
+                        return 'timestamp'
+                    return t.lower()
+                NAME_W = 28
+                TYPE_W = 9   # standardized type width
+                for src in order:
+                    cols = schema.get(src, [])
+                    if not cols:
+                        continue
+                    print(src.lower())
+                    print('=' * 38)
+                    # Sort and normalize
+                    rows = [(name.lower(), norm_type(t)) for name, t in cols]
+                    rows.sort(key=lambda x: x[0])
+                    for name_lc, tnorm in rows:
+                        print(f"{name_lc:<{NAME_W}} {tnorm:>{TYPE_W}}")
+                    print("")
+                # Always include latency section with all available latency columns
+                try:
+                    from core.query_builder import QueryBuilder as _QB
+                    all_latency = set()
+                    for key in _QB.COLUMN_SOURCE_MAP.keys():
+                        k = key.lower()
+                        if k.startswith('sc.') or k == 'sclat_histogram' or k.startswith('io.') or k == 'iolat_histogram':
+                            all_latency.add(k)
+                    if all_latency:
+                        print('latency (--latency)')
+                        print('=' * 38)
+                        def lat_kind(n: str) -> str:
+                            # Infer type: histograms as string, metrics as float
+                            return 'string' if 'histogram' in n else 'float'
+                        for n in sorted(all_latency):
+                            print(f"{n:<{NAME_W}} {lat_kind(n):>{TYPE_W}}")
+                        print("")
+                except Exception:
+                    pass
+                return
+            
+            # Prepare group columns: start from provided -g or defaults, then append -G
+            if initial_group_by is None:
+                # Use engine defaults
+                group_cols = list(engine.DEFAULT_GROUP_COLS.get('dynamic', []))
+            else:
+                group_cols = list(initial_group_by)
+            if append_group_by:
+                for col in append_group_by:
+                    if col not in group_cols:
+                        group_cols.append(col)
+            
+            # Latency columns
+            latency_cols = []
+            if args.latency_cols:
+                latency_cols = [c.strip().lower() for c in args.latency_cols.split(',') if c.strip()]
+            
+            # Build params
+            params = QueryParams(
+                where_clause=args.where_clause or '1=1',
+                group_cols=group_cols,
+                low_time=low_time,
+                high_time=high_time,
+                limit=args.limit
+            )
+            
+            # Execute
+            result = engine.execute_with_params(params, debug=bool(args.debug_log), latency_columns=latency_cols)
+            formatter = TableFormatter()
+
+            # Show time range banner in testmode
+            if low_time and high_time:
+                try:
+                    mins = int((high_time - low_time).total_seconds() // 60)
+                except Exception:
+                    mins = None
+                suffix = f" ({mins} min)" if mins is not None else ""
+                print(f"Time Range: {low_time.strftime('%Y-%m-%d %H:%M:%S')} -> {high_time.strftime('%Y-%m-%d %H:%M:%S')}{suffix}")
+
+            if args.out_format == 'table':
+                # Use result.columns order; allow disabling reorder
+                text = formatter.format_table(result.data, result.columns, title='Results', reorder=not args.no_reorder)
+                print()
+                print(text)
+            elif args.out_format == 'csv':
+                text = formatter.format_csv(result.data, result.columns)
+                print(text)
+            else:  # json
+                text = formatter.format_json(result.data)
+                print(text)
+
+            # Handle peek if requested
+            if args.peek is not None:
+                row_index = args.peek
+                if row_index < 0 or row_index >= len(result.data):
+                    print(f"Peek row index {row_index} out of range (0..{len(result.data)-1})", file=sys.stderr)
+                    return
+                row = result.data[row_index]
+                columns = result.columns
+                
+                # Identify peekable columns
+                def is_hist_col(name: str) -> bool:
+                    n = name.lower()
+                    return 'histogram' in n or n.endswith('_hist')
+                def is_kstack_col(name: str) -> bool:
+                    return name.lower() == 'kstack_hash' or name.lower() == 'kstack_syms'
+                def is_ustack_col(name: str) -> bool:
+                    return name.lower() == 'ustack_hash' or name.lower() == 'ustack_syms'
+                def is_extra_col(name: str) -> bool:
+                    return name.lower() == 'extra_info'
+                
+                def has_meaningful_value(val: Any) -> bool:
+                    return val is not None and val != '' and val != '-'
+                
+                peek_cols = [c for c in columns if (is_hist_col(c) or is_kstack_col(c) or is_ustack_col(c) or is_extra_col(c)) and has_meaningful_value(row.get(c))]
+                
+                if not peek_cols:
+                    # Nothing peekable on this row
+                    return
+                
+                hist_fmt = HistogramFormatter()
+                
+                if args.out_format == 'table':
+                    # Print a human-readable peek per column
+                    for col in peek_cols:
+                        value = row.get(col)
+                        print(f"PEEK: {col} (row {row_index})")
+                        if is_hist_col(col):
+                            hist_data = hist_fmt.parse_histogram_string(value)
+                            if not hist_data:
+                                continue
+                            # Summary
+                            summary = hist_fmt.format_histogram_summary(hist_data)
+                            if summary:
+                                print(summary)
+                            # Chart
+                            chart = hist_fmt.format_histogram_chart(hist_data, width=40, show_percentage=True)
+                            if chart:
+                                print(chart)
+                            # Tabular detail
+                            table_rows = hist_fmt.format_histogram_table_data(hist_data)
+                            # Add est_evts per bucket = count / (bucket_us in seconds)
+                            # hist_data entries: (bucket_us, count, est_time_s, global_max)
+                            if table_rows:
+                                for i, (bucket_us, count, est_time_s, _gm) in enumerate(hist_data[:len(table_rows)]):
+                                    est_evts = int((1000000.0 / bucket_us * count)) if bucket_us > 0 else 0
+                                    table_rows[i]['est_evts'] = est_evts
+                            if table_rows:
+                                # Show only: latency, samples, est_ev/s, est_ev%, est_time%
+                                cols = ['latency_range','samples','est_evts','pct_samples','pct_time']
+                                headers = {
+                                    'latency_range':'latency',
+                                    'samples':'samples',
+                                    'est_evts':'est_ev/s',
+                                    'pct_samples':'est_ev%',
+                                    'pct_time':'est_time%'
+                                }
+                                detail = formatter.format_table(table_rows, cols, headers=headers, title=f"{col} buckets", reorder=False, right_align_all=True)
+                                print()
+                                print(detail, end='')
+                        elif is_kstack_col(col) or is_ustack_col(col):
+                            is_kernel = is_kstack_col(col)
+                            stack_hash = value
+                            # Resolve syms from CSVs
+                            try:
+                                syms = engine.lookup_stack_trace(stack_hash, is_kernel=is_kernel)
+                            except Exception as e:
+                                syms = None
+                            if not syms:
+                                print(f"No stack trace available for hash {stack_hash}")
+                                continue
+                            frames = [s for s in syms.split(';') if s]
+                            # Print top function and frames
+                            print(f"hash: {stack_hash}")
+                            if frames:
+                                print(f"top: {frames[0].split('+')[0]}")
+                            for idx, fr in enumerate(frames[:50]):
+                                print(f"{idx:2d}: {fr}")
+                        elif is_extra_col(col):
+                            # Pretty-print JSON from extra_info
+                            import json as _json
+                            try:
+                                obj = _json.loads(value)
+                                print(_json.dumps(obj, indent=2, ensure_ascii=False))
+                            except Exception as e:
+                                print(f"Invalid JSON: {e}")
+                                print(str(value))
+                        print() 
+                elif args.out_format == 'csv':
+                    # Append CSV blocks for each peekable histogram
+                    for col in peek_cols:
+                        value = row.get(col)
+                        print("")
+                        print(f"# PEEK {col} row={row_index}")
+                        if is_hist_col(col):
+                            hist_data = hist_fmt.parse_histogram_string(value)
+                            if not hist_data:
+                                continue
+                            # CSV header: bucket_us, samples, est_ev/s, est_ev%, est_time%, est_time_s
+                            print("bucket_us,count,est_evts,est_ev_pct,est_time_pct,est_time_s")
+                            total_samples = sum(c for _, c, _, _ in hist_data) or 1
+                            total_time = sum(t for _, _, t, _ in hist_data) or 1.0
+                            for bucket_us, count, est_time, _ in hist_data:
+                                pct_samples = (count/total_samples)*100.0
+                                pct_time = (est_time/total_time)*100.0
+                                est_evts = (1000000.0 / bucket_us * count) if bucket_us > 0 else 0.0
+                                print(f"{bucket_us},{count},{int(est_evts)},{pct_samples:.3f},{pct_time:.3f},{est_time:.6f}")
+                        elif is_kstack_col(col) or is_ustack_col(col):
+                            is_kernel = is_kstack_col(col)
+                            stack_hash = value
+                            try:
+                                syms = engine.lookup_stack_trace(stack_hash, is_kernel=is_kernel)
+                            except Exception:
+                                syms = None
+                            print("frame,func")
+                            if syms:
+                                frames = [s for s in syms.split(';') if s]
+                                for idx, fr in enumerate(frames):
+                                    print(f"{idx},{fr}")
+                        elif is_extra_col(col):
+                            # Flatten JSON into key,value rows
+                            import json as _json
+                            def _flatten(prefix, obj, out):
+                                if isinstance(obj, dict):
+                                    for k, v in obj.items():
+                                        _flatten(f"{prefix}.{k}" if prefix else k, v, out)
+                                elif isinstance(obj, list):
+                                    for i, v in enumerate(obj):
+                                        _flatten(f"{prefix}[{i}]", v, out)
+                                else:
+                                    out.append((prefix, obj))
+                            try:
+                                obj = _json.loads(value)
+                                flat = []
+                                _flatten('', obj, flat)
+                                print("key,value")
+                                for k, v in flat:
+                                    # Escape commas and quotes minimally
+                                    vs = str(v)
+                                    if ',' in vs or '"' in vs:
+                                        vs = '"' + vs.replace('"','""') + '"'
+                                    print(f"{k},{vs}")
+                            except Exception:
+                                print("key,value")
+                                vs = str(value)
+                                if ',' in vs or '"' in vs:
+                                    vs = '"' + vs.replace('"','""') + '"'
+                                print(f"raw,{vs}")
+                else:  # json
+                    # Wrap output with peek data as an additional JSON block
+                    import json as _json
+                    peek_out = {}
+                    for col in peek_cols:
+                        value = row.get(col)
+                        if is_hist_col(col):
+                            hist_data = hist_fmt.parse_histogram_string(value)
+                            if not hist_data:
+                                continue
+                            total_samples = sum(c for _, c, _, _ in hist_data) or 1
+                            total_time = sum(t for _, _, t, _ in hist_data) or 1.0
+                            entries = []
+                            for bucket_us, count, est_time, _ in hist_data:
+                                entries.append({
+                                    'bucket_us': bucket_us,
+                                    'count': count,
+                                    'est_time_s': est_time,
+                                    'pct_samples': (count/total_samples)*100.0,
+                                    'pct_time': (est_time/total_time)*100.0
+                                })
+                            peek_out[col] = {
+                                'row_index': row_index,
+                                'histogram': entries
+                            }
+                        elif is_kstack_col(col) or is_ustack_col(col):
+                            is_kernel = is_kstack_col(col)
+                            stack_hash = value
+                            try:
+                                syms = engine.lookup_stack_trace(stack_hash, is_kernel=is_kernel)
+                            except Exception:
+                                syms = None
+                            frames = []
+                            if syms:
+                                frames = [s for s in syms.split(';') if s]
+                            peek_out[col] = {
+                                'row_index': row_index,
+                                'hash': stack_hash,
+                                'frames': frames
+                            }
+                        elif is_extra_col(col):
+                            try:
+                                obj = _json.loads(value)
+                                peek_out[col] = {
+                                    'row_index': row_index,
+                                    'json': obj
+                                }
+                            except Exception as e:
+                                peek_out[col] = {
+                                    'row_index': row_index,
+                                    'raw': value,
+                                    'error': str(e)
+                                }
+                    # Print as a separate JSON object after the main array
+                    if peek_out:
+                        print(_json.dumps({'peek': peek_out}, indent=2))
+            return
         
         # Create and run TUI (removed query argument - always uses dynamic)
         app = XTopTUI(args.datadir, low_time, high_time, args.debug_log, 

@@ -81,7 +81,8 @@ class QueryBuilder:
     
     # Computed columns that are always available in enriched_samples
     COMPUTED_COLUMNS = [
-        'filenamesum', 'fext', 'comm2', 'connection'
+        'filenamesum', 'fext', 'comm2', 'connection',
+        'connection2', 'connectionsum', 'connectionsum2'
     ]
     
     def __init__(self, datadir: Path, fragments_path: Path, 
@@ -217,8 +218,9 @@ class QueryBuilder:
             # No histograms, use base_samples directly
             from_clause = "FROM base_samples bs"
         
-        # Combine everything
-        query = f"WITH {',\n'.join(ctes)}\n{final_select}\n{from_clause}\n{group_by}\nORDER BY samples DESC"
+        # Combine everything (avoid backslashes in f-string expressions for Python 3.9)
+        ctes_sql = ",\n".join(ctes)
+        query = f"WITH {ctes_sql}\n{final_select}\n{from_clause}\n{group_by}\nORDER BY samples DESC"
         if limit:
             query += f"\nLIMIT {limit}"
         
@@ -283,7 +285,8 @@ class QueryBuilder:
         # Combine everything
         # Add filter for non-NULL bucket values to avoid comparison errors
         bucket_col = 'sc_lat_bkt_us' if histogram_type == 'sclat' else 'io_lat_bkt_us'
-        query = f"""WITH {',\n'.join(ctes)}
+        ctes_sql = ",\n".join(ctes)
+        query = f"""WITH {ctes_sql}
 {select_clause}
 FROM base_samples
 WHERE ({where_clause})
@@ -334,11 +337,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         return f"""SELECT
     {bucket_col} AS bucket_us,
     COUNT(*) as count,
-    SUM(CASE 
-        WHEN {duration_col} > 0 
-        THEN (1000000000.0 / {duration_col}) * {bucket_col} / 1000000.0
-        ELSE 0 
-    END) as est_time_s"""
+    COUNT(*) * {bucket_col} / 1000000.0 as est_time_s"""
     
     def _get_histogram_group_by(self, time_granularity: Optional[str]) -> str:
         """Get GROUP BY clause for histogram query"""
@@ -408,12 +407,10 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         if self.use_materialized:
             base_samples = "SELECT * FROM xtop_samples"
         else:
-            # Get the optimized file pattern for the time range
-            samples_pattern = self.csv_filter.get_hourly_files_in_range(
+            # Prefer per-hour parquet, fallback to CSV for hours without parquet
+            base_samples = self.csv_filter.build_mixed_source_select(
                 'samples', low_time, high_time
             )
-            # Use read_csv_auto with the specific files - pattern must be quoted
-            base_samples = f"SELECT * FROM read_csv_auto('{samples_pattern}')"
         
         # Load computed columns
         computed_cols = self.fragments.load('computed_columns')
@@ -453,7 +450,8 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                 "io.queued_ns AS io_queued_ns",
                 "io.bytes AS io_bytes",
                 "io.dev_maj AS io_dev_maj",
-                "io.dev_min AS io_dev_min"
+                "io.dev_min AS io_dev_min",
+                "io.IORQ_FLAGS AS iorq_flags"
             ])
             if need_io_histogram:
                 # Add bucket calculation
@@ -485,44 +483,44 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_syscend sc"
             else:
-                # Get optimized file pattern for syscend
-                syscend_pattern = self.csv_filter.get_hourly_files_in_range(
+                # Prefer per-hour parquet, fallback to CSV
+                sc_source = self.csv_filter.build_mixed_source_select(
                     'syscend', low_time, high_time
                 )
-                from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{syscend_pattern}')) sc"
+                from_clause += f"\n    LEFT OUTER JOIN ({sc_source}) sc"
             from_clause += "\n        ON es.tid = sc.tid AND es.sysc_seq_num = sc.sysc_seq_num"
-        
+
         if 'iorqend' in required_sources:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_iorqend io"
             else:
-                # Get optimized file pattern for iorqend
-                iorqend_pattern = self.csv_filter.get_hourly_files_in_range(
+                # Prefer per-hour parquet, fallback to CSV
+                io_source = self.csv_filter.build_mixed_source_select(
                     'iorqend', low_time, high_time
                 )
-                from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{iorqend_pattern}')) io"
+                from_clause += f"\n    LEFT OUTER JOIN ({io_source}) io"
             from_clause += "\n        ON es.tid = io.insert_tid AND es.iorq_seq_num = io.iorq_seq_num"
-        
+
         if 'kstacks' in required_sources:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_kstacks ks"
             else:
-                # Get optimized file pattern for kstacks
-                kstacks_pattern = self.csv_filter.get_hourly_files_in_range(
+                # Prefer per-hour parquet, fallback to CSV
+                ks_source = self.csv_filter.build_mixed_source_select(
                     'kstacks', low_time, high_time
                 )
-                from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{kstacks_pattern}')) ks"
+                from_clause += f"\n    LEFT OUTER JOIN ({ks_source}) ks"
             from_clause += "\n        ON es.kstack_hash = ks.KSTACK_HASH"
-        
+
         if 'ustacks' in required_sources:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_ustacks us"
             else:
-                # Get optimized file pattern for ustacks
-                ustacks_pattern = self.csv_filter.get_hourly_files_in_range(
+                # Prefer per-hour parquet, fallback to CSV
+                us_source = self.csv_filter.build_mixed_source_select(
                     'ustacks', low_time, high_time
                 )
-                from_clause += f"\n    LEFT OUTER JOIN (SELECT * FROM read_csv_auto('{ustacks_pattern}')) us"
+                from_clause += f"\n    LEFT OUTER JOIN ({us_source}) us"
             from_clause += "\n        ON es.ustack_hash = us.USTACK_HASH"
         
         if 'partitions' in required_sources:
@@ -548,8 +546,9 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         
         where_str = "\n        AND ".join(where_conditions)
         
+        select_cols_sql = ",\n        ".join(select_cols)
         return f"""    SELECT
-        {',\n        '.join(select_cols)}
+        {select_cols_sql}
     {from_clause}
     WHERE {where_str}"""
     
@@ -643,17 +642,19 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
             else:
                 group_by_cols.append(f"bs.{col}")
         
-        # Build the complete CTE
+        # Build the complete CTE (avoid backslashes inside f-string expressions)
+        select_cols_sql = ",\n        ".join(select_cols)
         if group_by_cols:
+            group_by_cols_sql = ",\n        ".join(group_by_cols)
             return f"""    SELECT
-        {',\n        '.join(select_cols)}
+        {select_cols_sql}
     FROM base_samples bs
     GROUP BY
-        {',\n        '.join(group_by_cols)}"""
+        {group_by_cols_sql}"""
         else:
             # No grouping, just aggregate all
             return f"""    SELECT
-        {',\n        '.join(select_cols)}
+        {select_cols_sql}
     FROM base_samples bs"""
     
     def _build_histogram_cte(self, prefix: str, group_cols: List[str],
@@ -672,11 +673,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         {', '.join(hist_group_cols)},
         {bucket_col},
         COUNT(*) as cnt,
-        SUM(CASE 
-            WHEN {duration_col} > 0 
-            THEN (1000000000.0 / {duration_col}) * {bucket_col} / 1000000.0
-            ELSE 0 
-        END) as est_time_s
+        COUNT(*) * {bucket_col} / 1000000.0 as est_time_s
     FROM base_samples
     WHERE {duration_col} > 0 AND {bucket_col} IS NOT NULL
     GROUP BY {', '.join(hist_group_cols)}, {bucket_col}
@@ -768,7 +765,8 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                     metric = col.split('.')[1]
                     select_parts.append(self._build_latency_metric('io', metric, has_histogram))
         
-        return f"SELECT\n    {',\n    '.join(select_parts)}"
+        select_parts_sql = ",\n    ".join(select_parts)
+        return f"SELECT\n    {select_parts_sql}"
     
     def _build_histogram_select(self, prefix: str) -> str:
         """Build histogram aggregation in SELECT"""
@@ -844,6 +842,7 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                     group_by_cols.append(f"bs.{col}")
         
         if group_by_cols:
-            return f"GROUP BY\n    {',\n    '.join(group_by_cols)}"
+            group_by_cols_sql = ",\n    ".join(group_by_cols)
+            return f"GROUP BY\n    {group_by_cols_sql}"
         else:
             return ""

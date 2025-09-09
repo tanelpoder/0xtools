@@ -43,9 +43,9 @@ class QueryEngine:
     
     # Default group columns - now only one set for dynamic queries (all lowercase)
     DEFAULT_GROUP_COLS = {
-        'dynamic': ['state', 'username', 'exe', 'comm', 'syscall', 'filename', 'extra_info']
+        'dynamic': ['state', 'username', 'comm2', 'syscall', 'filenamesum']
     }
-    
+   
     # Map of data sources to their fragment files and dependencies
     DATA_SOURCES = {
         'samples': {
@@ -86,7 +86,7 @@ class QueryEngine:
         }
     }
     
-    def __init__(self, data_source: XCaptureDataSource, use_materialized: bool = False):
+    def __init__(self, data_source: XCaptureDataSource, use_materialized: bool = False, duckdb_profiling_mode: Optional[str] = None):
         """Initialize with data source"""
         self.data_source = data_source
         self.query_cache = {}
@@ -105,6 +105,9 @@ class QueryEngine:
         # Initialize materializer
         self.materializer = DataMaterializer(data_source.conn, data_source.datadir)
         self.use_materialized = use_materialized
+        # Desired DuckDB profiling mode when debug logging is enabled
+        # Accepts 'standard', 'query_tree', or 'json' (DuckDB options). Defaults to 'standard'.
+        self.duckdb_profiling_mode = (duckdb_profiling_mode or 'standard').lower()
         
         # Cache for schema information
         self.schema_cache: Dict[str, List[Tuple[str, str]]] = {}
@@ -130,9 +133,40 @@ class QueryEngine:
         conn = self.data_source.connect()
         
         # Enable profiling if requested
-        if debug_profile:
-            conn.execute("PRAGMA enable_profiling")
-            conn.execute("PRAGMA profiling_mode='standard'")
+        # When debug logging is enabled, capture a human-readable plan/profile tree
+        # Use DuckDB's query profiling facilities instead of EXPLAIN-after
+        profile_enabled = False
+        profile_mode = None
+        profile_file: Optional[Path] = None
+        if debug or debug_profile:
+            # Try to enable profiling; prefer human-readable tree, fallback to standard
+            try:
+                conn.execute("PRAGMA disable_profiling")
+                # Choose profiling mode based on configuration, with safe fallbacks
+                desired = (self.duckdb_profiling_mode or 'standard').lower()
+                attempted = []
+                for mode in [desired, 'standard', 'query_tree']:
+                    if mode in attempted:
+                        continue
+                    attempted.append(mode)
+                    try:
+                        conn.execute(f"PRAGMA profiling_mode='{mode}'")
+                        profile_mode = mode
+                        break
+                    except Exception:
+                        continue
+                if not profile_mode:
+                    raise RuntimeError("Could not set DuckDB profiling_mode")
+                # Direct DuckDB to write the profile to a temp file we can read
+                try:
+                    profile_file = Path.cwd() / f".duckdb_profile_{int(time.time()*1000)}.txt"
+                    conn.execute(f"PRAGMA profiling_output='{str(profile_file)}'")
+                except Exception:
+                    profile_file = None
+                conn.execute("PRAGMA enable_profiling")
+                profile_enabled = True
+            except Exception:
+                profile_enabled = False
         
         start_time = time.time()
         
@@ -141,9 +175,42 @@ class QueryEngine:
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
             
-            # Disable profiling after query execution
-            if debug_profile:
-                conn.execute("PRAGMA disable_profiling")
+            # Fetch and log the plan/profile tree from the just-executed query
+            if profile_enabled and debug:
+                try:
+                    header = f"DuckDB profile ({profile_mode}):" if profile_mode else "DuckDB profile:"
+                    self.logger.debug(header)
+                    if profile_file and profile_file.exists():
+                        try:
+                            content = profile_file.read_text(errors='ignore')
+                            # Log as-is; it contains newlines and box drawing for readability
+                            for line in content.splitlines():
+                                self.logger.debug(line)
+                        except Exception as fe:
+                            self.logger.debug(f"Failed to read profile file: {fe}")
+                    else:
+                        # As a last resort, attempt EXPLAIN ANALYZE (executes again) only if explicitly requested via debug_profile
+                        if debug_profile:
+                            try:
+                                plan_rows = conn.execute(f"EXPLAIN ANALYZE {query}").fetchall()
+                                for pr in plan_rows:
+                                    line = pr[0] if isinstance(pr, (list, tuple)) else pr
+                                    self.logger.debug(str(line))
+                            except Exception as ee:
+                                self.logger.debug(f"Failed to EXPLAIN ANALYZE: {ee}")
+                except Exception as pe:
+                    self.logger.debug(f"Failed to fetch DuckDB profile: {pe}")
+                finally:
+                    try:
+                        conn.execute("PRAGMA disable_profiling")
+                    except Exception:
+                        pass
+                    # Cleanup profile file
+                    try:
+                        if profile_file and profile_file.exists():
+                            profile_file.unlink()
+                    except Exception:
+                        pass
             
             # Convert to list of dicts
             data = []
@@ -284,17 +351,25 @@ class QueryEngine:
                     self.logger.warning(f"Could not extract SELECT from fragment: {source_name}")
                     continue
             
-            # Get schema using DESCRIBE
-            describe_query = f"DESCRIBE ({query} LIMIT 0)"
-            
-            try:
+            # Get schema using DESCRIBE, with parquet fallback if CSV not available
+            def _describe(q: str):
                 conn = self.data_source.connect()
-                result = conn.execute(describe_query).fetchall()
-                self.schema_cache[source_name] = [(row[0], row[1]) for row in result]
-                self.logger.debug(f"Discovered schema for {source_name}: {len(result)} columns")
+                return conn.execute(f"DESCRIBE ({q} LIMIT 0)").fetchall()
+            try:
+                result = _describe(query)
             except Exception as e:
-                self.logger.error(f"Error discovering schema for {source_name}: {e}")
-                self.schema_cache[source_name] = []
+                # Attempt parquet fallback by replacing CSV reader/patterns
+                try:
+                    pq_query = (query
+                                .replace('read_csv_auto', 'read_parquet')
+                                .replace('*.csv', '*.parquet'))
+                    result = _describe(pq_query)
+                except Exception as e2:
+                    self.logger.error(f"Error discovering schema for {source_name}: {e2}")
+                    result = []
+            self.schema_cache[source_name] = [(row[0], row[1]) for row in result]
+            if result:
+                self.logger.debug(f"Discovered schema for {source_name}: {len(result)} columns")
     
     def get_column_to_source_mapping(self) -> Dict[str, str]:
         """Get mapping of column names to their source data files"""
@@ -316,10 +391,22 @@ class QueryEngine:
     def get_columns_by_source(self) -> Dict[str, List[str]]:
         """Get columns grouped by their source"""
         result = {}
-        
         for source_name, columns in self.schema_cache.items():
             result[source_name] = [col[0] for col in columns]
-        
+        # Ensure computed columns are visible in the picker under 'samples'
+        try:
+            from .query_builder import QueryBuilder as _QB
+            computed = list(_QB.COMPUTED_COLUMNS)
+            # These are case-insensitive names; use as-is
+            samples_list = result.get('samples', [])
+            # Add those that are not already present (case-insensitive compare)
+            existing_lower = {c.lower() for c in samples_list}
+            for name in computed:
+                if name.lower() not in existing_lower:
+                    samples_list.append(name)
+            result['samples'] = samples_list
+        except Exception:
+            pass
         return result
     
     def _determine_required_sources(self, columns: Set[str]) -> Set[str]:

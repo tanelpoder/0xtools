@@ -34,4 +34,38 @@ CASE
     WHEN EXTRA_INFO LIKE '%"connection"%' 
     THEN json_extract_string(EXTRA_INFO, '$.connection')
     ELSE '-'
-END AS CONNECTION
+END AS CONNECTION,
+
+-- Connection variants and normalized forms
+-- CONNECTION2: remove IPv4-mapped IPv6 prefix ::ffff:
+COALESCE(
+    REGEXP_REPLACE(
+        COALESCE(samples.CONNECTION, json_extract_string(EXTRA_INFO, '$.connection')), 
+        '::ffff:', '', 'g'
+    ),
+    '-'
+) AS CONNECTION2,
+
+-- CONNECTIONSUM: wildcard destination port in patterns like "ip1->ip2:PORT"
+COALESCE(
+    REGEXP_REPLACE(
+        REGEXP_REPLACE(
+            COALESCE(samples.CONNECTION, json_extract_string(EXTRA_INFO, '$.connection')),
+            '::ffff:', '', 'g'
+        ),
+        '(->.*:)[0-9]+', '\1[*]'
+    ),
+    '-'
+) AS CONNECTIONSUM,
+
+-- CONNECTIONSUM2: wildcard any port suffix occurrences ":PORT" globally
+COALESCE(
+    REGEXP_REPLACE(
+        REGEXP_REPLACE(
+            COALESCE(samples.CONNECTION, json_extract_string(EXTRA_INFO, '$.connection')),
+            '::ffff:', '', 'g'
+        ),
+        '(:)[0-9]+', '\1[*]', 'g'
+    ),
+    '-'
+) AS CONNECTIONSUM2
