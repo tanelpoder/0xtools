@@ -430,28 +430,6 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
     }
 
     const struct task_output_event *event = data;
-    // struct bpf_print_ctx *printer_ctx = (struct bpf_print_ctx *)ctx;
-
-    // xcapture filtering is now done in kernel space to prevent
-    // emitted_stacks map corruption
-
-    // Handle cgroup path resolution and caching
-    if (event->storage.cgroup_id != 0 && !cgroup_cache_contains(event->storage.cgroup_id)) {
-        char cgroup_path[CGROUP_PATH_MAX];
-        if (resolve_cgroup_path(event->storage.cgroup_id, event->pid, cgroup_path, sizeof(cgroup_path)) == 0) {
-            // Successfully resolved - it's now cached
-            
-            // Write to cgroup CSV file if in CSV mode
-            if (output_csv && files.cgroup_file) {
-                write_cgroup_entry(files.cgroup_file, event->storage.cgroup_id, cgroup_path);
-            }
-            
-            // Print to stdout if requested (will add -c flag later)
-            if (print_cgroups && !output_csv) {
-                printf("CGROUP  %18llu  %s\n", event->storage.cgroup_id, cgroup_path);
-            }
-        }
-    }
 
     // get sample_start timestamp from when this task loop iteration started
     char timestamp[64];
@@ -567,6 +545,23 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
         }
     }
 
+    // Handle cgroup path resolution and caching
+    if (event->storage.cgroup_id != 0 && !cgroup_cache_contains(event->storage.cgroup_id)) {
+        char cgroup_path[CGROUP_PATH_MAX];
+        if (resolve_cgroup_path(event->storage.cgroup_id, event->pid, cgroup_path, sizeof(cgroup_path)) == 0) {
+            // Successfully resolved - it's now cached
+
+            // Write to cgroup CSV file if in CSV mode
+            if (output_csv && files.cgroup_file) {
+                write_cgroup_entry(files.cgroup_file, event->storage.cgroup_id, cgroup_path);
+            }
+
+            // Print to stdout if requested (will add -c flag later)
+            if (print_cgroups && !output_csv) {
+                printf("CGROUP  %18llu  %s\n", event->storage.cgroup_id, cgroup_path);
+            }
+        }
+    }
 
     return 0;
 }

@@ -127,7 +127,6 @@ static int max_iterations = -1;     // -1 means run forever, >0 means run N iter
 static pid_t filter_tgid = 0;       // filter by TGID (0 means no filter)
 
 static char *output_dirname;
-static bool queue_mode = false;    // internal: reserved for future use
 struct output_files files = {0};
 struct time_correlation tcorr = {0};
 
@@ -166,7 +165,7 @@ static const struct argp_option opts[] = {
     { "output-dir", 'o', "DIR", 0, "Write CSV files to specified directory" },
     { "kernel-stacks", 'k', NULL, 0, "Dump kernel stack traces to CSV files" },
     { "print-stacks", 's', NULL, 0, "Print stack traces in stdout mode (requires -k and/or -u)" },
-    { "print-cgroups", 'c', NULL, 0, "Print cgroup paths in stdout mode" },
+    { "print-cgroups", 'C', NULL, 0, "Print cgroup paths in stdout mode" },
     { "user-stacks", 'u', NULL, 0, "Dump userspace stack traces (requires -fno-omit-frame-pointer)" },
     { "verbose", 'v', NULL, 0, "Report sampling metrics even in CSV output mode" },
     { "wide-output", 'w', NULL, 0, "Show additional syscall timing columns in stdout mode" },
@@ -213,7 +212,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
         case 's':
             print_stack_traces = true;
             break;
-        case 'c':
+        case 'C':
             print_cgroups = true;
             break;
         case 'u':
@@ -664,13 +663,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Check for mutually exclusive filtering options
-    if (show_all && filter_tgid > 0) {
-        fprintf(stderr, "Error: conflicting command line arguments\n");
-        fprintf(stderr, "     Cannot use both --all (-a) and --pgid (-p) options together\n");
-        fprintf(stderr, "     --all shows all tasks, while --pgid filters to a specific process\n\n");
-        return 1;
-    }
+    // Note: -a and -p can be used together
+    // -p selects which processes to examine
+    // -a says to show all states (including sleeping) for selected processes
 
     // Check for mutually exclusive output format options
     int format_options = 0;
@@ -746,7 +741,6 @@ int main(int argc, char **argv)
     task_skel->rodata->xcap_dump_kernel_stack_traces = dump_kernel_stack_traces;
     task_skel->rodata->xcap_dump_user_stack_traces = dump_user_stack_traces;
     task_skel->rodata->xcap_xcapture_pid = getpid();
-    task_skel->rodata->xcap_queue_mode = false;  // Reserved for future use
     
     // Load the BPF program with the configuration
     err = task_bpf__load(task_skel);

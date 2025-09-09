@@ -27,7 +27,4 @@ const volatile bool xcap_dump_user_stack_traces = false;
 // PID of xcapture itself to filter out from results
 const volatile pid_t xcap_xcapture_pid = 0;
 
-// Reserved for future queue-based I/O tracking mode
-const volatile bool xcap_queue_mode = false;
-
 #endif /* __XCAPTURE_CONFIG_H */

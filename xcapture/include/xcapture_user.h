@@ -44,6 +44,9 @@ extern bool wide_output;
 extern bool narrow_output;
 extern bool print_stack_traces;
 
+// Forward declarations
+struct socket_info;
+
 // Shared function declarations
 extern const char *getusername(uid_t uid);
 extern const char *format_task_state(__u32 state, int on_rq, int on_cpu, void *migration_pending);
