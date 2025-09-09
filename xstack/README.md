@@ -8,7 +8,7 @@ A lightweight, completely passive stack profiler for Linux that uses eBPF task i
 
 - **Completely passive profiling** - No instrumentation or overhead on target processes
 - **Dual stack capture** - Reads both kernel and userspace stack traces
-- **Flexible filtering** - Sample all tasks, specific process, or individual thread
+- **Flexible filtering** - Sample all tasks, specific process, or an individual thread
 - **CSV output** - Easy to parse and analyze with standard tools
 - **Stack symbolization** - Converts addresses to function names (with [BlazeSym](https://github.com/libbpf/blazesym))
 
@@ -127,7 +127,8 @@ An example of how I feed xstack output to the [flamelens](https://github.com/YS-
 
 ## Limitations
 
-- Requires frame pointers for simple userspace stack unwinding (`-fno-omit-frame-pointer`)
+- Requires frame pointers for simple _userspace_ stack unwinding (`-fno-omit-frame-pointer`)
+- xstack v3.0.0 is beta-grade, I know of at least 2 bugs/areas of improvement (TODO September 2025)
 
 ## License
 
