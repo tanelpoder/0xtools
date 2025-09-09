@@ -14,6 +14,8 @@ In practice this means you'll need to be on a **Linux kernel 5.14** or up. XCapt
 
 This means, RHEL9+ on Linux 5.14, or Oracle Enterprise Linux 8+, as long as you run at least their UEK7 Linux kernel (5.15). Ubuntu has pretty new kernels (and they have the HWE versions), so Ubuntu 20+ with the latest HWE kernel available for it should work. I have done my latest tests on Ubuntu 24.04 on Linux 6.8 though (will keep you updated once I test more).
 
+_**Update** (temporary): I simplified the **xcapture** code as it was riddled with lots of conditionals and #ifdefs for supporting differend older kernel versions. Currently you'd have to be either on a RHEL9 5.14+ kernel or 5.18+ otherwise. I plan to add back older kernel support (notably 5.15 used by Oracle UEK7 kernel and some earlier Ubuntu distros)._
+
 ## Building xcapture-next (v3)
 
 ```
