@@ -42,6 +42,88 @@ static void sig_handler(int sig)
     running = false;
 }
 
+static inline bool is_kernel_text_addr(__u64 addr)
+{
+    return (addr >> 48) == 0xFFFF && addr >= 0xFFFFFFFF80000000ULL;
+}
+
+static bool read_stack_value(const struct irq_stack_event *e, __u64 addr,
+                             __u64 *value)
+{
+    __u64 stack_top = e->hardirq_stack_ptr + 8;
+    __u64 stack_bottom = stack_top - IRQ_STACK_SIZE;
+
+    if (addr < stack_bottom || addr + sizeof(__u64) > stack_top)
+        return false;
+
+    size_t offset = addr - stack_bottom;
+    memcpy(value, e->raw_stack + offset, sizeof(__u64));
+    return true;
+}
+
+static int collect_stack_entries(const struct irq_stack_event *e, __u64 *out,
+                                 int max_entries)
+{
+    if (!e->hardirq_in_use || !e->dump_enabled)
+        return 0;
+
+    __u64 stack_top = e->hardirq_stack_ptr + 8;
+    __u64 stack_bottom = stack_top - IRQ_STACK_SIZE;
+    int slots = IRQ_STACK_SIZE / sizeof(__u64);
+    int found = 0;
+    bool chain_started = false;
+
+    for (int slot = slots - 1; slot >= 0 && found < max_entries; slot--) {
+        __u64 rip;
+        memcpy(&rip, e->raw_stack + (slot * sizeof(__u64)), sizeof(rip));
+
+        if (!is_kernel_text_addr(rip))
+            continue;
+
+        bool accept = true;
+
+        if (!everything_mode) {
+            __u64 offset = rip & 0xFFFULL;
+            bool offset_ok = (offset < 0x1000);
+            bool entry_point = (offset < 0x200);
+            bool caller_ok = false;
+
+            if (slot > 0) {
+                __u64 saved_rbp;
+                memcpy(&saved_rbp, e->raw_stack + ((slot - 1) * sizeof(__u64)),
+                       sizeof(saved_rbp));
+
+                bool saved_rbp_valid = ((saved_rbp % sizeof(__u64)) == 0 &&
+                                        saved_rbp >= stack_bottom &&
+                                        saved_rbp + sizeof(__u64) <= stack_top);
+
+                if (saved_rbp_valid) {
+                    __u64 caller_rip;
+                    if (read_stack_value(e, saved_rbp + sizeof(__u64), &caller_rip) &&
+                        is_kernel_text_addr(caller_rip)) {
+                        caller_ok = true;
+                    }
+                }
+            }
+
+            if (!chain_started)
+                accept = offset_ok && (entry_point || caller_ok);
+            else
+                accept = offset_ok && caller_ok;
+        }
+
+        if (accept) {
+            if (found == 0 || out[found - 1] != rip)
+                out[found++] = rip;
+            chain_started = true;
+        } else if (chain_started && !everything_mode) {
+            break;
+        }
+    }
+
+    return found;
+}
+
 // Symbolize stack addresses
 static char *symbolize_stack(__u64 *addrs, int count)
 {
@@ -148,6 +230,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         }
     }
 
+    __u64 stack_entries[MAX_STACK_DEPTH];
+    int stack_cnt = collect_stack_entries(e, stack_entries, MAX_STACK_DEPTH);
+
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     char timestamp[64];
@@ -155,7 +240,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     snprintf(timestamp + strlen(timestamp), sizeof(timestamp) - strlen(timestamp),
              ".%06ld", ts.tv_nsec / 1000);
 
-    char *syms = symbolize_stack(e->stack, e->stack_sz);
+    char *syms = symbolize_stack(stack_entries, stack_cnt);
 
     if (debug_mode) {
         printf("%s|%u|%d|0x%llx|DEBUG[0x%llx,0x%llx,0x%llx,0x%llx]|%s\n",
@@ -305,10 +390,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to open BPF skeleton\n");
         return 1;
     }
-
-    // Set argument flags in BPF program before loading
-    skel->rodata->dump_enabled = dump_stacks;
-    skel->rodata->everything_mode = everything_mode;
 
     if (xintr_bpf__load(skel)) {
         fprintf(stderr, "Failed to load BPF skeleton\n");
