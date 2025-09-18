@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-// xintr - CPU interrupt stack sampler (refactored with modern eBPF)
+// xintr - CPU interrupt stack sampler by Tanel Poder [0x.tools]
 //
-// This is currently a prototype working only on 6.2+ or RHEL 5.14+ on x86_64
-// Related: https://tanelpoder.com/posts/ebpf-pt-regs-error-on-linux-blame-fred/
+// This is currently an experimental prototype working only on 6.2+ or RHEL 5.14+ on x86_64
+// Test this out on Ubuntu or Fedora compiled kernels, as RHEL, OEL, Debian have not enabled
+// CONFIG_FRAME_POINTER=y for their kernel builds.
+//
+// I plan to experiment with stack forensics & ORC unwinding in userspace,
+// to support such platforms.
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -17,7 +21,8 @@ struct {
     __uint(max_entries, 8 * 1024 * 1024);  // 8MB
 } events SEC(".maps");
 
-// Define pcpu_hot structure (from kernel)
+// Define pcpu_hot structure (present in 6.1+ kernels)
+// I will add support for 5.x in a future release
 // Using preserve_access_index for BTF-based relocations
 struct pcpu_hot {
     union {
@@ -35,7 +40,7 @@ struct pcpu_hot {
     };
 } __attribute__((preserve_access_index));
 
-// Per-CPU "hot items struct" symbol defined in x86 kernels (mainline 6.2+ or RHEL 5.14+)
+// Per-CPU "hot items struct" symbol defined in x86 kernels (mainline 6.1+ or RHEL 5.14+)
 extern struct pcpu_hot pcpu_hot __ksym;
 
 // Callback function for bpf_loop to process each CPU
@@ -43,12 +48,13 @@ static long process_cpu(u32 index, void *ctx)
 {
     __u32 cpu = index;
 
-    // Get per-CPU data using BTF
+    // Get per-CPU data using BTF info. later we'll use bpf_probe_read_kernel
+    // instead of BTF pointer deref as it's a per-CPU struct
     struct pcpu_hot *hot = bpf_per_cpu_ptr(&pcpu_hot, cpu);
     if (!hot)
         return 0;
 
-    // Reserve space in ring buffer and initialise the event
+    // Reserve space in ring buffer and initialize the output event
     struct irq_stack_event *event;
     event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
     if (!event)
@@ -57,51 +63,61 @@ static long process_cpu(u32 index, void *ctx)
     event->cpu = cpu;
     event->timestamp = bpf_ktime_get_ns();
     event->stack_sz = 0;
-    event->hardirq_in_use = 0;
+    event->hardirq_in_use = false;
     event->dump_enabled = 0;
     event->hardirq_stack_ptr = 0;
+    event->top_of_stack = 0;
+    event->call_depth = 0;
 
     #pragma unroll
     for (int i = 0; i < 4; i++)
         event->debug_values[i] = 0;
 
-    // For pcpu_hot, we still need to use bpf_probe_read_kernel as it's per-CPU
     bool in_use = false;
-    void *irq_stack_ptr = NULL;
 
     bpf_probe_read_kernel(&in_use, sizeof(in_use), &hot->hardirq_stack_inuse);
-    bpf_probe_read_kernel(&irq_stack_ptr, sizeof(irq_stack_ptr), &hot->hardirq_stack_ptr);
+    event->hardirq_in_use = in_use;
 
-    event->hardirq_in_use = in_use ? 1 : 0;
-    event->hardirq_stack_ptr = (__u64)irq_stack_ptr;
+    bpf_probe_read_kernel(&event->hardirq_stack_ptr, sizeof(void *), &hot->hardirq_stack_ptr);
 
-    if (irq_stack_ptr && in_use) {
-        __u64 stack_top = (__u64)irq_stack_ptr + 8;
-        __u64 stack_bottom = stack_top - IRQ_STACK_SIZE;
+    // We are copying stack mem in reverse direction (from highest addr to lowest)
+    // to get a more consistent snapshot of the fast changing stack
+    if (event->hardirq_stack_ptr && in_use) {
+        __u64 stack_highest = event->hardirq_stack_ptr + 8;
+        __u64 stack_lowest = stack_highest - IRQ_STACK_SIZE;
 
-        event->debug_values[0] = (__u64)irq_stack_ptr;  // IRQ stack pointer
-        event->debug_values[1] = stack_bottom;
-        event->debug_values[2] = stack_top;
+        for (int offset = IRQ_STACK_SIZE - STACK_CHUNK_SIZE;
+                 offset >= 0; offset -= STACK_CHUNK_SIZE) {
+            bpf_probe_read_kernel(event->raw_stack + offset,
+                                  STACK_CHUNK_SIZE,
+                                  (void *)(stack_lowest + offset));
+        }
+
+        event->debug_values[0] = event->hardirq_stack_ptr;  // IRQ stack pointer
+        event->debug_values[1] = stack_lowest;
+        event->debug_values[2] = stack_highest;
         event->dump_enabled = 1;
-
-        bpf_probe_read_kernel(event->raw_stack, IRQ_STACK_SIZE, (void *)stack_bottom);
     }
 
+    // Some other potentially useful values, currently unused
+    bpf_probe_read_kernel(&event->top_of_stack, sizeof(event->top_of_stack), &hot->top_of_stack);
+    bpf_probe_read_kernel(&event->call_depth, sizeof(event->call_depth), &hot->call_depth);
+
+    // todo: cancel event instead of submitting when !in_use
     bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
-// Main BPF program
+// Main BPF iterator loop. xintr uses the task iterator just to dive into eBPF
+// kernel mode and loops through available CPU structs under the first task found
 SEC("iter/task")
 int sample_cpu_irq_stacks(struct bpf_iter__task *ctx)
 {
-    // Use task iterator as a trigger to run my CPU iterator program
     struct task_struct *task = ctx->task;
     if (!task)
         return 0;
 
     bpf_loop(MAX_CPUS, process_cpu, NULL, 0);
 
-    // Stop iteration after first task
     return 1;
 }

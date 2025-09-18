@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 // xintr - CPU interrupt stack sampler by Tanel Poder [0x.tools]
+//
+// This is currently an experimental prototype working only on 6.2+ or RHEL 5.14+ on x86_64
+// Test this out on Ubuntu or Fedora compiled kernels, as RHEL, OEL, Debian have not enabled
+// CONFIG_FRAME_POINTER=y for their kernel builds.
+//
+// I plan to experiment with stack forensics & ORC unwinding in userspace,
+// to support such platforms.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,19 +31,63 @@
 #define XINTR_AUTHOR "Tanel Poder [0x.tools]"
 
 static volatile bool running = true;
-static int sample_freq = 1;      // default 1 Hz
-static bool quiet = false;       // do not print header
+static int sample_freq = 1;            // default 1 Hz
+static bool quiet = false;             // do not print header
 static bool debug_mode = false;
-static bool show_all = false;    // show all CPUs even if they are not in interrupt
-static bool show_every = false;  // show every symbol, including srso_return_thunk
-static bool dump_stacks = false; // dump raw stack memory to files
-static bool everything_mode = false; // -E flag: show all kernel addresses without frame validation
+static bool show_all = false;          // show all CPUs even if they are not in interrupt
+static bool show_every = false;        // show every symbol, including srso_return_thunk
+static bool dump_stacks = false;       // dump raw stack memory to files
+static bool everything_mode = false;   // -E flag: show all kernel addresses without frame validation
+static bool include_softirq = false;   // -S flag: attempt to include softirq stack frames
+static __u64 softirq_range_start = 0;
+static __u64 softirq_range_end = 0;
+
+
+// Look up handle_softirqs address (ignoring handle_softirqs.cold, etc variations for now)
+// If a symbol is found (found=true), loop one more time to find next symbol's start addr
+static bool lookup_symbol_range(const char *name, __u64 *start, __u64 *end)
+{
+    FILE *fp = fopen("/proc/kallsyms", "r");
+    if (!fp)
+        return false;
+
+    char line[512];
+    bool found = false;
+
+    while (fgets(line, sizeof(line), fp)) {
+        unsigned long long addr;
+        char type;
+        char sym[256];
+
+        if (sscanf(line, "%llx %c %255s", &addr, &type, sym) != 3) // 3 fields successfully read
+            continue;
+
+        if (found) {
+            *end = addr;
+            fclose(fp);
+            return true;
+        }
+
+        if (strcmp(sym, name) == 0) {
+            *start = addr;
+            found = true;
+        }
+    }
+
+    fclose(fp);
+
+    if (found) {
+        *end = *start + 0x2000; // fallback range guess
+        return true;
+    }
+    return false;
+}
 
 #ifdef USE_BLAZESYM
 static blaze_symbolizer *symbolizer = NULL;
 #endif
 
-// Signal handler
+// Exit signal handler
 static void sig_handler(int sig)
 {
     running = false;
@@ -44,34 +95,39 @@ static void sig_handler(int sig)
 
 static inline bool is_kernel_text_addr(__u64 addr)
 {
-    return (addr >> 48) == 0xFFFF && addr >= 0xFFFFFFFF80000000ULL;
+    // on aarch64 the ksym range will start at 0xFFFF800080000000
+
+    return addr >= 0xFFFFFFFF80000000ULL;
 }
 
 static bool read_stack_value(const struct irq_stack_event *e, __u64 addr,
                              __u64 *value)
 {
-    __u64 stack_top = e->hardirq_stack_ptr + 8;
-    __u64 stack_bottom = stack_top - IRQ_STACK_SIZE;
+    __u64 stack_highest = e->hardirq_stack_ptr + 8;
+    __u64 stack_lowest = stack_highest - IRQ_STACK_SIZE;
 
-    if (addr < stack_bottom || addr + sizeof(__u64) > stack_top)
+    if (addr < stack_lowest || addr + sizeof(__u64) > stack_highest)
         return false;
 
-    size_t offset = addr - stack_bottom;
+    size_t offset = addr - stack_lowest;
     memcpy(value, e->raw_stack + offset, sizeof(__u64));
     return true;
 }
 
+// Walk the stack memory dump in reverse, from its bottom (execution start) and
+// construct a plausible call trace by using heuristics and valid caller checks
 static int collect_stack_entries(const struct irq_stack_event *e, __u64 *out,
                                  int max_entries)
 {
     if (!e->hardirq_in_use || !e->dump_enabled)
         return 0;
 
-    __u64 stack_top = e->hardirq_stack_ptr + 8;
-    __u64 stack_bottom = stack_top - IRQ_STACK_SIZE;
+    __u64 stack_highest = e->hardirq_stack_ptr + 8;
+    __u64 stack_lowest = stack_highest - IRQ_STACK_SIZE;
     int slots = IRQ_STACK_SIZE / sizeof(__u64);
     int found = 0;
     bool chain_started = false;
+    int softirq_restarts = 0;
 
     for (int slot = slots - 1; slot >= 0 && found < max_entries; slot--) {
         __u64 rip;
@@ -94,8 +150,8 @@ static int collect_stack_entries(const struct irq_stack_event *e, __u64 *out,
                        sizeof(saved_rbp));
 
                 bool saved_rbp_valid = ((saved_rbp % sizeof(__u64)) == 0 &&
-                                        saved_rbp >= stack_bottom &&
-                                        saved_rbp + sizeof(__u64) <= stack_top);
+                                        saved_rbp >= stack_lowest &&
+                                        saved_rbp + sizeof(__u64) <= stack_highest);
 
                 if (saved_rbp_valid) {
                     __u64 caller_rip;
@@ -116,8 +172,24 @@ static int collect_stack_entries(const struct irq_stack_event *e, __u64 *out,
             if (found == 0 || out[found - 1] != rip)
                 out[found++] = rip;
             chain_started = true;
-        } else if (chain_started && !everything_mode) {
-            break;
+        } else if (!everything_mode) {
+            bool can_restart = false;
+
+            if (chain_started && include_softirq && softirq_restarts < 2 &&
+                softirq_range_start && softirq_range_end && found > 0) {
+                __u64 last_rip = out[found - 1];
+                if (last_rip >= softirq_range_start && last_rip < softirq_range_end)
+                    can_restart = true;
+            }
+
+            if (can_restart) {
+                chain_started = false;
+                softirq_restarts++;
+                continue;
+            }
+
+            if (chain_started)
+                break;
         }
     }
 
@@ -143,7 +215,7 @@ static char *symbolize_stack(__u64 *addrs, int count)
 
     if (!syms || syms->cnt == 0) {
         if (syms) blaze_syms_free(syms);
-        // Just return hex addresses
+        // Return hex addresses if symbolization did not work
         for (int i = 0; i < count; i++) {
             if (i > 0) strcat(symbuf, ";");
             char addr[32];
@@ -160,7 +232,7 @@ static char *symbolize_stack(__u64 *addrs, int count)
     for (size_t i = 0; i < syms->cnt && i < count; i++) {
         const struct blaze_sym *sym = &syms->syms[i];
 
-        // Skip srso_return_thunk frames unless -e flag is set
+        // Skip srso_return_thunk mitigation frames unless -e flag is set
         if (!show_every && sym->name && strncmp(sym->name, "srso_return_thunk", 17) == 0) {
             continue;
         }
@@ -193,7 +265,7 @@ static char *symbolize_stack(__u64 *addrs, int count)
     blaze_syms_free(syms);
     return strdup(symbuf);
 #else
-    // No blazesym - just return addresses as hex
+    // No blazesym return hex addresses
     static char addrbuf[8192];
     addrbuf[0] = '\0';
 
@@ -212,7 +284,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     struct irq_stack_event *e = data;
 
-    // Skip CPUs without active interrupts unless -a flag is set
+    // Skip CPUs without active interrupt stack unless -a flag is set
     if (!show_all && !e->hardirq_in_use) {
         return 0;
     }
@@ -221,10 +293,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     if (dump_stacks && e->hardirq_in_use && e->dump_enabled) {
         char filename[32];
         snprintf(filename, sizeof(filename), "%llu.dmp", e->timestamp);
-        
+
         FILE *fp = fopen(filename, "wb");
         if (fp) {
-            // Write exactly 16KB of raw stack data
+            // Write the captured IRQ stack snapshot
             fwrite(e->raw_stack, 1, IRQ_STACK_SIZE, fp);
             fclose(fp);
         }
@@ -243,13 +315,17 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     char *syms = symbolize_stack(stack_entries, stack_cnt);
 
     if (debug_mode) {
-        printf("%s|%u|%d|0x%llx|DEBUG[0x%llx,0x%llx,0x%llx,0x%llx]|%s\n",
+        printf("%s|%u|%llu|%d|0x%llx|0x%llx|DEBUG[0x%llx,0x%llx,0x%llx,0x%llx]|%s\n",
                timestamp,
                e->cpu,
+               (unsigned long long)e->call_depth,
                e->hardirq_in_use,
-               e->hardirq_stack_ptr,
-               e->debug_values[0], e->debug_values[1],
-               e->debug_values[2], e->debug_values[3],
+               (unsigned long long)e->hardirq_stack_ptr,
+               (unsigned long long)e->top_of_stack,
+               (unsigned long long)e->debug_values[0],
+               (unsigned long long)e->debug_values[1],
+               (unsigned long long)e->debug_values[2],
+               (unsigned long long)e->debug_values[3],
                syms ? syms : ""
             );
     } else {
@@ -275,6 +351,7 @@ static struct argp_option options[] = {
     {"every", 'e', 0, 0, "Show every symbol including mitigation frames (srso_return_thunk)", 0},
     {"dump", 'D', 0, 0, "Dump raw 16KB interrupt stack memory to timestamped .dmp files", 0},
     {"everything", 'E', 0, 0, "Show all kernel addresses without stack frame validation", 0},
+    {"softirq", 'S', 0, 0, "Include softirq frames using heuristic stack validation", 0},
     {0}
 };
 
@@ -287,6 +364,7 @@ struct arguments {
     bool show_every;
     bool dump;
     bool everything;
+    bool softirq;
 };
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
@@ -326,6 +404,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
     case 'E':
         args->everything = true;
         break;
+    case 'S':
+        args->softirq = true;
+        break;
     default:
         return ARGP_ERR_UNKNOWN;
     }
@@ -359,6 +440,7 @@ int main(int argc, char **argv)
         .show_every = false,
         .dump = false,
         .everything = false,
+        .softirq = false,
     };
 
     if (argp_parse(&argp, argc, argv, 0, 0, &args)) {
@@ -372,6 +454,13 @@ int main(int argc, char **argv)
     show_every = args.show_every;
     dump_stacks = args.dump;
     everything_mode = args.everything;
+    include_softirq = args.softirq;
+    if (include_softirq) {
+        if (!lookup_symbol_range("handle_softirqs", &softirq_range_start, &softirq_range_end)) {
+            fprintf(stderr, "Warning: failed to locate handle_softirqs in /proc/kallsyms; softirq heuristic disabled\n");
+            include_softirq = false;
+        }
+    }
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -390,6 +479,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to open BPF skeleton\n");
         return 1;
     }
+
 
     if (xintr_bpf__load(skel)) {
         fprintf(stderr, "Failed to load BPF skeleton\n");
@@ -434,7 +524,7 @@ int main(int argc, char **argv)
 
     if (!quiet) {
         if (debug_mode) {
-            printf("timestamp|cpu|in_use|stack_ptr|debug|stack\n");
+            printf("timestamp|cpu|call_depth|in_use|hardirq_stack_ptr|top_of_stack|debug|stack\n");
         } else {
             printf("timestamp|cpu|stack\n");
         }
