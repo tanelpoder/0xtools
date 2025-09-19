@@ -8,6 +8,9 @@
 // I plan to experiment with stack forensics & ORC unwinding in userspace,
 // to support such platforms.
 
+// If you wonder what the FRED check in softirq processing is about, read this:
+//   https://tanelpoder.com/posts/ebpf-pt-regs-error-on-linux-blame-fred/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,8 +42,12 @@ static bool show_every = false;        // show every symbol, including srso_retu
 static bool dump_stacks = false;       // dump raw stack memory to files
 static bool everything_mode = false;   // -E flag: show all kernel addresses without frame validation
 static bool include_softirq = false;   // -S flag: attempt to include softirq stack frames
-static __u64 softirq_range_start = 0;
-static __u64 softirq_range_end = 0;
+
+// Two symbols for handling softirq processing, depending on if FRED is enabled on x86_64
+static __u64 do_softirq_start = 0;     // traditional IDT
+static __u64 do_softirq_end = 0;
+static __u64 handle_softirq_start = 0; // CONFIG_FRED_ENABLED=y
+static __u64 handle_softirq_end = 0;
 
 
 // Look up handle_softirqs address (ignoring handle_softirqs.cold, etc variations for now)
@@ -95,7 +102,7 @@ static void sig_handler(int sig)
 
 static inline bool is_kernel_text_addr(__u64 addr)
 {
-    // on aarch64 the ksym range will start at 0xFFFF800080000000
+    // On aarch64 the ksym range will start at 0xFFFF800080000000
 
     return addr >= 0xFFFFFFFF80000000ULL;
 }
@@ -175,10 +182,17 @@ static int collect_stack_entries(const struct irq_stack_event *e, __u64 *out,
         } else if (!everything_mode) {
             bool can_restart = false;
 
-            if (chain_started && include_softirq && softirq_restarts < 2 &&
-                softirq_range_start && softirq_range_end && found > 0) {
+            // Allow "broken" caller validation in hardirq -> softirq handling transition
+            if (chain_started && include_softirq && softirq_restarts < 2 && found > 0) {
                 __u64 last_rip = out[found - 1];
-                if (last_rip >= softirq_range_start && last_rip < softirq_range_end)
+            
+                bool in_do_softirq = (do_softirq_start && do_softirq_end &&
+                                      last_rip >= do_softirq_start && last_rip < do_softirq_end);
+            
+                bool in_handle_softirq = (handle_softirq_start && handle_softirq_end &&
+                                          last_rip >= handle_softirq_start && last_rip < handle_softirq_end);
+            
+                if (in_do_softirq || in_handle_softirq)
                     can_restart = true;
             }
 
@@ -455,9 +469,23 @@ int main(int argc, char **argv)
     dump_stacks = args.dump;
     everything_mode = args.everything;
     include_softirq = args.softirq;
+
     if (include_softirq) {
-        if (!lookup_symbol_range("handle_softirqs", &softirq_range_start, &softirq_range_end)) {
-            fprintf(stderr, "Warning: failed to locate handle_softirqs in /proc/kallsyms; softirq heuristic disabled\n");
+        bool found = false;
+
+        // Currently scanning through /proc/kallsyms twice on xintr startup, for code simplicity    
+        if (lookup_symbol_range("__do_softirq", &do_softirq_start, &do_softirq_end))
+            found = true;
+        else
+            fprintf(stderr, "Warning: failed to locate __do_softirq in /proc/kallsyms\n");
+    
+        if (lookup_symbol_range("handle_softirqs", &handle_softirq_start, &handle_softirq_end))
+            found = true;
+        else
+            fprintf(stderr, "Warning: failed to locate handle_softirqs in /proc/kallsyms\n");
+    
+        if (!found) {
+            fprintf(stderr, "softirq heuristic disabled\n");
             include_softirq = false;
         }
     }
