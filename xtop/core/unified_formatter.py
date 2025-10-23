@@ -8,6 +8,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
+from core.display import compute_column_layout, format_value as display_format_value
 
 class UnifiedFormatter:
     """Unified formatter that consolidates all formatting functionality"""
@@ -78,29 +79,20 @@ class UnifiedFormatter:
     
     def format_column_width(self, name: str, data: List[Any]) -> int:
         """Calculate appropriate column width
-        
+
         Args:
             name: Column name
             data: Column data
-            
+
         Returns:
             Column width in characters
         """
-        # Start with header width
         header = self.format_column_name(name)
-        min_width = len(header) + 2
-        
-        # Check data widths (sample first 100 rows)
-        max_data_width = 0
-        for value in data[:100]:
-            if value is not None:
-                str_val = str(value)
-                max_data_width = max(max_data_width, len(str_val))
-        
-        # Apply reasonable limits
-        width = max(min_width, max_data_width + 1)
-        
-        # Column-specific limits
+        rows = [{name: value} for value in data]
+        layout = compute_column_layout([name], rows, headers={name: header}, sample_limit=len(rows) or 1)
+        width = layout.widths.get(name, len(header))
+        width = max(width, len(header) + 2)
+
         name_lower = name.lower()
         if name_lower in ['comm', 'exe', 'username']:
             width = min(width, 20)
@@ -109,12 +101,12 @@ class UnifiedFormatter:
         elif name_lower in ['kstack_current_func', 'ustack_current_func']:
             width = min(width, 40)
         elif 'histogram' in name_lower:
-            width = 30  # Fixed width for histogram visualizations
+            width = 30
         elif name_lower == 'time_bar':
-            width = 12  # Fixed width for time bars
+            width = 12
         else:
             width = min(width, 15)
-        
+
         return width
     
     def reorder_columns_samples_first(self, columns: List[str]) -> List[str]:
@@ -175,12 +167,19 @@ class UnifiedFormatter:
             return "-"
         
         column_lower = column.lower()
-        
+
+        if column:
+            formatted = display_format_value(column, value)
+            if formatted != str(value) or value is None:
+                return formatted
+
         # Numeric formatting
         if isinstance(value, (int, float)):
             if 'pct' in column_lower or 'percent' in column_lower:
                 return self.format_percentage(value)
-            elif column_lower in ['samples', 'count', 'total_samples', 'avg_threads']:
+            elif column_lower == 'avg_threads':
+                return f"{float(value):.2f}"
+            elif column_lower in ['samples', 'count', 'total_samples']:
                 return self.format_count(int(value))
             elif 'time' in column_lower or 'latency' in column_lower or '_us' in column_lower:
                 # For latency values in microseconds
@@ -261,26 +260,27 @@ class UnifiedFormatter:
         Returns:
             Formatted string like "1-2ms" or "10-20s"
         """
-        if bucket_us < 1000:
-            # Microseconds
-            next_bucket = bucket_us * 2 if bucket_us > 0 else 1
-            return f"{bucket_us}-{next_bucket}μs"
-        elif bucket_us < 1000000:
-            # Milliseconds
-            ms = bucket_us / 1000
-            next_ms = (bucket_us * 2) / 1000
-            if ms < 10:
-                return f"{ms:.1f}-{next_ms:.1f}ms"
-            else:
-                return f"{ms:.0f}-{next_ms:.0f}ms"
-        else:
-            # Seconds
-            s = bucket_us / 1000000
-            next_s = (bucket_us * 2) / 1000000
-            if s < 10:
-                return f"{s:.1f}-{next_s:.1f}s"
-            else:
-                return f"{s:.0f}-{next_s:.0f}s"
+        if bucket_us <= 0:
+            return "0μs"
+
+        low_us = max(bucket_us // 2, 1)
+        high_us = bucket_us
+
+        if high_us < 1000:
+            return f"{low_us}-{high_us}μs"
+
+        low_ms = low_us / 1000
+        high_ms = high_us / 1000
+        if high_us < 1_000_000:
+            if high_ms < 10:
+                return f"{low_ms:.1f}-{high_ms:.1f}ms"
+            return f"{low_ms:.0f}-{high_ms:.0f}ms"
+
+        low_s = low_us / 1_000_000
+        high_s = high_us / 1_000_000
+        if high_s < 10:
+            return f"{low_s:.1f}-{high_s:.1f}s"
+        return f"{low_s:.0f}-{high_s:.0f}s"
     
     def format_latency_us(self, microseconds: float) -> str:
         """Format microseconds to human-readable format

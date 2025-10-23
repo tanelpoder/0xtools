@@ -5,9 +5,20 @@ Centralizes all time bucket calculations and formatting.
 """
 
 from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 import logging
+import re
 
 logger = logging.getLogger('xtop')
+
+
+@dataclass(frozen=True)
+class TimeParseResult:
+    """Result of parsing a time specification."""
+    timestamp: datetime
+    is_relative: bool
+    has_explicit_sign: bool
 
 
 class TimeUtils:
@@ -277,3 +288,195 @@ class TimeUtils:
             return " AND " + " AND ".join(constraints)
         else:
             return ""
+
+
+_RELATIVE_COMPONENT_RE = re.compile(r'([+\-]?\d+(?:\.\d*)?)([a-z]+)')
+_RELATIVE_UNITS_IN_SECONDS = {
+    'ms': 0.001,
+    'msec': 0.001,
+    'millisecond': 0.001,
+    'milliseconds': 0.001,
+    's': 1.0,
+    'sec': 1.0,
+    'secs': 1.0,
+    'second': 1.0,
+    'seconds': 1.0,
+    'm': 60.0,
+    'min': 60.0,
+    'mins': 60.0,
+    'minute': 60.0,
+    'minutes': 60.0,
+    'h': 3600.0,
+    'hr': 3600.0,
+    'hrs': 3600.0,
+    'hour': 3600.0,
+    'hours': 3600.0,
+    'd': 86400.0,
+    'day': 86400.0,
+    'days': 86400.0,
+}
+
+
+def _parse_relative_offset(time_str: str) -> Optional[Tuple[timedelta, bool]]:
+    """Parse relative time strings like '5min' or '-2h30m'."""
+    if not time_str:
+        return None
+
+    cleaned = time_str.strip().lower()
+    if not cleaned:
+        return None
+
+    has_ago = False
+    if cleaned.endswith('ago'):
+        cleaned = cleaned[:-3].strip()
+        has_ago = True
+
+    compact = cleaned.replace(' ', '')
+    if not compact:
+        return None
+
+    matches = list(_RELATIVE_COMPONENT_RE.finditer(compact))
+    if not matches:
+        return None
+
+    total_seconds = 0.0
+    explicit_sign = False
+    cursor = 0
+
+    for match in matches:
+        if match.start() != cursor:
+            return None
+        cursor = match.end()
+
+        raw_value, unit_key = match.groups()
+        try:
+            value = float(raw_value)
+        except ValueError:
+            return None
+
+        unit_seconds = _RELATIVE_UNITS_IN_SECONDS.get(unit_key)
+        if unit_seconds is None:
+            return None
+
+        total_seconds += value * unit_seconds
+        if raw_value[0] in '+-':
+            explicit_sign = True
+
+    if cursor != len(compact):
+        return None
+
+    delta = timedelta(seconds=total_seconds)
+    if has_ago:
+        delta = -delta
+        explicit_sign = True
+
+    return delta, explicit_sign
+
+
+def parse_time_spec(time_str: str, now: Optional[datetime] = None) -> TimeParseResult:
+    """Parse a time specification into an absolute timestamp."""
+    if time_str is None:
+        raise ValueError("Time string cannot be None")
+
+    spec = time_str.strip()
+    if not spec:
+        raise ValueError("Time string cannot be empty")
+
+    reference = now or datetime.now()
+    lower_spec = spec.lower()
+
+    if lower_spec in {'now', 'current'}:
+        return TimeParseResult(reference, True, True)
+
+    if lower_spec == 'today':
+        start_of_day = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+        return TimeParseResult(start_of_day, True, True)
+
+    if lower_spec == 'yesterday':
+        start_of_yesterday = (reference - timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return TimeParseResult(start_of_yesterday, True, True)
+
+    relative = _parse_relative_offset(spec)
+    if relative:
+        delta, explicit = relative
+        timestamp = reference + delta if explicit else reference - delta
+        return TimeParseResult(timestamp, True, explicit)
+
+    # Handle ISO 8601 and common datetime formats
+    trimmed_spec = spec.rstrip('zZ')
+    try:
+        timestamp = datetime.fromisoformat(trimmed_spec)
+        return TimeParseResult(timestamp, False, False)
+    except ValueError:
+        pass
+
+    # Try space-separated formats explicitly for clarity
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
+        try:
+            timestamp = datetime.strptime(trimmed_spec, fmt)
+            if fmt == '%Y-%m-%d':
+                timestamp = timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+            return TimeParseResult(timestamp, False, False)
+        except ValueError:
+            continue
+
+    # Interpret time-only inputs as today at that time
+    for fmt in ('%H:%M:%S', '%H:%M'):
+        try:
+            parsed = datetime.strptime(trimmed_spec, fmt)
+            timestamp = reference.replace(
+                hour=parsed.hour,
+                minute=parsed.minute,
+                second=parsed.second,
+                microsecond=0,
+            )
+            return TimeParseResult(timestamp, False, False)
+        except ValueError:
+            continue
+
+    raise ValueError(f"Cannot parse time: {time_str}")
+
+
+def resolve_time_range(
+    from_spec: Optional[str],
+    to_spec: Optional[str],
+    now: Optional[datetime] = None,
+) -> Tuple[Optional[datetime], Optional[datetime], Dict[str, Any]]:
+    """Resolve time specifications into concrete datetime bounds.
+
+    Returns (low_time, high_time, metadata) where metadata includes parsed
+    `TimeParseResult` objects (keys `from`, `to`) and `default_to_now` when
+    a relative `from` without `to` forces the upper bound to current time.
+    """
+
+    reference = (now or datetime.now()).replace(microsecond=0)
+    meta: Dict[str, Any] = {
+        'from': None,
+        'to': None,
+        'default_to_now': False,
+    }
+
+    low_time: Optional[datetime] = None
+    high_time: Optional[datetime] = None
+
+    if from_spec:
+        from_result = parse_time_spec(from_spec, now=reference)
+        meta['from'] = from_result
+        low_time = from_result.timestamp
+    else:
+        from_result = None
+
+    if to_spec:
+        to_result = parse_time_spec(to_spec, now=reference)
+        meta['to'] = to_result
+        high_time = to_result.timestamp
+    else:
+        to_result = None
+
+    if from_result and from_result.is_relative and not to_result:
+        high_time = reference
+        meta['default_to_now'] = True
+
+    return low_time, high_time, meta

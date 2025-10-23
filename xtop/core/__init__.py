@@ -8,6 +8,14 @@ from .query_engine import QueryEngine, QueryParams, QueryResult
 from .formatters import TableFormatter
 from .visualizers import ChartGenerator
 from .navigation import NavigationState, NavigationFrame
+from .peek_providers import (
+    HistogramPeekProvider,
+    HistogramTableData,
+    HistogramTableRow,
+    parse_histogram_string,
+    parse_stack_trace,
+    format_latency_bucket,
+)
 from .heatmap import LatencyHeatmap, HeatmapConfig
 
 __all__ = [
@@ -19,6 +27,12 @@ __all__ = [
     'ChartGenerator',
     'NavigationState',
     'NavigationFrame',
+    'HistogramPeekProvider',
+    'HistogramTableData',
+    'HistogramTableRow',
+    'parse_histogram_string',
+    'parse_stack_trace',
+    'format_latency_bucket',
     'LatencyHeatmap',
     'HeatmapConfig'
 ]

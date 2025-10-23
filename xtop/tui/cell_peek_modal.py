@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.time_utils import TimeUtils
 from core.histogram_formatter import HistogramFormatter
 from core.heatmap_visualizer import HeatmapVisualizer
+from core.peek_providers import HistogramPeekProvider, parse_histogram_string, parse_stack_trace
 
 
 class CellPeekModal(ModalScreen[None]):
@@ -133,7 +134,7 @@ class CellPeekModal(ModalScreen[None]):
     def _compose_histogram_view(self) -> ComposeResult:
         """View for histogram data with heatmap and distribution"""
         # Parse histogram data and create visualization
-        histogram_data = self._parse_histogram_data(self.cell_value)
+        histogram_data = parse_histogram_string(self.cell_value)
         
         if not histogram_data:
             yield Static("No histogram data available")
@@ -184,43 +185,9 @@ class CellPeekModal(ModalScreen[None]):
         yield Static("[bold]Stack Trace:[/bold]\n")
         
         # Parse and format stack trace
-        stack_frames = self._parse_stack_trace(self.cell_value)
+        stack_frames = parse_stack_trace(self.cell_value)
         for i, frame in enumerate(stack_frames):
             yield Static(f"  {i:2d}: {frame}")
-    
-    def _parse_histogram_data(self, value: str) -> List[Tuple[int, int, float, float]]:
-        """Parse histogram data string
-        
-        Returns:
-            List of tuples (bucket_us, count, est_time_s, global_max)
-        """
-        if not value or value == '-':
-            return []
-        
-        data = []
-        try:
-            items = value.split(',')
-            for item in items[:100]:  # Limit to prevent huge displays
-                parts = item.split(':')
-                if len(parts) >= 4:
-                    bucket = int(parts[0])
-                    count = int(parts[1])
-                    est_time = float(parts[2])
-                    global_max = float(parts[3])
-                    data.append((bucket, count, est_time, global_max))
-        except:
-            return []
-        
-        return sorted(data, key=lambda x: x[0])
-    
-    def _parse_stack_trace(self, value: str) -> List[str]:
-        """Parse stack trace string"""
-        if not value or value == '-':
-            return []
-        
-        # Stack traces are semicolon-separated
-        frames = value.split(';')
-        return [frame.strip() for frame in frames if frame.strip()]
     
     def _format_value(self, value: Any) -> str:
         """Format a value for display"""
@@ -360,6 +327,7 @@ class HistogramPeekModal(ModalScreen[None]):
         self.query_type = query_type
         self.low_time = low_time
         self.high_time = high_time
+        self._provider = HistogramPeekProvider(engine, datadir)
         
         # Heatmap granularity settings - use TimeUtils constants
         self.granularity_options = [
@@ -572,206 +540,81 @@ class HistogramPeekModal(ModalScreen[None]):
         
         return sorted(data, key=lambda x: x[0])
     
-    def _run_timeseries_query(self) -> List[Dict]:
-        """Run time-series query with configurable time granularity for heatmap"""
-        logger = logging.getLogger('xtop')
-        
-        try:
-            # Use the main QueryBuilder from the engine
-            if hasattr(self.engine, 'query_builder'):
-                query_builder = self.engine.query_builder
-            else:
-                # Create a QueryBuilder instance if engine doesn't have one
-                from pathlib import Path
-                from core.query_builder import QueryBuilder
-                
-                fragments_path = Path(__file__).parent.parent / 'sql' / 'fragments'
-                query_builder = QueryBuilder(
-                    datadir=Path(self.datadir),
-                    fragments_path=fragments_path,
-                    use_materialized=getattr(self.engine, 'use_materialized', False)
-                )
-            
-            # Determine histogram type from column name
-            histogram_type = 'sclat' if 'sclat' in self.column_name.lower() else 'iolat'
-            
-            logger.debug(f"Heatmap query type detection: column_name='{self.column_name}', histogram_type={histogram_type}")
-            
-            # Get current granularity setting
-            granularity = self.granularity_options[self.current_granularity_index]
-            
-            # Build query using QueryBuilder
-            query = query_builder.build_histogram_drill_down_query(
-                histogram_type=histogram_type,
-                where_clause=self.where_clause,
-                low_time=self.low_time,
-                high_time=self.high_time,
-                time_granularity=granularity  # Pass time granularity for heatmap
-            )
-            
-            # Log the time-series query to debug
-            logger.debug(f"Histogram Peek - Time-Series Heatmap Query:\n{query}")
-            
-            # Execute query
-            conn = self.engine.data_source.conn
-            result = conn.execute(query).fetchall()
-            
-            # Convert to list of dicts based on granularity
-            data = []
-            granularity = self.granularity_options[self.current_granularity_index]
-            
-            for row in result:
-                if granularity == 'HH':
-                    data.append({
-                        'HH': row[0],
-                        'MI': '00',  # Default to 00 for hourly
-                        'lat_bucket_us': row[1],
-                        'cnt': row[2]
-                    })
-                elif granularity == 'HH:MI':
-                    data.append({
-                        'HH': row[0],
-                        'MI': row[1],
-                        'lat_bucket_us': row[2],
-                        'cnt': row[3]
-                    })
-                else:  # HH:MI:S10
-                    data.append({
-                        'HH': row[0],
-                        'MI': row[1],
-                        'S10': row[2],
-                        'lat_bucket_us': row[3],
-                        'cnt': row[4]
-                    })
-            
-            return data
-            
-        except Exception as e:
-            logger.error(f"Failed to run time-series query: {e}")
-            # Return None to indicate error (not empty data)
-            return None
-    
-    def _run_histogram_query_and_populate(self, table: DataTable) -> None:
-        """Run DuckDB query to get histogram data and populate table"""
-        # Use the main QueryBuilder from the engine
-        if hasattr(self.engine, 'query_builder'):
-            query_builder = self.engine.query_builder
-        else:
-            # Create a QueryBuilder instance if engine doesn't have one
-            from pathlib import Path
-            from core.query_builder import QueryBuilder
-            
-            fragments_path = Path(__file__).parent.parent / 'sql' / 'fragments'
-            query_builder = QueryBuilder(
-                datadir=Path(self.datadir),
-                fragments_path=fragments_path,
-                use_materialized=getattr(self.engine, 'use_materialized', False)
-            )
-        
-        # Determine histogram type from column name
-        histogram_type = 'sclat' if 'sclat' in self.column_name.lower() else 'iolat'
-        
-        # Build query using QueryBuilder
-        query = query_builder.build_histogram_drill_down_query(
-            histogram_type=histogram_type,
+    def _run_timeseries_query(self) -> Optional[List[Dict]]:
+        """Fetch time-series histogram data for the active granularity."""
+        granularity = self.granularity_options[self.current_granularity_index]
+        return self._provider.fetch_timeseries_histogram(
+            column_name=self.column_name,
             where_clause=self.where_clause,
             low_time=self.low_time,
             high_time=self.high_time,
-            time_granularity=None  # No time granularity for data table
+            granularity=granularity,
         )
-        
-        # Log the data table query to debug
-        logger = logging.getLogger('xtop')
-        logger.debug(f"Histogram Peek - Data Table Query:\n{query}")
-        
+    
+    def _run_histogram_query_and_populate(self, table: DataTable) -> None:
+        """Populate the histogram DataTable using the shared provider."""
         try:
-            # Execute query directly with DuckDB - avoid pandas to prevent NA issues
-            conn = self.engine.data_source.conn
-            result = conn.execute(query).fetchall()
-            
-            if not result:
-                return
-            
-            # Get column names from the query result description
-            columns = [desc[0] for desc in conn.execute(query).description]
-            
-            # Find column indices
-            bucket_idx = columns.index('bucket_us') if 'bucket_us' in columns else 0
-            count_idx = columns.index('count') if 'count' in columns else 1
-            est_time_idx = columns.index('est_time_s') if 'est_time_s' in columns else 2
-            
-            # Calculate totals using the result tuples
-            total_count = sum(row[count_idx] for row in result if row[count_idx] is not None)
-            total_time = sum(row[est_time_idx] for row in result if row[est_time_idx] is not None)
-            max_time = max((row[est_time_idx] for row in result if row[est_time_idx] is not None), default=0)
-            
-            # Add rows to table
-            for row in result:
-                bucket_us = row[bucket_idx]
-                count = row[count_idx] if row[count_idx] is not None else 0
-                est_time = row[est_time_idx] if row[est_time_idx] is not None else 0.0
-                
-                # Skip empty buckets
-                if count == 0 and est_time == 0:
-                    continue
-                
-                # Calculate percentage
-                time_pct = (est_time / total_time * 100) if total_time > 0 else 0
-                
-                # Create visual bar
-                bar_width = int((est_time / max_time) * 20) if max_time > 0 else 0
-                visual_bar = "█" * bar_width + "▏" * (1 if bar_width == 0 and est_time > 0 else 0)
-                
-                # Calculate events per second (bucket_us is in microseconds)
-                est_events = (1000000 / bucket_us * count) if bucket_us > 0 else 0
-                
-                table.add_row(
-                    self._format_latency_range(bucket_us),
-                    f"{count:>12,}",  # Right-align in 12 chars
-                    f"{est_events:>14,.0f}",  # Right-align in 14 chars
-                    f"{est_time:>12.3f}",  # Right-align in 12 chars
-                    f"{time_pct:>7.1f}%",  # Right-align in 7 chars (plus %)
-                    visual_bar
-                )
-            
-            # Add summary row
-            table.add_row(
-                "─" * 15,
-                "─" * 12,
-                "─" * 14,
-                "─" * 12,
-                "─" * 8,
-                "─" * 20,
-                key="separator"
+            table_data = self._provider.fetch_histogram_table(
+                column_name=self.column_name,
+                where_clause=self.where_clause,
+                low_time=self.low_time,
+                high_time=self.high_time,
             )
-            
-            # Add totals
-            table.add_row(
-                "TOTAL",
-                f"{total_count:>12,}",
-                " " * 14 + "-",  # Right-align dash
-                f"{total_time:>12.3f}",
-                f"{100.0:>7.1f}%",
-                "",
-                key="total"
-            )
-        except Exception as e:
-            # Log the error to debug log if available
+        except Exception as exc:  # pragma: no cover - protective logging
             logger = logging.getLogger('xtop')
-            logger.error(f"Error in histogram peek query: {str(e)}")
-            logger.debug(f"Query that failed: {query if 'query' in locals() else 'Query not yet built'}")
-            
-            # Add error row
+            logger.error("Error in histogram peek query: %s", exc)
+            table.add_row(f"Error: {exc}", "-", "-", "-", "-", "-")
+            return
+
+        if not table_data.rows:
+            table.add_row("No histogram data", "-", "-", "-", "-", "-")
+            return
+
+        for row in table_data.rows:
             table.add_row(
-                f"Error: {str(e)}",
-                "-", "-", "-", "-", "-"
+                self._format_latency_range(row.bucket_us),
+                f"{row.count:>12,}",
+                f"{row.est_events_per_s:>14,.0f}",
+                f"{row.est_time_s:>12.3f}",
+                f"{row.time_pct:>7.1f}%",
+                self._build_visual_bar(row.relative_time_ratio, row.est_time_s),
             )
+
+        # Separator row
+        table.add_row(
+            "─" * 15,
+            "─" * 12,
+            "─" * 14,
+            "─" * 12,
+            "─" * 8,
+            "─" * 20,
+            key="separator",
+        )
+
+        table.add_row(
+            "TOTAL",
+            f"{table_data.total_count:>12,}",
+            " " * 14 + "-",
+            f"{table_data.total_time_s:>12.3f}",
+            f"{100.0:>7.1f}%",
+            "",
+            key="total",
+        )
     
     def _format_latency_range(self, bucket_us: int) -> str:
         """Format bucket value into latency range string, right-aligned"""
         # Use the formatter component and right-align to 15 characters
         formatted = self.formatter.format_latency_range(bucket_us)
         return f"{formatted:>15}"
+
+    @staticmethod
+    def _build_visual_bar(relative_ratio: float, est_time: float) -> str:
+        """Create a simple bar visualization for the histogram table."""
+        width = int(relative_ratio * 20) if relative_ratio > 0 else 0
+        width = max(0, min(width, 20))
+        if width > 0:
+            return "█" * width
+        return "▏" if est_time > 0 else ""
     
     def _extract_filter_display(self, where_clause: str) -> str:
         """Extract a readable filter display from WHERE clause"""

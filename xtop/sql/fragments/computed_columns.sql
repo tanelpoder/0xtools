@@ -30,42 +30,86 @@ CASE
 END AS COMM2,
 
 -- Connection info from extra_info JSON
-CASE 
-    WHEN EXTRA_INFO LIKE '%"connection"%' 
-    THEN json_extract_string(EXTRA_INFO, '$.connection')
-    ELSE '-'
-END AS CONNECTION,
+COALESCE(
+    CASE
+        WHEN samples.CONNECTION IS NOT NULL AND samples.CONNECTION <> '' THEN samples.CONNECTION
+        WHEN EXTRA_INFO IS NOT NULL AND LENGTH(TRIM(EXTRA_INFO)) > 0 AND JSON_VALID(EXTRA_INFO)
+        THEN json_extract_string(EXTRA_INFO, '$.connection')
+        ELSE NULL
+    END,
+    '-'
+) AS CONNECTION,
 
 -- Connection variants and normalized forms
 -- CONNECTION2: remove IPv4-mapped IPv6 prefix ::ffff:
 COALESCE(
     REGEXP_REPLACE(
-        COALESCE(samples.CONNECTION, json_extract_string(EXTRA_INFO, '$.connection')), 
+        COALESCE(
+            samples.CONNECTION,
+            CASE
+                WHEN EXTRA_INFO IS NOT NULL AND LENGTH(TRIM(EXTRA_INFO)) > 0 AND JSON_VALID(EXTRA_INFO)
+                THEN json_extract_string(EXTRA_INFO, '$.connection')
+                ELSE NULL
+            END
+        ),
         '::ffff:', '', 'g'
     ),
     '-'
 ) AS CONNECTION2,
 
--- CONNECTIONSUM: wildcard destination port in patterns like "ip1->ip2:PORT"
+-- CONNECTIONSUMLOCAL: wildcard local port digits before the arrow
 COALESCE(
     REGEXP_REPLACE(
         REGEXP_REPLACE(
-            COALESCE(samples.CONNECTION, json_extract_string(EXTRA_INFO, '$.connection')),
+            COALESCE(
+                samples.CONNECTION,
+                CASE
+                    WHEN EXTRA_INFO IS NOT NULL AND LENGTH(TRIM(EXTRA_INFO)) > 0 AND JSON_VALID(EXTRA_INFO)
+                    THEN json_extract_string(EXTRA_INFO, '$.connection')
+                    ELSE NULL
+                END
+            ),
+            '::ffff:', '', 'g'
+        ),
+        '(:)[0-9]+(->)', '\1[*]\2'
+    ),
+    '-'
+) AS CONNECTIONSUMLOCAL,
+
+-- CONNECTIONSUMPEER: wildcard peer/remote port digits after the arrow
+COALESCE(
+    REGEXP_REPLACE(
+        REGEXP_REPLACE(
+            COALESCE(
+                samples.CONNECTION,
+                CASE
+                    WHEN EXTRA_INFO IS NOT NULL AND LENGTH(TRIM(EXTRA_INFO)) > 0 AND JSON_VALID(EXTRA_INFO)
+                    THEN json_extract_string(EXTRA_INFO, '$.connection')
+                    ELSE NULL
+                END
+            ),
             '::ffff:', '', 'g'
         ),
         '(->.*:)[0-9]+', '\1[*]'
     ),
     '-'
-) AS CONNECTIONSUM,
+) AS CONNECTIONSUMPEER,
 
--- CONNECTIONSUM2: wildcard any port suffix occurrences ":PORT" globally
+-- CONNECTIONSUMBOTH: wildcard port digits on both ends
 COALESCE(
     REGEXP_REPLACE(
         REGEXP_REPLACE(
-            COALESCE(samples.CONNECTION, json_extract_string(EXTRA_INFO, '$.connection')),
+            COALESCE(
+                samples.CONNECTION,
+                CASE
+                    WHEN EXTRA_INFO IS NOT NULL AND LENGTH(TRIM(EXTRA_INFO)) > 0 AND JSON_VALID(EXTRA_INFO)
+                    THEN json_extract_string(EXTRA_INFO, '$.connection')
+                    ELSE NULL
+                END
+            ),
             '::ffff:', '', 'g'
         ),
         '(:)[0-9]+', '\1[*]', 'g'
     ),
     '-'
-) AS CONNECTIONSUM2
+) AS CONNECTIONSUMBOTH

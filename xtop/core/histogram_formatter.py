@@ -28,26 +28,27 @@ class HistogramFormatter:
         Returns:
             Formatted string like "1-2ms" or "10-20s"
         """
-        if bucket_us < 1000:
-            # Microseconds
-            next_bucket = bucket_us * 2 if bucket_us > 0 else 1
-            return f"{bucket_us}-{next_bucket}μs"
-        elif bucket_us < 1000000:
-            # Milliseconds
-            ms = bucket_us / 1000
-            next_ms = (bucket_us * 2) / 1000
-            if ms < 10:
-                return f"{ms:.1f}-{next_ms:.1f}ms"
-            else:
-                return f"{ms:.0f}-{next_ms:.0f}ms"
-        else:
-            # Seconds
-            s = bucket_us / 1000000
-            next_s = (bucket_us * 2) / 1000000
-            if s < 10:
-                return f"{s:.1f}-{next_s:.1f}s"
-            else:
-                return f"{s:.0f}-{next_s:.0f}s"
+        if bucket_us <= 0:
+            return "0μs"
+
+        low_us = max(bucket_us // 2, 1)
+        high_us = bucket_us
+
+        if high_us < 1000:
+            return f"{low_us}-{high_us}μs"
+
+        low_ms = low_us / 1000
+        high_ms = high_us / 1000
+        if high_us < 1_000_000:
+            if high_ms < 10:
+                return f"{low_ms:.1f}-{high_ms:.1f}ms"
+            return f"{low_ms:.0f}-{high_ms:.0f}ms"
+
+        low_s = low_us / 1_000_000
+        high_s = high_us / 1_000_000
+        if high_s < 10:
+            return f"{low_s:.1f}-{high_s:.1f}s"
+        return f"{low_s:.0f}-{high_s:.0f}s"
     
     def format_count(self, count: int) -> str:
         """Format count with thousands separator

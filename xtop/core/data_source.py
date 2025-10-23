@@ -26,8 +26,9 @@ class XCaptureDataSource:
         self.datadir = Path(datadir)
         self.conn = None
         self.duckdb_threads = duckdb_threads
-        self.available_columns = {}  # Uppercase -> actual column name mapping
+        self.available_columns = {}  # Lowercase -> actual column name mapping
         self.csv_metadata = {}
+        self.schema_info: Dict[str, List[Tuple[str, str]]] = {}
         self.csv_filter = CSVTimeFilter(self.datadir)
         
         # Validate datadir exists
@@ -58,7 +59,7 @@ class XCaptureDataSource:
             return self.available_columns
             
         conn = self.connect()
-        
+
         # CSV file patterns in priority order
         csv_patterns = {
             'samples': 'xcapture_samples_*.csv',
@@ -67,31 +68,66 @@ class XCaptureDataSource:
             'kstacks': 'xcapture_kstacks_*.csv',
             'ustacks': 'xcapture_ustacks_*.csv'
         }
-        
+
         for csv_type, pattern in csv_patterns.items():
-            csv_path = str(self.datadir / pattern)
-            try:
-                # Use DESCRIBE to get column information
-                result = conn.execute(f"DESCRIBE SELECT * FROM read_csv_auto('{csv_path}') LIMIT 1")
-                columns = result.fetchall()
-                
-                self.available_columns[csv_type] = {}
-                for col_name, col_type, *_ in columns:
-                    # Store lowercase version for case-insensitive lookup
-                    col_lower = col_name.lower()
-                    self.available_columns[csv_type][col_lower] = col_name
-                    
-                # Store metadata
+            self.available_columns[csv_type] = {}
+            self.schema_info[csv_type] = []
+
+            describe_result = None
+            active_pattern = pattern
+            reader = 'read_csv_auto'
+
+            csv_files = self.get_csv_files(pattern)
+            if csv_files:
+                describe_result = self._try_describe(conn, reader, pattern)
+
+            if not describe_result:
+                parquet_pattern = pattern.replace('.csv', '.parquet')
+                parquet_files = self.get_csv_files(parquet_pattern)
+                if parquet_files:
+                    reader = 'read_parquet'
+                    active_pattern = parquet_pattern
+                    describe_result = self._try_describe(conn, reader, parquet_pattern)
+
+            if describe_result:
+                columns = describe_result
+                self.available_columns[csv_type] = {
+                    col_name.lower(): col_name for col_name, *_ in columns
+                }
+                self.schema_info[csv_type] = [(col_name, col_type) for col_name, col_type, *_ in columns]
+                self.csv_metadata[csv_type] = {
+                    'pattern': active_pattern,
+                    'column_count': len(columns),
+                    'columns': [col[0] for col in columns],
+                    'format': reader.replace('read_', '')
+                }
+            else:
                 self.csv_metadata[csv_type] = {
                     'pattern': pattern,
-                    'column_count': len(columns),
-                    'columns': [col[0] for col in columns]
+                    'column_count': 0,
+                    'columns': [],
+                    'format': None
                 }
-            except Exception:
-                # Silently skip if no files match the pattern
-                pass
-        
+
         return self.available_columns
+
+    def _try_describe(self, conn, reader: str, pattern: str):
+        """Attempt to DESCRIBE the given glob pattern using the provided reader."""
+        escaped = str(self.datadir / pattern).replace("'", "''")
+        try:
+            query = f"DESCRIBE SELECT * FROM {reader}('{escaped}') LIMIT 0"
+            result = conn.execute(query).fetchall()
+            if result:
+                return result
+        except Exception:
+            return None
+        return None
+
+    def get_schema_info(self) -> Dict[str, List[Tuple[str, str]]]:
+        """Return discovered schema information per CSV type."""
+        if not self.schema_info:
+            self.discover_columns()
+        return self.schema_info
     
     def get_csv_files(self, pattern: str) -> List[Path]:
         """List CSV files matching pattern"""

@@ -6,7 +6,7 @@ Builds queries using reusable SQL fragments for better maintainability.
 
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime, timedelta
 import logging
 from .csv_time_filter import CSVTimeFilter
@@ -64,6 +64,8 @@ class QueryBuilder:
         'io.p99_us': 'iorqend',
         'io.p999_us': 'iorqend',
         'iolat_histogram': 'iorqend',
+        'iorq_flags': 'iorqend',
+        'io.iorq_flags': 'iorqend',
         
         # Device columns
         'devname': 'partitions',
@@ -82,7 +84,7 @@ class QueryBuilder:
     # Computed columns that are always available in enriched_samples
     COMPUTED_COLUMNS = [
         'filenamesum', 'fext', 'comm2', 'connection',
-        'connection2', 'connectionsum', 'connectionsum2'
+        'connection2', 'connectionsumlocal', 'connectionsumpeer', 'connectionsumboth'
     ]
     
     def __init__(self, datadir: Path, fragments_path: Path, 
@@ -100,6 +102,38 @@ class QueryBuilder:
         self.use_materialized = use_materialized
         self.csv_filter = CSVTimeFilter(datadir)
         self.logger = logging.getLogger('xtop.query_builder')
+        self.schema_info: Dict[str, List[Tuple[str, str]]] = {}
+        self._schema_lookup: Dict[str, Dict[str, str]] = {}
+
+    def set_schema_info(self, schema_info: Optional[Dict[str, List[Tuple[str, str]]]]):
+        """Provide discovered schema information for runtime checks."""
+        self.schema_info = schema_info or {}
+        self._schema_lookup = {}
+        for source, columns in self.schema_info.items():
+            self._schema_lookup[source] = {name.lower(): name for name, _ in columns}
+
+    def _get_actual_column_name(self, source: str, column: str) -> Optional[str]:
+        lookup = self._schema_lookup.get(source)
+        if lookup is None:
+            return column
+        return lookup.get(column.lower())
+
+    def _has_column(self, source: str, column: str) -> bool:
+        lookup = self._schema_lookup.get(source)
+        if lookup is None:
+            return True
+        return column.lower() in lookup
+
+    def _has_columns(self, source: str, columns: List[str]) -> bool:
+        return all(self._has_column(source, col) for col in columns)
+
+    def _column_expr(self, source: str, alias: str, column: str, output_alias: str) -> str:
+        """Return a projection expression respecting schema availability."""
+        if self._has_column(source, column):
+            actual = self._get_actual_column_name(source, column)
+            column_ref = f"{alias}.{actual}"
+            return f"{column_ref} AS {output_alias}"
+        return f"NULL AS {output_alias}"
     
     def build_dynamic_query(self, 
                            group_cols: List[str],
@@ -430,56 +464,67 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
         # Start with SELECT columns
         select_cols = ["es.*"]
         
-        # Add columns from joined sources
+        # Determine join availability based on schema info
+        syscend_join = 'syscend' in required_sources and self._has_columns('syscend', ['tid', 'sysc_seq_num'])
+        iorq_join = 'iorqend' in required_sources and self._has_columns('iorqend', ['insert_tid', 'iorq_seq_num'])
+        kstack_join = 'kstacks' in required_sources and self._has_column('kstacks', 'kstack_hash')
+        ustack_join = 'ustacks' in required_sources and self._has_column('ustacks', 'ustack_hash')
+        partitions_join = (
+            'partitions' in required_sources
+            and iorq_join
+            and self._has_columns('iorqend', ['dev_maj', 'dev_min'])
+            and self._has_columns('partitions', ['dev_maj', 'dev_min'])
+        )
+
+        def project(source: str, alias: str, column: str, output_alias: str, join_available: bool) -> str:
+            if not join_available:
+                return f"NULL AS {output_alias}"
+            return self._column_expr(source, alias, column, output_alias)
+
+        # Add columns from joined sources (use NULL fallbacks when missing)
         if 'syscend' in required_sources:
-            select_cols.extend([
-                "sc.duration_ns AS sc_duration_ns",
-                "sc.type AS sc_type"
-            ])
-            if need_sc_histogram:
-                # Add bucket calculation
+            select_cols.append(project('syscend', 'sc', 'duration_ns', 'sc_duration_ns', syscend_join and self._has_column('syscend', 'duration_ns')))
+            select_cols.append(project('syscend', 'sc', 'type', 'sc_type', syscend_join))
+            if need_sc_histogram and syscend_join and self._has_column('syscend', 'duration_ns'):
                 bucket_calc = self.fragments.load('histogram_buckets')
                 bucket_calc = bucket_calc.replace('#DURATION_COLUMN#', 'sc.duration_ns')
                 bucket_calc = bucket_calc.replace('lat_bkt_us', 'sc_lat_bkt_us')
                 select_cols.append(bucket_calc)
-        
+            elif need_sc_histogram:
+                select_cols.append('NULL AS sc_lat_bkt_us')
+
         if 'iorqend' in required_sources:
-            select_cols.extend([
-                "io.duration_ns AS io_duration_ns",
-                "io.service_ns AS io_service_ns",
-                "io.queued_ns AS io_queued_ns",
-                "io.bytes AS io_bytes",
-                "io.dev_maj AS io_dev_maj",
-                "io.dev_min AS io_dev_min",
-                "io.IORQ_FLAGS AS iorq_flags"
-            ])
-            if need_io_histogram:
-                # Add bucket calculation
+            select_cols.append(project('iorqend', 'io', 'duration_ns', 'io_duration_ns', iorq_join and self._has_column('iorqend', 'duration_ns')))
+            select_cols.append(project('iorqend', 'io', 'service_ns', 'io_service_ns', iorq_join and self._has_column('iorqend', 'service_ns')))
+            select_cols.append(project('iorqend', 'io', 'queued_ns', 'io_queued_ns', iorq_join and self._has_column('iorqend', 'queued_ns')))
+            select_cols.append(project('iorqend', 'io', 'bytes', 'io_bytes', iorq_join and self._has_column('iorqend', 'bytes')))
+            select_cols.append(project('iorqend', 'io', 'dev_maj', 'io_dev_maj', iorq_join and self._has_column('iorqend', 'dev_maj')))
+            select_cols.append(project('iorqend', 'io', 'dev_min', 'io_dev_min', iorq_join and self._has_column('iorqend', 'dev_min')))
+            select_cols.append(project('iorqend', 'io', 'iorq_flags', 'iorq_flags', iorq_join and self._has_column('iorqend', 'iorq_flags')))
+            if need_io_histogram and iorq_join and self._has_column('iorqend', 'duration_ns'):
                 bucket_calc = self.fragments.load('histogram_buckets')
                 bucket_calc = bucket_calc.replace('#DURATION_COLUMN#', 'io.duration_ns')
                 bucket_calc = bucket_calc.replace('lat_bkt_us', 'io_lat_bkt_us')
                 select_cols.append(bucket_calc)
-        
+            elif need_io_histogram:
+                select_cols.append('NULL AS io_lat_bkt_us')
+
         if 'kstacks' in required_sources:
-            select_cols.extend([
-                "ks.KSTACK_HASH",
-                "ks.KSTACK_SYMS"
-            ])
-        
+            select_cols.append(project('kstacks', 'ks', 'kstack_hash', 'KSTACK_HASH', kstack_join))
+            select_cols.append(project('kstacks', 'ks', 'kstack_syms', 'KSTACK_SYMS', kstack_join and self._has_column('kstacks', 'kstack_syms')))
+
         if 'ustacks' in required_sources:
-            select_cols.extend([
-                "us.USTACK_HASH",
-                "us.USTACK_SYMS"
-            ])
-        
+            select_cols.append(project('ustacks', 'us', 'ustack_hash', 'USTACK_HASH', ustack_join))
+            select_cols.append(project('ustacks', 'us', 'ustack_syms', 'USTACK_SYMS', ustack_join and self._has_column('ustacks', 'ustack_syms')))
+
         if 'partitions' in required_sources:
-            select_cols.append("part.devname")
+            select_cols.append(project('partitions', 'part', 'devname', 'devname', partitions_join and self._has_column('partitions', 'devname')))
         
         # Build FROM clause
         from_clause = "FROM enriched_samples AS es"
         
         # Add JOINs
-        if 'syscend' in required_sources:
+        if 'syscend' in required_sources and syscend_join:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_syscend sc"
             else:
@@ -489,8 +534,10 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                 )
                 from_clause += f"\n    LEFT OUTER JOIN ({sc_source}) sc"
             from_clause += "\n        ON es.tid = sc.tid AND es.sysc_seq_num = sc.sysc_seq_num"
+        elif 'syscend' in required_sources and self.logger:
+            self.logger.warning("Skipping syscend join due to missing join columns")
 
-        if 'iorqend' in required_sources:
+        if 'iorqend' in required_sources and iorq_join:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_iorqend io"
             else:
@@ -500,8 +547,10 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                 )
                 from_clause += f"\n    LEFT OUTER JOIN ({io_source}) io"
             from_clause += "\n        ON es.tid = io.insert_tid AND es.iorq_seq_num = io.iorq_seq_num"
+        elif 'iorqend' in required_sources and self.logger:
+            self.logger.warning("Skipping iorqend join due to missing join columns")
 
-        if 'kstacks' in required_sources:
+        if 'kstacks' in required_sources and kstack_join:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_kstacks ks"
             else:
@@ -511,8 +560,10 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                 )
                 from_clause += f"\n    LEFT OUTER JOIN ({ks_source}) ks"
             from_clause += "\n        ON es.kstack_hash = ks.KSTACK_HASH"
+        elif 'kstacks' in required_sources and self.logger:
+            self.logger.warning("Skipping kstacks join due to missing columns")
 
-        if 'ustacks' in required_sources:
+        if 'ustacks' in required_sources and ustack_join:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_ustacks us"
             else:
@@ -522,8 +573,10 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                 )
                 from_clause += f"\n    LEFT OUTER JOIN ({us_source}) us"
             from_clause += "\n        ON es.ustack_hash = us.USTACK_HASH"
+        elif 'ustacks' in required_sources and self.logger:
+            self.logger.warning("Skipping ustacks join due to missing columns")
         
-        if 'partitions' in required_sources:
+        if 'partitions' in required_sources and partitions_join:
             if self.use_materialized:
                 from_clause += "\n    LEFT OUTER JOIN xtop_partitions part"
             else:
@@ -531,6 +584,8 @@ ORDER BY {self._get_histogram_order_by(time_granularity)}"""
                 partitions_base = partitions_base.replace('#XTOP_DATADIR#', str(self.datadir))
                 from_clause += f"\n    LEFT OUTER JOIN ({partitions_base}) part"
             from_clause += "\n        ON io.dev_maj = part.dev_maj AND io.dev_min = part.dev_min"
+        elif 'partitions' in required_sources and self.logger:
+            self.logger.warning("Skipping partitions join due to missing columns or iorqend join")
         
         # Build WHERE clause
         where_conditions = [f"({where_clause})"]

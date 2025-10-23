@@ -1,16 +1,8 @@
-# XTOP - X Process Snapper Terminal UI
+# XTOP - xCapture thread level sampling navigation UI
 
 ## Overview
 
-XTOP (X Process Snapper) is an advanced terminal-based visualization and analysis tool for Linux system performance data collected by xcapture. It provides interactive exploration of system metrics through a powerful TUI (Terminal User Interface) built with Python and the Textual framework.
-
-### Recent Updates (2025-08-19)
-
-- **CSV Time Filtering**: Optimized DuckDB queries to read only relevant hourly CSV files based on time ranges
-- **Histogram Query Fixes**: Resolved sample count multiplication in histogram queries
-- **Pandas-Free Operations**: Eliminated pandas dependencies to avoid NA/null value issues
-- **JSON Viewer**: Added syntax-highlighted JSON viewer for extra_info column
-- **Row-Specific Peek Modals**: Peek modals now filter data by current row's GROUP BY values
+XTOP is an advanced terminal-based visualization and analysis tool for Linux system performance data collected by xcapture. It provides interactive exploration of system metrics through a powerful TUI (Terminal User Interface) built with Python and the Textual framework.
 
 ## Architecture
 
@@ -53,7 +45,8 @@ xtop/
 │   ├── data_source.py        # CSV data source management
 │   ├── query_engine.py       # Dynamic SQL query builder
 │   ├── query_builder.py      # Advanced query construction with histogram support
-│   ├── csv_time_filter.py   # Time-based CSV file filtering with glob patterns
+│   ├── csv_time_filter.py    # Time-based CSV file filtering with glob patterns
+│   ├── peek_providers.py     # Shared histogram/stack providers for peek modals
 │   ├── navigation.py         # Navigation state management
 │   ├── formatters.py         # Data formatting and display
 │   ├── visualizers.py        # Unicode charts and visualizations
@@ -64,6 +57,7 @@ xtop/
 │   ├── cell_peek_modal.py   # Enhanced histogram modal with heatmaps
 │   ├── stack_peek_modal.py  # Stack trace viewer modal
 │   ├── json_viewer_modal.py # JSON viewer for extra_info column
+│   ├── value_filter_modal.py # Searchable include/exclude picker
 │   └── error_modal.py       # Error display modal
 │
 ├── tests/                    # Test suite
@@ -75,7 +69,6 @@ xtop/
 │   ├── fragments/           # Reusable SQL fragments
 │   └── *.sql               # Legacy query templates
 │
-├── run_tests.py             # Main test runner
 ├── xtop                     # Main TUI application
 ├── xtop-test.py             # CLI test interface
 ├── xtop-tui.py             # Symlink to xtop (for compatibility)
@@ -86,16 +79,20 @@ xtop/
 
 ### Interactive TUI Controls
 
+- Top status pane shows a sparkline timeline of `avg_thr` (per-minute thread activity) for the active time range.
+
 | Key | Action | Description |
 |-----|--------|-------------|
 | **g** | Group By | Change GROUP BY columns dynamically |
 | **Enter** | Drill Down | Filter on selected cell value |
 | **Space** | Filter Menu | Include/exclude filter options |
+| **/** | Search Values | Searchable include/exclude picker for GROUP BY columns |
 | **?** | Peek | View detailed information (histograms, stacks, heatmaps) |
 | **Backspace** | Navigate Back | Return to previous view |
 | **</>** | Reorder Columns | Move GROUP BY columns left/right |
 | **l** | Latency Columns | Select aggregate columns to display |
 | **r** | Refresh | Re-execute current query |
+| **h** | Keys/Help Panel | Toggle Textual keys/help panel |
 
 ### Dynamic Query System
 
@@ -105,6 +102,19 @@ The dynamic query builder automatically:
 3. Handles computed columns (KSTACK_CURRENT_FUNC, FILENAMESUM, etc.)
 4. Builds latency histograms when histogram columns are requested
 5. Optimizes query performance by minimizing unnecessary JOINs
+
+### Data Sources
+
+| Source | Pattern | Purpose | Join Keys |
+|--------|---------|---------|-----------|
+| samples | `xcapture_samples_*.csv` | Base fact table containing timestamps, process state, filenames, sequence numbers | N/A (base table) |
+| syscend | `xcapture_syscend_*.csv` | System call completion durations | `samples.tid = sc.tid` and `samples.sysc_seq_num = sc.sysc_seq_num` |
+| iorqend | `xcapture_iorqend_*.csv` | Block I/O completions, bytes, device metadata | `samples.tid = io.insert_tid` and `samples.iorq_seq_num = io.iorq_seq_num` |
+| kstacks | `xcapture_kstacks_*.csv` | Kernel stack symbols keyed by hash | `samples.kstack_hash = ks.kstack_hash` |
+| ustacks | `xcapture_ustacks_*.csv` | Userspace stack symbols keyed by hash | `samples.ustack_hash = us.ustack_hash` |
+| partitions | `partitions` | Device name lookup for block major/minor pairs | `io.dev_maj/dev_min = part.dev_maj/dev_min` |
+
+Helper columns such as `FILENAMESUM`, `COMM2`, `KSTACK_CURRENT_FUNC`, `USTACK_CURRENT_FUNC`, and `CONNECTION` are derived automatically so they remain filterable/groupable without manual SQL edits.
 
 Example flow:
 - User selects `KSTACK_HASH` in grouping
@@ -121,7 +131,9 @@ Example flow:
    - Dynamic width with horizontal scrolling for large time ranges
    - Automatic gap filling for missing time buckets
 4. **Stack Traces**: Full stack trace viewing with symbol resolution
-5. **Responsive Tables**: Auto-adjusting column widths with proper alignment
+5. **Responsive Tables**: Auto-adjusting column widths and consistent numeric formatting (`avg_thr`, percentages, etc.)
+6. **Searchable Filters**: `/` modal batches include/exclude selections across a column
+7. **Keys Panel**: `h` toggles the Textual keys/help panel; press `h` again to close
 
 ### Error Handling
 
@@ -163,6 +175,23 @@ export XCAPTURE_DATADIR=/path/to/xcapture/out
 ./xtop-test.py -d $XCAPTURE_DATADIR -w "state IN ('SLEEP', 'RUN')" --limit 5
 ```
 
+### Keyboard Shortcuts
+
+| Key | Action | Description |
+|-----|--------|-------------|
+| `g` | Group By | Change GROUP BY columns dynamically |
+| `Enter` | Drill Down | Filter on selected cell value (GROUP BY columns only) |
+| `Space` | Filter Menu | Include/exclude toggle for the highlighted value |
+| `/` | Search Values | Searchable include/exclude picker for GROUP BY columns |
+| `?` | Peek | Histogram/stack/JSON peek modal |
+| `Backspace` | Navigate Back | Undo the most recent filter |
+| `<` / `>` | Reorder Columns | Move GROUP BY columns left/right |
+| `l` | Latency Columns | Manage latency/percentile/histogram columns |
+| `r` | Refresh | Re-run the current query |
+| `h` | Keys/Help Panel | Toggle Textual keys/help panel |
+| `Ctrl+C` | Quit | Exit the TUI |
+
+
 ## Implementation Details
 
 ### Column Name Handling
@@ -182,38 +211,6 @@ export XCAPTURE_DATADIR=/path/to/xcapture/out
 - MD5 hashes link samples to deduplicated stack traces
 - `KSTACK_CURRENT_FUNC` extracts top function from stack
 - Full stack viewing available via peek modal
-
-## Testing
-
-### Streamlined Test Infrastructure
-
-XTOP features a modern, streamlined test suite that runs all tests in ~13 seconds:
-
-```bash
-# Set data directory
-export XCAPTURE_DATADIR=/path/to/xcapture/out
-
-# Run all tests (recommended)
-./run_tests.py
-
-# Run specific test suite
-./run_tests.py basic        # Core functionality (5 tests)
-./run_tests.py latency     # Latency analysis (4 tests)
-./run_tests.py stack       # Stack traces (3 tests)
-./run_tests.py advanced    # Complex queries (4 tests)
-
-# Options
-./run_tests.py -v          # Verbose output
-./run_tests.py --save      # Save results to JSON
-```
-
-The test suite includes:
-- **16 comprehensive tests** covering all functionality
-- **Color-coded output** with real-time progress
-- **JSON export** for CI/CD integration
-- **Single entry point** for all testing
-
-For detailed testing information, see [TESTING.md](TESTING.md).
 
 ## Technical Stack
 

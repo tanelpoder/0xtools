@@ -90,14 +90,30 @@ class LatencyHeatmap:
         
         return buckets
     
-    def _format_latency(self, us: int) -> str:
-        """Format latency value for display"""
-        if us >= 1000000:
-            return f"{us/1000000:.0f}s"
-        elif us >= 1000:
-            return f"{us/1000:.0f}ms"
-        else:
-            return f"{us}μs"
+    def _format_latency(self, upper_us: int) -> str:
+        """Format latency bucket using half-open range notation."""
+
+        if upper_us <= 0:
+            return "0μs"
+
+        low_us = max(upper_us // 2, 1)
+        high_us = upper_us
+
+        if high_us < 1000:
+            return f"{low_us}-{high_us}μs"
+
+        low_ms = low_us / 1000
+        high_ms = high_us / 1000
+        if high_us < 1_000_000:
+            if high_ms < 10:
+                return f"{low_ms:.1f}-{high_ms:.1f}ms"
+            return f"{low_ms:.0f}-{high_ms:.0f}ms"
+
+        low_s = low_us / 1_000_000
+        high_s = high_us / 1_000_000
+        if high_s < 10:
+            return f"{low_s:.1f}-{high_s:.1f}s"
+        return f"{low_s:.0f}-{high_s:.0f}s"
     
     def _get_bucket_index(self, latency_us: int) -> int:
         """Find the bucket index for a given latency value"""
@@ -191,10 +207,13 @@ class LatencyHeatmap:
             lines.append(f"Time range: {time_labels[0]} → {time_labels[-1]}")
             lines.append("")
         
+        # Determine label width for alignment
+        label_width = max(8, max(len(self._format_latency(bucket)) for bucket in sorted_buckets))
+
         # Generate heatmap rows (from high latency to low)
         # Show ALL buckets, not just the highest ones
         for bucket in reversed(sorted_buckets):
-            label = self._format_latency(bucket).rjust(8)
+            label = self._format_latency(bucket).rjust(label_width)
             
             row_chars = []
             for time_str in time_labels:
@@ -226,8 +245,9 @@ class LatencyHeatmap:
             lines.append(f"{label} │ {row_str}")
         
         # Bottom axis
-        lines.append(" " * 9 + "└" + "─" * len(time_labels))
-        lines.append(" " * 11 + "Time →")
+        axis_offset = label_width + 1
+        lines.append(" " * axis_offset + "└" + "─" * len(time_labels))
+        lines.append(" " * (axis_offset + 2) + "Time →")
         
         # Legend
         lines.append("")

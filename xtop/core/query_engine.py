@@ -101,7 +101,7 @@ class QueryEngine:
             fragments_path=self.fragments_path,
             use_materialized=use_materialized
         )
-        
+
         # Initialize materializer
         self.materializer = DataMaterializer(data_source.conn, data_source.datadir)
         self.use_materialized = use_materialized
@@ -112,6 +112,10 @@ class QueryEngine:
         # Cache for schema information
         self.schema_cache: Dict[str, List[Tuple[str, str]]] = {}
         self._discover_all_schemas()
+        try:
+            self.query_builder.set_schema_info(self.data_source.get_schema_info())
+        except Exception as exc:
+            self.logger.warning(f"Failed to share schema info with QueryBuilder: {exc}")
     
     # Removed load_template method - no longer needed with only dynamic queries
     

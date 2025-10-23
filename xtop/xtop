@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-X Process Snapper TUI - Interactive terminal UI for xtop with drill-down navigation
-Uses Textual for proper keyboard handling without requiring root privileges
+xtop - top for wall-clock time by Tanel Poder [tanelpoder.com]
+     - Interactive terminal UI for xcapture thread activity analysis
 """
 
 import argparse
@@ -11,16 +11,19 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 import platform
 import logging
+import shutil
+import math
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, DataTable, Static, OptionList, Label
+from textual.widgets import Header, Footer, DataTable, Static, OptionList, Label, HelpPanel
 from textual.widgets.option_list import Option
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer, VerticalScroll
 from textual.screen import Screen, ModalScreen
 from textual.reactive import reactive
 from textual.message import Message
 from textual import on
+from textual.css.query import NoMatches
 
 # Add parent directory to path for imports
 import sys
@@ -37,16 +40,292 @@ from core import (
     NavigationState
 )
 from core.histogram_formatter import HistogramFormatter
+from core.display import (
+    compute_column_layout,
+    format_value as display_format_value,
+    render_block_sparkline,
+)
+from core.time_utils import resolve_time_range
 
 # Import TUI components
 from tui.cell_peek_modal import HistogramPeekModal
 from tui.stack_peek_modal import StackPeekModal
 from tui.json_viewer_modal import JSONViewerModal
+from tui.value_filter_modal import ValueFilterModal, ValueEntry
 
 # (tab functionality removed for simplicity)
 
 __version__ = "1.0"
 __author__ = "Tanel Poder"
+
+BREADCRUMB_LABEL_WIDTH = 11
+
+
+def _get_row_value(row: Dict[str, Any], key: str) -> Any:
+    if key in row:
+        return row[key]
+    lower = key.lower()
+    upper = key.upper()
+    if lower in row:
+        return row[lower]
+    if upper in row:
+        return row[upper]
+    return None
+
+
+def format_time_range_line(
+    label: str,
+    low_time: Optional[datetime],
+    high_time: Optional[datetime],
+    *,
+    label_width: Optional[int] = None,
+) -> str:
+    """Format a human-readable time range line with optional label padding."""
+
+    label_text = f"{label}:"
+    if label_width:
+        label_text = label_text.ljust(label_width)
+
+    if low_time and high_time:
+        try:
+            mins = int((high_time - low_time).total_seconds() // 60)
+        except Exception:
+            mins = None
+        suffix = f" ({mins} min)" if mins is not None else ""
+        return f"{label_text} {low_time.strftime('%Y-%m-%d %H:%M:%S')} -> {high_time.strftime('%Y-%m-%d %H:%M:%S')}{suffix}"
+    return f"{label_text} Unknown"
+
+
+def normalize_window_bounds(
+    low: Optional[datetime],
+    high: Optional[datetime],
+    *,
+    clamp_low: Optional[datetime] = None,
+    clamp_high: Optional[datetime] = None,
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """Normalize and optionally clamp window bounds."""
+
+    if low and high and low > high:
+        low, high = high, low
+
+    if clamp_low and low and low < clamp_low:
+        low = clamp_low
+    if clamp_high and high and high > clamp_high:
+        high = clamp_high
+
+    if low and high and low > high:
+        low = high
+
+    return low, high
+
+
+def compute_selection_window(
+    loaded_low: Optional[datetime],
+    loaded_high: Optional[datetime],
+    override_low: Optional[datetime] = None,
+    override_high: Optional[datetime] = None,
+    *,
+    default_span: timedelta = timedelta(seconds=300),
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """Derive the active selection window from loaded range and overrides."""
+
+    selection_low = loaded_low
+    selection_high = loaded_high
+
+    if loaded_low and loaded_high:
+        span = loaded_high - loaded_low
+        if span <= default_span:
+            selection_low = loaded_low
+            selection_high = loaded_high
+        else:
+            selection_low = max(loaded_low, loaded_high - default_span)
+            selection_high = loaded_high
+
+    if override_low is not None or override_high is not None:
+        low = selection_low
+        high = selection_high
+
+        if override_low is not None:
+            low = override_low
+        if override_high is not None:
+            high = override_high
+
+        if override_low is None and override_high is not None:
+            low = override_high - default_span
+        if override_high is None and override_low is not None:
+            high = override_low + default_span
+
+        selection_low, selection_high = normalize_window_bounds(
+            low,
+            high,
+            clamp_low=loaded_low,
+            clamp_high=loaded_high,
+        )
+
+    if selection_low and selection_high and selection_low >= selection_high:
+        raise ValueError("Selection window is empty or invalid")
+
+    return selection_low, selection_high
+
+
+def resolve_active_time_range(
+    selection_enabled: bool,
+    selection_low: Optional[datetime],
+    selection_high: Optional[datetime],
+    loaded_low: Optional[datetime],
+    loaded_high: Optional[datetime],
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """Return the effective time range for queries based on selection toggle."""
+
+    if selection_enabled and selection_low and selection_high:
+        return selection_low, selection_high
+    return loaded_low, loaded_high
+
+
+def build_avg_thr_timeline_line(
+    query_engine: QueryEngine,
+    *,
+    where_clause: Optional[str],
+    low_time: Optional[datetime],
+    high_time: Optional[datetime],
+    max_width: Optional[int],
+    logger: Optional[logging.Logger] = None,
+    highlight_low: Optional[datetime] = None,
+    highlight_high: Optional[datetime] = None,
+    render_mode: str = "plain",
+    highlight_markup: str = "bold yellow",
+    highlight_ansi_color: str = "\033[1;33m",
+) -> str:
+    """Return a unicode sparkline representing avg_threads over time."""
+
+    label = "AvgThreads: "
+    if not low_time or not high_time:
+        return f"{label}(time range unavailable)"
+
+    timeline_params = QueryParams(
+        where_clause=where_clause or "1=1",
+        group_cols=['yyyy', 'mm', 'dd', 'hh', 'mi'],
+        low_time=low_time,
+        high_time=high_time,
+        limit=None,
+    )
+
+    try:
+        result = query_engine.execute_with_params(
+            timeline_params,
+            debug=False,
+            latency_columns=None,
+        )
+        rows = result.data or []
+    except Exception as exc:  # pragma: no cover - defensive
+        if logger:
+            logger.debug(f"Timeline query failed: {exc}")
+        return f"{label}(error fetching timeline)"
+
+    if not rows:
+        return f"{label}(no samples)"
+
+    timeline_map: Dict[Tuple[int, int, int, int, int], float] = {}
+    for row in rows:
+        try:
+            year = int(_get_row_value(row, 'YYYY'))
+            month = int(_get_row_value(row, 'MM'))
+            day = int(_get_row_value(row, 'DD'))
+            hour = int(_get_row_value(row, 'HH'))
+            minute = int(_get_row_value(row, 'MI'))
+        except (TypeError, ValueError):
+            continue
+
+        avg_thr_val = _get_row_value(row, 'avg_threads')
+        if avg_thr_val is None:
+            samples = _get_row_value(row, 'samples')
+            if samples is None:
+                avg_thr = 0.0
+            else:
+                try:
+                    avg_thr = float(samples) / 60.0
+                except Exception:
+                    avg_thr = 0.0
+        else:
+            try:
+                avg_thr = float(avg_thr_val)
+            except Exception:
+                avg_thr = 0.0
+
+        timeline_map[(year, month, day, hour, minute)] = avg_thr
+
+    if not timeline_map:
+        return f"{label}(no samples)"
+
+    values: List[float] = []
+    current = low_time.replace(second=0, microsecond=0)
+    end_time = high_time.replace(second=0, microsecond=0)
+    if end_time < high_time:
+        end_time += timedelta(minutes=1)
+
+    while current < end_time:
+        key = (current.year, current.month, current.day, current.hour, current.minute)
+        values.append(timeline_map.get(key, 0.0))
+        current += timedelta(minutes=1)
+
+    spark_width = max(0, (max_width or 0) - len(label)) or 60
+    if spark_width <= 0:
+        spark_width = 10
+
+    sparkline = render_block_sparkline(values, max_chars=spark_width)
+    if not sparkline:
+        return f"{label}(no samples)"
+
+    timeline_span = (high_time - low_time).total_seconds()
+    highlight_span = None
+    if highlight_low and highlight_high and timeline_span > 0:
+        start_sec = (highlight_low - low_time).total_seconds()
+        end_sec = (highlight_high - low_time).total_seconds()
+
+        # Clamp to timeline bounds
+        start_sec = max(0.0, min(timeline_span, start_sec))
+        end_sec = max(0.0, min(timeline_span, end_sec))
+
+        if end_sec > start_sec:
+            highlight_span = (start_sec, end_sec)
+
+    if highlight_span and render_mode in {"markup", "ansi"}:
+        start_sec, end_sec = highlight_span
+        length = len(sparkline)
+        if length > 0 and timeline_span > 0:
+            start_ratio = start_sec / timeline_span
+            end_ratio = end_sec / timeline_span
+
+            start_idx = int(math.floor(start_ratio * length))
+            end_idx = int(math.ceil(end_ratio * length))
+
+            if end_idx <= start_idx:
+                end_idx = min(length, start_idx + 1)
+
+            start_idx = max(0, min(length - 1, start_idx))
+            end_idx = max(1, min(length, end_idx))
+
+            if render_mode == "markup":
+                open_tag = f"[{highlight_markup}]"
+                close_tag = f"[/{highlight_markup}]"
+                sparkline = (
+                    sparkline[:start_idx]
+                    + open_tag
+                    + sparkline[start_idx:end_idx]
+                    + close_tag
+                    + sparkline[end_idx:]
+                )
+            elif render_mode == "ansi" and highlight_ansi_color:
+                reset = "\033[0m"
+                sparkline = (
+                    sparkline[:start_idx]
+                    + highlight_ansi_color
+                    + sparkline[start_idx:end_idx]
+                    + reset
+                    + sparkline[end_idx:]
+                )
+
+    return f"{label}{sparkline}"
 
 
 class FilterMenuScreen(ModalScreen):
@@ -569,10 +848,10 @@ class GroupingMenuScreen(ModalScreen):
 
 
 class XTopTUI(App):
-    """Interactive TUI for xtop with drill-down navigation"""
-    
-    TITLE = "X Process Snapper TUI"
-    SUB_TITLE = "Interactive System Analysis"
+    """xtop app"""
+   
+    TITLE = "xtop: top for wall-clock time"
+    SUB_TITLE = "Dimensional performance analysis of thread-level activity"
     
     CSS = """
     Screen {
@@ -600,7 +879,7 @@ class XTopTUI(App):
     
     #global-breadcrumb {
         dock: top;
-        height: 4;
+        height: 6;
         padding: 0 1;
         border: solid cyan;
         background: $primary;
@@ -622,8 +901,12 @@ class XTopTUI(App):
         ("enter", "drill_down", "Drill down"),
         ("backspace", "back_out", "Remove last filter"),
         ("space", "show_filter_menu", "Filter menu"),
+        ("/", "search_filter", "Search values"),
         # Tab bindings removed for simplicity
         ("r", "refresh", "Refresh"),
+        ("[", "move_window_left", "Move window left"),
+        ("]", "move_window_right", "Move window right"),
+        ("w", "toggle_selection_window", "Toggle selection window"),
         # Removed query type selection - always uses dynamic queries
         ("g", "change_grouping", "Grouping"),
         ("u", "undo_grouping", "Undo last grouping"),
@@ -632,12 +915,14 @@ class XTopTUI(App):
         ("<", "move_column_left", "Move column left"),
         (">", "move_column_right", "Move column right"),
         ("?", "peek_cell", "Peek cell details"),
-        ("h", "toggle_help", "Help"),
+        ("h", "toggle_help", "Keys/help panel"),
         ("ctrl+c", "quit", "Quit"),
     ]
     
     def __init__(self, datadir: str,
                  low_time: Optional[datetime] = None, high_time: Optional[datetime] = None,
+                 selection_low: Optional[datetime] = None, selection_high: Optional[datetime] = None,
+                 selection_enabled: bool = False,
                  debug_log: Optional[str] = None, initial_group_by: Optional[List[str]] = None,
                  append_group_by: Optional[List[str]] = None, duckdb_threads: Optional[int] = None):
         """Initialize TUI with data directory and time range"""
@@ -672,6 +957,10 @@ class XTopTUI(App):
         self.last_result = None
         self.display_columns = []
         self.selected_latency_columns = []  # Track selected latency/aggregate columns
+        self.window_step = timedelta(minutes=1)
+        self.selection_enabled = bool(selection_enabled)
+        self.selection_low: Optional[datetime] = None
+        self.selection_high: Optional[datetime] = None
         
         # If no time range specified, select latest 60 minutes of available data based on files
         if not low_time and not high_time:
@@ -683,14 +972,25 @@ class XTopTUI(App):
                 if self.logger:
                     self.logger.warning(f"Failed to detect default time range: {e}")
         
+        # Store loaded range (files/time span) and initialise selection window
+        self.loaded_low = low_time
+        self.loaded_high = high_time
+
+        if selection_low is None and selection_high is None:
+            try:
+                selection_low, selection_high = compute_selection_window(
+                    self.loaded_low,
+                    self.loaded_high,
+                )
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
+
+        self._set_selection_window(selection_low, selection_high, clamp=False)
+
         # Set query type to dynamic (the only type now) and time range
         self.query_params.query_type = 'dynamic'
-        self.query_params.low_time = low_time
-        self.query_params.high_time = high_time
+        self._update_query_time_range()
 
-        # Store initial time range for display purposes
-        self.initial_time_range = (low_time, high_time)
-        
         # Use custom group by columns if provided, otherwise use defaults
         if self.initial_group_by:
             # Standardize to lowercase for consistency
@@ -730,8 +1030,15 @@ class XTopTUI(App):
         """Create the UI layout"""
         yield Header()
 
-        # Breadcrumb display (includes Time Range, Filters and Path)
-        yield Static("Filters: No filters applied\nPath: Loading...", id="global-breadcrumb")
+        # Breadcrumb display (includes Timeline, Time Range, Filters, and Path)
+        initial_breadcrumb = (
+            "AvgThreads: (initialising)\n"
+            f"{'TimeRange:'.ljust(BREADCRUMB_LABEL_WIDTH)} Detecting...\n"
+            f"{'Window:'.ljust(BREADCRUMB_LABEL_WIDTH)} Pending...\n"
+            f"{'Filters:'.ljust(BREADCRUMB_LABEL_WIDTH)} No filters applied\n"
+            f"{'Path:'.ljust(BREADCRUMB_LABEL_WIDTH)} Loading..."
+        )
+        yield Static(initial_breadcrumb, id="global-breadcrumb")
         
         # Single data table (no tabs)
         yield DataTable(id="main-table", zebra_stripes=True)
@@ -762,7 +1069,90 @@ class XTopTUI(App):
         high_time = latest_hour.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         low_time = high_time - timedelta(hours=1)
         return (low_time, high_time)
-    
+
+    def _normalize_selection_window(
+        self,
+        low: Optional[datetime],
+        high: Optional[datetime],
+        *,
+        clamp: bool = True,
+    ) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """Ensure selection window ordering and clamping."""
+
+        clamp_low = self.loaded_low if clamp else None
+        clamp_high = self.loaded_high if clamp else None
+        return normalize_window_bounds(low, high, clamp_low=clamp_low, clamp_high=clamp_high)
+
+    def _set_selection_window(
+        self,
+        low: Optional[datetime],
+        high: Optional[datetime],
+        *,
+        clamp: bool = True,
+    ) -> None:
+        """Update selection window and propagate to QueryParams."""
+
+        self.selection_low, self.selection_high = self._normalize_selection_window(
+            low,
+            high,
+            clamp=clamp,
+        )
+        self._update_query_time_range()
+
+    def _update_query_time_range(self) -> None:
+        """Keep QueryParams time filters aligned with selection window."""
+
+        if self.query_params is None:
+            return
+        active_low, active_high = resolve_active_time_range(
+            self.selection_enabled,
+            self.selection_low,
+            self.selection_high,
+            self.loaded_low,
+            self.loaded_high,
+        )
+        self.query_params.low_time = active_low
+        self.query_params.high_time = active_high
+
+    def _shift_selection_window(self, offset: timedelta) -> bool:
+        """Shift the selection window by a timedelta offset.
+
+        Returns True if the window changed, False otherwise.
+        """
+
+        if not self.selection_low or not self.selection_high:
+            return False
+
+        span = self.selection_high - self.selection_low
+        if span.total_seconds() <= 0:
+            return False
+
+        new_low = self.selection_low + offset
+        new_high = self.selection_high + offset
+
+        if self.loaded_low and new_low < self.loaded_low:
+            new_low = self.loaded_low
+            new_high = new_low + span
+
+        if self.loaded_high and new_high > self.loaded_high:
+            new_high = self.loaded_high
+            new_low = new_high - span
+
+        # When the available data span is smaller than the window span, clamp to loaded range
+        if self.loaded_low and self.loaded_high:
+            available_span = self.loaded_high - self.loaded_low
+            if available_span.total_seconds() > 0 and available_span < span:
+                new_low = self.loaded_low
+                new_high = self.loaded_high
+
+        new_low, new_high = self._normalize_selection_window(new_low, new_high, clamp=True)
+
+        if self.selection_low == new_low and self.selection_high == new_high:
+            return False
+
+        self._set_selection_window(new_low, new_high, clamp=True)
+        return True
+
     def on_mount(self) -> None:
         """Initialize when app is mounted"""
         if self.logger:
@@ -938,7 +1328,7 @@ class XTopTUI(App):
     
     def _convert_histogram_to_viz(self, hist_str: str, width: int = 26) -> str:
         """Convert histogram string to unicode visualization
-        
+
         The histogram format is: bucket:count:time:global_max,bucket:count:time:global_max,...
         This matches the format from the original sclathist.sql
         
@@ -951,10 +1341,27 @@ class XTopTUI(App):
         """
         # Use the existing visualizer method that handles this format
         return self.visualizer.make_histogram_with_embedded_max(hist_str)
-    
+
+    @staticmethod
+    def _row_value(row: Dict[str, Any], key: str) -> Any:
+        return _get_row_value(row, key)
+
+    def _build_avg_thr_timeline_line(self, max_width: int) -> str:
+        return build_avg_thr_timeline_line(
+            self.query_engine,
+            where_clause=self.navigation.get_current_where_clause(),
+            low_time=self.loaded_low,
+            high_time=self.loaded_high,
+            max_width=max_width,
+            logger=self.logger,
+            highlight_low=self.selection_low if self.selection_enabled else None,
+            highlight_high=self.selection_high if self.selection_enabled else None,
+            render_mode="markup",
+        )
+
     def refresh_data(self) -> None:
         """Refresh data display"""
-        
+
         # Save current cursor position before refresh
         saved_cursor_row = None
         saved_cursor_col = None
@@ -981,24 +1388,53 @@ class XTopTUI(App):
             filter_display = self.navigation.get_filter_display()
             nav_path = self.navigation.get_breadcrumb_path()
             
-            # Build time range line from current query params
-            tr_low = getattr(self.query_params, 'low_time', None)
-            tr_high = getattr(self.query_params, 'high_time', None)
-            if tr_low and tr_high:
-                try:
-                    mins = int((tr_high - tr_low).total_seconds() // 60)
-                except Exception:
-                    mins = None
-                suffix = f" ({mins} min)" if mins is not None else ""
-                time_line = f"TimeRng: {tr_low.strftime('%Y-%m-%d %H:%M:%S')} -> {tr_high.strftime('%Y-%m-%d %H:%M:%S')}{suffix}"
+            # Build time range lines
+            active_low, active_high = resolve_active_time_range(
+                self.selection_enabled,
+                self.selection_low,
+                self.selection_high,
+                self.loaded_low,
+                self.loaded_high,
+            )
+            loaded_low = self.loaded_low or active_low
+            loaded_high = self.loaded_high or active_high
+            time_line = format_time_range_line(
+                "TimeRange",
+                loaded_low,
+                loaded_high,
+                label_width=BREADCRUMB_LABEL_WIDTH,
+            )
+            if self.selection_enabled and self.selection_low and self.selection_high:
+                window_line = format_time_range_line(
+                    "Window",
+                    self.selection_low,
+                    self.selection_high,
+                    label_width=BREADCRUMB_LABEL_WIDTH,
+                )
             else:
-                time_line = "TimeRng: Unknown"
+                window_line = f"{'Window:'.ljust(BREADCRUMB_LABEL_WIDTH)} Disabled"
+            pane_width = 0
+            try:
+                pane_width = getattr(breadcrumb.size, 'width', 0)
+            except Exception:
+                pane_width = 0
+            if not pane_width:
+                pane_width = getattr(self.size, 'width', 80) or 80
+
+            inner_width = max(10, int(pane_width) - 2)
+            timeline_line = self._build_avg_thr_timeline_line(inner_width)
             # Combine all into breadcrumb area (three lines)
-            breadcrumb_text = f"{time_line}\nFilters: {filter_display}\nPath: {nav_path}"
-            
+            breadcrumb_text = (
+                f"{timeline_line}\n"
+                f"{time_line}\n"
+                f"{window_line}\n"
+                f"{'Filters:'.ljust(BREADCRUMB_LABEL_WIDTH)} {filter_display}\n"
+                f"{'Path:'.ljust(BREADCRUMB_LABEL_WIDTH)} {nav_path}"
+            )
+
             if self.logger:
                 self.logger.info(f"Updating global breadcrumb with: {breadcrumb_text.replace(chr(10), ' | ')}")
-            
+
             breadcrumb.update(breadcrumb_text)
             
         except Exception as e:
@@ -1026,41 +1462,9 @@ class XTopTUI(App):
             # Generate headers first
             headers = self.formatter.generate_headers(columns)
             
-            # Determine column widths for alignment
-            col_widths = {}
-            numeric_cols = set()
-            
-            # Identify numeric columns and calculate max widths
-            for col in columns:
-                col_lower = col.lower()
-                # Check if this is a numeric column
-                if (col_lower in ['est_sc_cnt', 'min_lat_us', 'avg_lat_us', 'max_lat_us',
-                                 'p50_us', 'p95_us', 'p99_us', 'p999_us', 'samples', 
-                                 'total_samples', 'avg_threads', 'est_iorq_cnt'] or
-                    col_lower.endswith('_us') or col_lower.endswith('_ms') or 
-                    col_lower.endswith('_cnt') or col_lower.endswith('_s')):
-                    numeric_cols.add(col)
-                
-                # Calculate max width for this column
-                max_width = len(headers.get(col, col))  # Start with header width
-                
-                # Check all rows for proper width calculation (not just first 20)
-                # But limit iteration for very large datasets
-                rows_to_check = min(len(data), 100)  # Check up to 100 rows
-                for row in data[:rows_to_check]:
-                    val = self.formatter._format_value(col, row.get(col))
-                    max_width = max(max_width, len(val))
-                
-                # Apply appropriate width limits
-                # For numeric columns, ensure minimum width of 8
-                if col in numeric_cols:
-                    col_widths[col] = max(max_width + 1, 8)
-                elif col.lower() == 'extra_info':
-                    # Extra_info gets more width to show JSON data
-                    col_widths[col] = min(max_width + 1, 60)
-                else:
-                    # For text columns, allow more width but cap at reasonable limit
-                    col_widths[col] = min(max_width + 1, 40)  # Increased cap from 20 to 40
+            layout = compute_column_layout(columns, data, headers)
+            col_widths = layout.widths
+            numeric_cols = layout.numeric_columns
             
             # Add columns with proper alignment and width
             for col in columns:
@@ -1082,7 +1486,7 @@ class XTopTUI(App):
             for i, row in enumerate(data):
                 row_values = []
                 for col in columns:
-                    value = self.formatter._format_value(col, row.get(col))
+                    value = display_format_value(col, row.get(col))
                     # Right-align numeric columns
                     if col in numeric_cols:
                         value = value.rjust(col_widths[col])
@@ -1231,6 +1635,93 @@ class XTopTUI(App):
             self.update_status(f"Error: {str(e)}")
             if self.logger:
                 self.logger.error(f"Error showing filter menu: {e}", exc_info=True)
+
+    def action_search_filter(self) -> None:
+        """Open the searchable value filter modal for the selected column."""
+        if not self.last_result or not self.last_result.data:
+            self.update_status("No data to search")
+            return
+
+        try:
+            table = self.query_one("#main-table", DataTable)
+        except Exception:
+            self.update_status("Table not ready")
+            return
+
+        if not table.cursor_coordinate:
+            self.update_status("No cell selected")
+            return
+
+        cursor_col = table.cursor_coordinate.column
+        columns = self.display_columns if self.display_columns else self.last_result.columns
+        if cursor_col >= len(columns):
+            self.update_status("Invalid column selection")
+            return
+
+        col_key = columns[cursor_col]
+        group_cols = self.navigation.get_current_group_cols()
+        if col_key.lower() not in [gc.lower() for gc in group_cols]:
+            self.update_status(f"Cannot search '{col_key}' - only GROUP BY columns can be filtered")
+            return
+
+        value_map: Dict[str, Tuple[Any, str, int]] = {}
+        for row in self.last_result.data:
+            raw_value = row.get(col_key)
+            key = repr((type(raw_value).__name__, raw_value))
+            if key not in value_map:
+                display_value = display_format_value(col_key, raw_value)
+                value_map[key] = (raw_value, display_value, 0)
+            raw, display, count = value_map[key]
+            value_map[key] = (raw, display, count + 1)
+
+        if not value_map:
+            self.update_status("No values found for this column")
+            return
+
+        entries = [
+            ValueEntry(key=k, value=raw, display=display, count=count)
+            for k, (raw, display, count) in value_map.items()
+        ]
+        entries.sort(key=lambda entry: (-entry.count, entry.display.lower()))
+
+        current_frame = self.navigation.current_frame
+        include_values = None
+        exclude_values = None
+        if current_frame:
+            for key, value in current_frame.filters.items():
+                if key.lower() == col_key.lower():
+                    include_values = value
+                    break
+            for key, value in current_frame.exclude_filters.items():
+                if key.lower() == col_key.lower():
+                    exclude_values = value
+                    break
+
+        def handle_result(result: Optional[Tuple[List[Any], List[Any]]]) -> None:
+            if not result:
+                self.update_status("Value search cancelled")
+                return
+
+            includes, excludes = result
+            changed = self.navigation.apply_value_filters(col_key, includes, excludes)
+            if not changed:
+                self.update_status("No filter changes applied")
+                return
+
+            self.refresh_data()
+            include_msg = f"{len(includes)} include" if includes else ""
+            exclude_msg = f"{len(excludes)} exclude" if excludes else ""
+            summary = ", ".join(part for part in [include_msg, exclude_msg] if part)
+            self.update_status(f"Applied filters on {col_key} ({summary or 'cleared'})")
+
+        modal = ValueFilterModal(
+            column_name=col_key,
+            entries=entries,
+            initial_include=include_values,
+            initial_exclude=exclude_values,
+        )
+
+        self.push_screen(modal, handle_result)
     
     def action_drill_down(self) -> None:
         """Handle ENTER key to drill down on current cell"""
@@ -1369,7 +1860,66 @@ class XTopTUI(App):
     def action_refresh(self) -> None:
         """Refresh current data"""
         self.refresh_data()
-    
+
+    def action_toggle_selection_window(self) -> None:
+        """Toggle whether the selection window constrains queries."""
+
+        if not self.selection_enabled:
+            self.selection_enabled = True
+
+            if not (self.selection_low and self.selection_high):
+                try:
+                    sel_low, sel_high = compute_selection_window(
+                        self.loaded_low,
+                        self.loaded_high,
+                    )
+                except ValueError as exc:
+                    self.selection_enabled = False
+                    self.update_status(f"Cannot enable selection window: {exc}")
+                    return
+
+                if not sel_low or not sel_high:
+                    self.selection_enabled = False
+                    self.update_status("Cannot enable selection window: no time range available")
+                    return
+
+                self._set_selection_window(sel_low, sel_high, clamp=True)
+            else:
+                self._update_query_time_range()
+
+            self.refresh_data()
+            if self.selection_low and self.selection_high:
+                msg = format_time_range_line("Window", self.selection_low, self.selection_high)
+                self.update_status(f"Selection window enabled — {msg.split(': ', 1)[1] if ': ' in msg else msg}")
+            else:
+                self.update_status("Selection window enabled")
+            return
+
+        self.selection_enabled = False
+        self._update_query_time_range()
+        self.refresh_data()
+        self.update_status("Selection window disabled (using full range)")
+
+    def action_move_window_left(self) -> None:
+        """Shift selection window earlier by one step."""
+        if not self.selection_enabled:
+            self.update_status("Selection window disabled (press 'w' to enable)")
+            return
+        if not self._shift_selection_window(-self.window_step):
+            self.update_status("Selection window at earliest boundary")
+            return
+        self.refresh_data()
+
+    def action_move_window_right(self) -> None:
+        """Shift selection window later by one step."""
+        if not self.selection_enabled:
+            self.update_status("Selection window disabled (press 'w' to enable)")
+            return
+        if not self._shift_selection_window(self.window_step):
+            self.update_status("Selection window at latest boundary")
+            return
+        self.refresh_data()
+
     def action_undo_grouping(self) -> None:
         """Undo the last grouping change"""
         if self.navigation.undo_last_grouping():
@@ -1725,9 +2275,15 @@ class XTopTUI(App):
             pass
     
     def action_toggle_help(self) -> None:
-        """Toggle help display"""
-        # TODO: Implement help overlay
-        self.update_status("Help not yet implemented")
+        """Toggle the Textual keys / help panel."""
+        try:
+            self.screen.query_one(HelpPanel)
+        except NoMatches:
+            self.action_show_help_panel()
+            self.update_status("Showing keys/help panel")
+        else:
+            self.action_hide_help_panel()
+            self.update_status("Closed keys/help panel")
     
     def action_peek_cell(self) -> None:
         """Show detailed information about the current cell"""
@@ -2352,12 +2908,12 @@ class XTopTUI(App):
 def parse_args():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(
-        description='X Process Snapper TUI - Interactive terminal UI for xtop',
+        description='xtop: Top for wall-clock time by Tanel Poder [tanelpoder.com]',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     # Use XCAPTURE_DATADIR environment variable as default, or None if not set
-    default_datadir = os.environ.get('XCAPTURE_DATADIR')
+    default_datadir = os.environ.get('XCAPTURE_DATADIR', '/var/lib/xcapture')
     
     parser.add_argument('-d', '--datadir', default=default_datadir,
                         help='Directory containing xcapture CSV files (default: $XCAPTURE_DATADIR or required if not set)')
@@ -2366,9 +2922,18 @@ def parse_args():
     
     parser.add_argument('--from', dest='from_time', type=str, metavar='TIME',
                         help='Start time (ISO format: YYYY-MM-DD HH:MM:SS or HH:MM:SS for today)')
-    
+
     parser.add_argument('--to', dest='to_time', type=str, metavar='TIME',
                         help='End time (ISO format: YYYY-MM-DD HH:MM:SS or HH:MM:SS for today)')
+
+    parser.add_argument('--window-from', dest='window_from', type=str, metavar='TIME',
+                        help='Selection window start (defaults to last 5 minutes of loaded range)')
+
+    parser.add_argument('--window-to', dest='window_to', type=str, metavar='TIME',
+                        help='Selection window end (defaults to loaded range end)')
+
+    parser.add_argument('-W', '--window', dest='window_enabled', action='store_true',
+                        help='Enable the selection window at startup')
     
     parser.add_argument('-g', '--group', dest='group_by', type=str, metavar='COLS',
                         help='Initial GROUP BY columns (comma-separated, case-insensitive). '
@@ -2412,32 +2977,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def parse_time(time_str: str) -> Optional[datetime]:
-    """Parse time string to datetime"""
-    if not time_str:
-        return None
-    
-    # Try different formats
-    formats = [
-        '%Y-%m-%d %H:%M:%S',
-        '%Y-%m-%dT%H:%M:%S',
-        '%H:%M:%S',  # Today's date will be added
-        '%H:%M'      # Today's date will be added
-    ]
-    
-    for fmt in formats:
-        try:
-            if len(time_str) <= 8:  # Time only, add today's date
-                today = datetime.now().strftime('%Y-%m-%d')
-                time_str = f"{today} {time_str}"
-                fmt = '%Y-%m-%d %H:%M:%S' if ':' in time_str.split()[1] else '%Y-%m-%d %H:%M'
-            return datetime.strptime(time_str, fmt)
-        except ValueError:
-            continue
-    
-    raise ValueError(f"Cannot parse time: {time_str}")
-
-
 def main():
     """Main entry point"""
     args = parse_args()
@@ -2463,9 +3002,12 @@ def main():
         sys.exit(1)
     
     try:
-        # Parse time arguments
-        low_time = parse_time(args.from_time) if args.from_time else None
-        high_time = parse_time(args.to_time) if args.to_time else None
+        now = datetime.now().replace(microsecond=0)
+        low_time, high_time, _time_meta = resolve_time_range(
+            args.from_time,
+            args.to_time,
+            now=now,
+        )
         
         # If no time range provided, auto-select the latest 60 minutes of available data
         if not low_time and not high_time:
@@ -2501,6 +3043,30 @@ def main():
                 latest_hour = max(candidates)
                 high_time = latest_hour.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
                 low_time = high_time - timedelta(hours=1)
+
+        window_override_low = None
+        window_override_high = None
+        if args.window_from or args.window_to:
+            window_override_low, window_override_high, _window_meta = resolve_time_range(
+                args.window_from,
+                args.window_to,
+                now=high_time or now,
+            )
+
+        try:
+            selection_low_init, selection_high_init = compute_selection_window(
+                low_time,
+                high_time,
+                window_override_low,
+                window_override_high,
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        selection_enabled = bool(
+            getattr(args, 'window_enabled', False) or args.window_from or args.window_to
+        )
 
         # Parse group by columns if provided (normalize to lowercase)
         initial_group_by = None
@@ -2606,11 +3172,19 @@ def main():
                 latency_cols = [c.strip().lower() for c in args.latency_cols.split(',') if c.strip()]
             
             # Build params
+            active_low, active_high = resolve_active_time_range(
+                selection_enabled,
+                selection_low_init,
+                selection_high_init,
+                low_time,
+                high_time,
+            )
+
             params = QueryParams(
                 where_clause=args.where_clause or '1=1',
                 group_cols=group_cols,
-                low_time=low_time,
-                high_time=high_time,
+                low_time=active_low,
+                high_time=active_high,
                 limit=args.limit
             )
             
@@ -2619,15 +3193,32 @@ def main():
             formatter = TableFormatter()
 
             # Show time range banner in testmode
-            if low_time and high_time:
-                try:
-                    mins = int((high_time - low_time).total_seconds() // 60)
-                except Exception:
-                    mins = None
-                suffix = f" ({mins} min)" if mins is not None else ""
-                print(f"Time Range: {low_time.strftime('%Y-%m-%d %H:%M:%S')} -> {high_time.strftime('%Y-%m-%d %H:%M:%S')}{suffix}")
+            print(format_time_range_line(
+                "TimeRange",
+                low_time,
+                high_time,
+                label_width=BREADCRUMB_LABEL_WIDTH,
+            ))
 
             if args.out_format == 'table':
+                term_width = shutil.get_terminal_size(fallback=(80, 24)).columns
+                timeline_line = build_avg_thr_timeline_line(
+                    engine,
+                    where_clause=params.where_clause,
+                    low_time=low_time,
+                    high_time=high_time,
+                    max_width=term_width,
+                    logger=None,
+                    highlight_low=params.low_time if selection_enabled else None,
+                    highlight_high=params.high_time if selection_enabled else None,
+                    render_mode="ansi",
+                )
+                print(timeline_line)
+                if selection_enabled and params.low_time and params.high_time:
+                    selection_line = format_time_range_line("Selection Window", params.low_time, params.high_time)
+                else:
+                    selection_line = "Selection Window: Disabled"
+                print(selection_line)
                 # Use result.columns order; allow disabling reorder
                 text = formatter.format_table(result.data, result.columns, title='Results', reorder=not args.no_reorder)
                 print()
@@ -2693,7 +3284,10 @@ def main():
                             # hist_data entries: (bucket_us, count, est_time_s, global_max)
                             if table_rows:
                                 for i, (bucket_us, count, est_time_s, _gm) in enumerate(hist_data[:len(table_rows)]):
-                                    est_evts = int((1000000.0 / bucket_us * count)) if bucket_us > 0 else 0
+                                    if est_time_s and est_time_s > 0:
+                                        est_evts = int(count / est_time_s)
+                                    else:
+                                        est_evts = 0
                                     table_rows[i]['est_evts'] = est_evts
                             if table_rows:
                                 # Show only: latency, samples, est_ev/s, est_ev%, est_time%
@@ -2753,7 +3347,7 @@ def main():
                             for bucket_us, count, est_time, _ in hist_data:
                                 pct_samples = (count/total_samples)*100.0
                                 pct_time = (est_time/total_time)*100.0
-                                est_evts = (1000000.0 / bucket_us * count) if bucket_us > 0 else 0.0
+                                est_evts = (count / est_time) if est_time > 0 else 0.0
                                 print(f"{bucket_us},{count},{int(est_evts)},{pct_samples:.3f},{pct_time:.3f},{est_time:.6f}")
                         elif is_kstack_col(col) or is_ustack_col(col):
                             is_kernel = is_kstack_col(col)
@@ -2813,6 +3407,7 @@ def main():
                                 entries.append({
                                     'bucket_us': bucket_us,
                                     'count': count,
+                                    'est_events_per_s': (count / est_time) if est_time > 0 else 0.0,
                                     'est_time_s': est_time,
                                     'pct_samples': (count/total_samples)*100.0,
                                     'pct_time': (est_time/total_time)*100.0
@@ -2855,8 +3450,18 @@ def main():
             return
         
         # Create and run TUI (removed query argument - always uses dynamic)
-        app = XTopTUI(args.datadir, low_time, high_time, args.debug_log, 
-                      initial_group_by, append_group_by, args.duckdb_threads)
+        app = XTopTUI(
+            args.datadir,
+            low_time,
+            high_time,
+            selection_low_init,
+            selection_high_init,
+            selection_enabled,
+            args.debug_log,
+            initial_group_by,
+            append_group_by,
+            args.duckdb_threads,
+        )
         app.run()
         
     except KeyboardInterrupt:
