@@ -7,6 +7,8 @@ This is the first ever release of [0x.tools](https://0x.tools) xCapture tool tha
 * [Announcing xCapture v3: Linux Performance Analysis with Modern eBPF and DuckDB](https://tanelpoder.com/posts/xcapture-v3-alpha-ebpf-performance-analysis-with-duckdb/)
 * [xtop: Dimensional Performance Analysis of Sampled Thread Activity](https://tanelpoder.com/posts/xcapture-xtop-beta/)
 
+![xtop terminal ui](xtop/xtop.webp)
+
 ## Requirements
 
 Modern eBPF means `libbpf`, `CORE`, `BTF`, `BPF iterators`, etc. I'll write about my learning journey with proper thank you notes soon.
