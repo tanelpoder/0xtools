@@ -4,9 +4,11 @@
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
 # Name:    schedlat.py (v0.2)
-# Purpose: display % of time a process spent in CPU runqueue 
+# Purpose: display % of time a thread spent in CPU runqueue
 #          (scheduling latency)
-# Usage:   ./schedlat.py PID
+# Usage:   ./schedlat.py PID TID
+#
+#          For the main process thread, i.e. the thread group leader, TID = PID
 #
 #          %CPU shows % of time the task spent on CPU
 #          %LAT shows % of time the task spent trying to get onto CPU (in runqueue)
@@ -18,28 +20,60 @@ from __future__ import print_function
 from datetime import datetime
 import time, sys
 
-if len(sys.argv) != 2 or sys.argv[1] == '-h':
-  print("usage: " + sys.argv[0] + " PID")
-  exit(1)
+NANOSECONDS_PER_SEC = 1000000000
+NANOSECONDS_PER_USEC = 1000
 
-pid=sys.argv[1]
+
+if len(sys.argv) != 3 or sys.argv[1] == '-h':
+    print("usage: " + sys.argv[0] + " PID TID")
+    exit(1)
+
+pid = sys.argv[1]
+tid = sys.argv[2]
 
 with open('/proc/' + pid + '/comm', 'r') as f:
-  print("SchedLat by Tanel Poder [https://0x.tools]\n\nPID=" + pid + " COMM=" + f.read())
+    print("SchedLat by Tanel Poder [https://0x.tools]\n\nTID=%s PID=%s COMM=%s" % (tid, pid, f.read()))
 
-print("%-20s %6s %6s %6s" % ("TIMESTAMP", "%CPU", "%LAT", "%SLP"))
+print(u"%s|    RUNQ LAT \u00B5s" % (" " * 42))
+print("%-20s %6s %6s %6s | %7s %6s" % ("TIMESTAMP", "%CPU", "%LAT", "%SLP", "1-sec", "boot"))
 
-while True:
-  with open('/proc/' + pid + '/schedstat' , 'r') as f:
-    t1=time.time() 
-    (cpu_ns1, lat_ns1, dontcare) = f.read().split()
-    time.sleep(1)
-    f.seek(0)
-    t2=time.time()
-    (cpu_ns2, lat_ns2, dontcare) = f.read().split()
-  
-  cpu=(int(cpu_ns2)-int(cpu_ns1))/(t2-t1)/10000000
-  lat=(int(lat_ns2)-int(lat_ns1))/(t2-t1)/10000000
-   
-  print("%-20s %6.1f %6.1f %6.1f" % (datetime.fromtimestamp(t2).strftime("%Y-%m-%d %H:%M:%S"), cpu, lat, 100-(cpu+lat)))
+count = 0
+lat_us_sum = 0
+try:
+    while True:
+        with open('/proc/' + pid + '/task/' + tid + '/schedstat', 'r') as f:
+            t1 = time.time()
+            (cpu_ns1, lat_ns1, slices1) = f.read().split()
+            lat_ns1, slices1 = int(lat_ns1), int(slices1)
 
+            time.sleep(1)
+            f.seek(0)
+
+            t2 = time.time()
+            (cpu_ns2, lat_ns2, slices2) = f.read().split()
+            lat_ns2, slices2 = int(lat_ns2), int(slices2)
+
+        cpu = (int(cpu_ns2) - int(cpu_ns1)) / (t2 - t1) / NANOSECONDS_PER_SEC * 100
+        lat = (lat_ns2 - lat_ns1) / (t2 - t1) / NANOSECONDS_PER_SEC * 100
+
+        lat_us = (lat_ns2 - lat_ns1) / (slices2 - slices1) / NANOSECONDS_PER_USEC
+        lat_us_boot = lat_ns2 / slices2 / NANOSECONDS_PER_USEC
+
+        lat_us_sum += lat_us
+        count += 1
+
+        print(
+            "%-20s %6.1f %6.1f %6.1f | %7.2f %6.2f"
+            % (
+                datetime.fromtimestamp(t2).strftime("%Y-%m-%d %H:%M:%S"),
+                cpu,
+                lat,
+                100 - (cpu + lat),
+                lat_us,
+                lat_us_boot,
+            )
+        )
+except KeyboardInterrupt:
+    print()
+
+print(u"Mean RUNQ LAT: %.2f \u00B5s" % (lat_us_sum / count))
