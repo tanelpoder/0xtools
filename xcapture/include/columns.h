@@ -42,6 +42,7 @@ typedef enum {
     COL_USERNAME,
     COL_EXE,
     COL_COMM,
+    COL_CMDLINE,
     COL_SYSCALL,
     COL_SYSCALL_ACTIVE,
     COL_SYSC_US_SO_FAR,
@@ -52,6 +53,8 @@ typedef enum {
     COL_SYSC_ARG5,
     COL_SYSC_ARG6,
     COL_FILENAME,
+    COL_AIO_FILENAME,
+    COL_URING_FILENAME,
     COL_SYSC_ENTRY_TIME,
     COL_SYSC_SEQ_NUM,
     COL_IORQ_SEQ_NUM,
@@ -62,6 +65,8 @@ typedef enum {
     COL_USTACK_HASH,
     COL_PIDNS,
     COL_CGROUP_ID,
+    COL_TRACE_PAYLOAD,
+    COL_TRACE_PAYLOAD_LEN,
     NUM_COLUMNS
 } column_id_t;
 
@@ -75,9 +80,11 @@ extern const column_def_t column_definitions[NUM_COLUMNS];
 
 // Function declarations
 int parse_column_list(const char *column_list);
+int append_column_list(const char *column_list);
 void list_available_columns(void);
 void print_column_headers(void);
 void format_stdout_line(const struct task_output_event *event, const column_context_t *ctx);
+bool column_is_active(column_id_t column);
 
 // Predefined column sets
 extern const char *narrow_columns;

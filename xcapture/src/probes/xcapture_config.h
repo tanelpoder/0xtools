@@ -27,4 +27,15 @@ const volatile bool xcap_dump_user_stack_traces = false;
 // PID of xcapture itself to filter out from results
 const volatile pid_t xcap_xcapture_pid = 0;
 
+// Distributed trace protocol toggles (controlled via -D/--dist-trace)
+const volatile bool xcap_dist_trace_http = false;
+const volatile bool xcap_dist_trace_https = false;
+const volatile bool xcap_dist_trace_grpc = false;
+
+// Enable generic read/write payload capture when syscall tracking is active
+const volatile bool xcap_capture_rw_payloads = false;
+
+// Enable cmdline sampling from userspace memory when requested columns are active
+const volatile bool xcap_capture_cmdline = false;
+
 #endif /* __XCAPTURE_CONFIG_H */

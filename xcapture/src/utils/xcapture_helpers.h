@@ -1,3 +1,6 @@
+#ifndef __XCAPTURE_HELPERS_SHARED_H
+#define __XCAPTURE_HELPERS_SHARED_H
+
 // Handle kernel version differences in task state field
 struct task_struct___post514 {
     unsigned int __state;
@@ -119,3 +122,11 @@ static struct gendisk __always_inline *get_disk(struct request *rq)
 
     return disk; // will be NULL if (!q)
 }
+#ifdef OLD_KERNEL_SUPPORT
+#define xcap_copy_from_user_task(dst, size, src, task, flags) (-1)
+#else
+#define xcap_copy_from_user_task(dst, size, src, task, flags) \
+    bpf_copy_from_user_task(dst, size, src, task, flags)
+#endif
+
+#endif /* __XCAPTURE_HELPERS_SHARED_H */

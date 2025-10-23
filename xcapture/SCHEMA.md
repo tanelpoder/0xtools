@@ -49,6 +49,8 @@ Main task sampling output with comprehensive system state information.
 | EXTRA_INFO | json | Additional context as JSON object | {"tcp":{"cwnd":10,...}} |
 | KSTACK_HASH | hex | Kernel stack trace hash (16 hex digits) | a1b2c3d4e5f67890 |
 | USTACK_HASH | hex | Userspace stack trace hash (16 hex digits) | 1234567890abcdef |
+| TRACE_PAYLOAD | hex | Hex-encoded prefix of the captured request payload | 474554202f68747470... |
+| TRACE_PAYLOAD_LEN | integer | Number of bytes captured in TRACE_PAYLOAD | 128 |
 
 ### STATE Values
 - **RUN**: Task is running on CPU
@@ -112,6 +114,9 @@ The EXTRA_INFO field contains a JSON object with optional nested objects:
 
 #### Other EXTRA_INFO fields (future extensions)
 - io_uring state information
+- `uring_sq_file`: filename referenced by the most recently submitted SQ entry when available
+- `uring_cq_file`: filename associated with the first pending completion that could be resolved
+- `uring_reg_idx`: registered file slot index when IOSQE_FIXED_FILE was used
 - epoll/poll file descriptor details  
 - Memory-mapped file information
 - Process namespace details
@@ -122,15 +127,21 @@ System call completion events for tracked syscalls.
 
 | Column | Type | Description | Example |
 |--------|------|-------------|---------|
-| TIMESTAMP | timestamp | Syscall completion time | 2025-08-28T00:27:00.123456 |
-| TID | integer | Thread ID | 1234 |
-| COMM | string | Task command name | nginx |
-| SYSCALL | string | System call name | read |
-| DURATION_NS | integer | Syscall duration in nanoseconds | 150000 |
-| RETVAL | integer | System call return value | 1024 |
-| ERRNO | integer | Error number (0 if success) | 0 |
-| ENTRY_TIME | timestamp | Syscall entry timestamp | 2025-08-28T00:27:00.123306 |
-| EXIT_TIME | timestamp | Syscall exit timestamp | 2025-08-28T00:27:00.123456 |
+| TYPE | string | Row marker identifying syscall completions (`SYSC_END`) | SYSC_END |
+| TID | integer | Thread ID that completed the syscall | 4321 |
+| TGID | integer | Thread-group (process) ID | 1234 |
+| SYSCALL_NAME | string | Name of the completed syscall | read |
+| DURATION_NS | integer | Nanoseconds between syscall entry and exit | 150000 |
+| SYSC_RET_VAL | integer/hex | Return value (decimal for small magnitudes, hex otherwise) | 1024 |
+| SYSC_SEQ_NUM | integer | Sampler sequence number for this syscall | 8123 |
+| SYSC_ENTER_TIME | timestamp | Wall-clock timestamp corresponding to syscall entry | 2025-08-28T00:27:00.123306 |
+| TRACE_PAYLOAD | hex | Hex-encoded payload prefix copied at syscall exit (`-` when absent) | 736c6f772d7061796c6f6164 |
+| TRACE_PAYLOAD_LEN | integer | Number of bytes captured in TRACE_PAYLOAD | 12 |
+| TRACE_PAYLOAD_SYS | integer | Syscall number that populated TRACE_PAYLOAD (`-1` when unset) | 0 |
+| TRACE_PAYLOAD_SEQ | integer | Sequence number associated with TRACE_PAYLOAD (`0` when unset) | 8123 |
+
+Payload fields are populated for read/write style syscalls when `--payload-trace` (`-Y`) is enabled. The payload buffer is limited to 512 bytes and is emitted as lowercase hexadecimal.
+
 
 ## xcapture_iorqend CSV Schema  
 
@@ -188,6 +199,8 @@ Deduplicated userspace stack traces (when using -u option).
 - **CONNECTION**: 128 characters
 - **EXTRA_INFO**: 4096 characters (JSON string)
 - **STACK**: 8192 characters (symbolized stack trace)
+- **TRACE_PAYLOAD**: 1024 characters (hex, up to 512 bytes)
+- **TRACE_PAYLOAD_LEN**: Captured byte count (0–512)
 
 ## Special Values
 
@@ -227,8 +240,8 @@ All timestamps use microsecond precision (6 decimal places) and are in the syste
 ### xcapture_samples_20250828_000000.csv
 ```csv
 TIMESTAMP,WEIGHT_US,OFF_US,TID,TGID,STATE,USERNAME,EXE,COMM,SYSCALL,SYSCALL_ACTIVE,SYSC_US_SO_FAR,SYSC_ARG1,FILENAME,SYSC_ENTRY_TIME,SYSC_SEQ_NUM,IORQ_SEQ_NUM,CONNECTION,CONN_STATE,EXTRA_INFO,KSTACK_HASH,USTACK_HASH
-2025-08-28T00:27:18.482582,100000,588,1376,1376,SLEEP,nvidia-persistenced,/usr/bin/nvidia-persistenced,nvidia-persiste,poll,poll,0,0x10ea4dc0,-,2025-08-28T00:27:18.483170,0,0,-,-,-,a1b2c3d4e5f67890,1234567890abcdef
-2025-08-28T00:27:18.482582,100000,1118,9764,9764,SLEEP,tanel,/usr/sbin/sshd,sshd,ppoll,ppoll,0,4,TCP,2025-08-28T00:27:18.483700,0,0,"TCP 192.168.0.53:22->192.168.0.156:52030",ESTABLISHED,"{""tcp"":{""cwnd"":10,""ssthresh"":50,""srtt_us"":3201}}",b2c3d4e5f6789012,2345678901bcdef0
+2025-08-28T00:27:18.482582,100000,588,1376,1376,SLEEP,nvidia-persistenced,/usr/bin/nvidia-persistenced,nvidia-persiste,poll,poll,0,0x10ea4dc0,-,2025-08-28T00:27:18.483170,0,0,-,-,-,a1b2c3d4e5f67890,1234567890abcdef,,0
+2025-08-28T00:27:18.482582,100000,1118,9764,9764,SLEEP,tanel,/usr/sbin/sshd,sshd,ppoll,ppoll,0,4,TCP,2025-08-28T00:27:18.483700,0,0,"TCP 192.168.0.53:22->192.168.0.156:52030",ESTABLISHED,"{""tcp"":{""cwnd"":10,""ssthresh"":50,""srtt_us"":3201}}",b2c3d4e5f6789012,2345678901bcdef0,47484520485454502f312e31...,128
 ```
 
 ### xcapture_syscend_20250828_000000.csv

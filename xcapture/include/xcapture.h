@@ -11,11 +11,12 @@
 
 #include "tcp_stats.h"
 
-#define TASK_COMM_LEN 16
-#define MAX_STACK_LEN 127
-#define MAX_FILENAME_LEN 256
-#define MAX_CMDLINE_LEN 64
+#define TASK_COMM_LEN      16
+#define MAX_STACK_LEN     127
+#define MAX_FILENAME_LEN  256
+#define MAX_CMDLINE_LEN   128  // task argv
 #define MAX_CONN_INFO_LEN 128  // "TCP 1.2.3.4:80->5.6.7.8:12345" for IPv4
+#define TRACE_PAYLOAD_LEN 512
 
 // kernel task states here so we don't have to include kernel headers
 #define TASK_RUNNING          0x00000000
@@ -87,8 +88,7 @@ enum event_type {
     EVENT_TASK_INFO = 1,
     EVENT_SYSCALL_COMPLETION = 2,
     EVENT_IORQ_COMPLETION = 3,
-    EVENT_STACK_TRACE = 4,
-    EVENT_IORQ_MAP = 5  // Removed EVENT_IORQ_COMPLETION_Q
+    EVENT_STACK_TRACE = 4
 };
 
 // Structure for tracking in-flight block I/O requests
@@ -135,14 +135,29 @@ struct task_state {
     // Namespace and cgroup information
     __u32 pid_ns_id;               // PID namespace inode number
     __u64 cgroup_id;               // Cgroup v2 ID from task->cgroups->dfl_cgrp->kn->id
+
+    __u32 trace_payload_len;       // Length of captured request payload prefix
+    __u8  trace_payload[TRACE_PAYLOAD_LEN];
+    __s32 trace_payload_syscall;   // Syscall number associated with payload (if any)
+    __u64 trace_payload_seq_num;   // Syscall sequence number that produced payload
 };
 
 // Fields for BPF internal task local caching only
 struct task_cache {
+    __u64 pending_trace_buf;        // userspace buffer pointer captured on syscall entry
+    __u32 pending_trace_len;        // requested read length on syscall entry
+    __s32 pending_trace_syscall;    // syscall number to correlate entry/exit
+    __s32 pending_trace_fd;         // file descriptor associated with buffered payload
+    __u8  pending_trace_is_write;   // direction hint (1=write,0=read)
+    __u8  reserved_trace_flags[3];  // pad to keep alignment predictable
     int cached_kstack_len;              // Cached kernel stack length
     __u64 cached_kstack[MAX_STACK_LEN]; // Cached kernel stack (127 entries)
     int cached_ustack_len;              // Cached user stack length  
     __u64 cached_ustack[MAX_STACK_LEN]; // Cached user stack (127 entries)
+    __u64 uring_last_user_data;       // Last SQE user_data tracked for CQ correlation
+    __s32 uring_last_fd;              // Last SQE fd (or -1 for registered files)
+    __s32 uring_last_reg_idx;         // Last registered index when IOSQE_FIXED_FILE was used
+    __u64 uring_last_file_ptr;        // Kernel pointer to struct file when known
 };
 
 // This is the central "extended Task State Array" (eTSA)
@@ -162,6 +177,10 @@ struct sc_completion_event {
     __u64 completed_sc_exit_time;
     __s64 completed_sc_ret_val;
     __s32 completed_syscall_nr;
+    __u32 trace_payload_len;
+    __s32 trace_payload_syscall;
+    __u64 trace_payload_seq_num;
+    __u8  trace_payload[TRACE_PAYLOAD_LEN];
 };
 
 // Block I/O completion event structure for ringbuf
@@ -187,11 +206,13 @@ struct iorq_completion_event {
 
 
 // network connection tracking
+#define XCAPTURE_UNIX_PATH_MAX 108
+
 struct socket_info {
     __u16 family;     // AF_INET or AF_INET6
     __u16 protocol;   // IPPROTO_TCP or IPPROTO_UDP
     __u8  state;      // TCP socket state (TCP_LISTEN, TCP_ESTABLISHED, etc.)
-    __u8  reserved;   // Padding for alignment
+    __u8  socket_type;// SOCK_STREAM / SOCK_DGRAM / ...
     union {
         __u32 saddr_v4;
         __u8  saddr_v6[16];  // Changed from __int128
@@ -202,6 +223,14 @@ struct socket_info {
     };
     __u16 sport;
     __u16 dport;
+    __u32 unix_peer_pid;      // Peer PID for AF_UNIX sockets (0 if unknown)
+    __u32 unix_owner_uid;     // Owner UID for AF_UNIX sockets (0 if unknown)
+    __u64 unix_inode;         // Inode number for AF_UNIX sockets (0 if unknown)
+    __u64 unix_peer_inode;    // Peer inode when available (0 if unknown)
+    __u16 unix_path_len;      // Length of valid bytes in unix_path
+    __u8  unix_is_abstract;   // 1 when socket path is abstract (starts with @)
+    __u8  unix_pad;           // Pad to 8-byte alignment
+    char  unix_path[XCAPTURE_UNIX_PATH_MAX]; // Normalized Unix path (no leading @)
 };
 
 
@@ -217,11 +246,15 @@ struct task_output_event {
     uid_t euid;
     char comm[TASK_COMM_LEN];
 
+    __s32 emit_reason;
+
     // Task's additional data
     __s32 syscall_nr;
     __u64 syscall_args[6];
     char filename[MAX_FILENAME_LEN];
     char exe_file[MAX_FILENAME_LEN];
+    __u32 cmdline_len;
+    char cmdline[MAX_CMDLINE_LEN];
 
     // Socket info
     struct socket_info sock_info;
@@ -237,6 +270,9 @@ struct task_output_event {
     // io_uring CQE filename (when CQ has pending completions)
     char ur_filename[MAX_FILENAME_LEN];
 
+    // io_uring SQE filename (when SQ has pending submissions)
+    char ur_sq_filename[MAX_FILENAME_LEN];
+
     // AIO filename (when in io_submit/io_getevents syscalls)
     char aio_filename[MAX_FILENAME_LEN];
 
@@ -248,6 +284,15 @@ struct task_output_event {
     __u8 uring_opcode;     // io_uring operation code
     __u8 uring_flags;      // IOSQE_* flags
     __u32 uring_rw_flags;  // RWF_* flags for io_uring operation
+
+    // Debug instrumentation for io_uring filename resolution
+    __s32 uring_dbg_sq_idx;        // SQE index chosen for inspection
+    __s32 uring_dbg_sq_fixed;      // 1 if IOSQE_FIXED_FILE was set
+    __u64 uring_dbg_sq_user_data;  // user_data captured from SQE
+    __u64 uring_dbg_sq_file_ptr;   // struct file * pointer resolved for SQE
+    __s32 uring_dbg_cq_scanned;    // number of CQ entries scanned
+    __s32 uring_dbg_cq_matched;    // 1 if CQ user_data matched tracked SQE
+    __u64 uring_dbg_cq_file_ptr;   // struct file * pointer resolved for CQ
 
     // Task's scheduler state
     int on_cpu;
@@ -264,6 +309,7 @@ struct task_output_event {
     // Stack trace hashes (actual stacks are written separately to kstacks file)
     __u64 kstack_hash;  // Hash of kernel stack (0 = no stack)
     __u64 ustack_hash;  // Hash of userspace stack (0 = no stack)
+
 };
 
 // Stack trace event for unique stacks

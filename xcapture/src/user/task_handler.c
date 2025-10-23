@@ -6,6 +6,7 @@
 #include <pwd.h>
 #include <time.h>
 #include <string.h>
+#include <sys/socket.h>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -13,7 +14,7 @@
 #include "xcapture.h"
 #include "task_handler.h"
 #include "xcapture_user.h"
-#include "md5.h"
+#include "xcapture_context.h"
 #include "columns.h"
 #include "cgroup_cache.h"
 
@@ -27,19 +28,6 @@
 #elif defined(__TARGET_ARCH_x86)
 #include "syscall_x86_64.h"
 #endif
-
-// External variables from main.c
-extern struct output_files files;
-extern struct time_correlation tcorr;
-extern pid_t mypid;
-extern bool output_csv;
-extern bool output_verbose;
-extern bool dump_kernel_stack_traces;
-extern bool dump_user_stack_traces;
-extern bool print_cgroups;
-extern bool wide_output;
-extern bool print_stack_traces;
-extern long sample_weight_us;
 
 #ifdef USE_BLAZESYM
 extern blaze_symbolizer *g_symbolizer;
@@ -86,11 +74,14 @@ extern const char *get_connection_state(const struct socket_info *si);
 extern struct timespec get_wall_from_mono(struct time_correlation *tcorr, __u64 bpf_time);
 extern struct timespec sub_ns_from_ts(struct timespec ts, __u64 ns);
 extern void get_str_from_ts(struct timespec ts, char *buf, size_t bufsize);
-extern int check_and_rotate_files(struct output_files *files);
-
 // Helper function to build JSON extra info string
-static void build_extra_info_json(const struct task_output_event *event, char *buf, size_t buflen)
+static void build_extra_info_json(const struct task_output_event *event,
+                                  char *buf,
+                                  size_t buflen,
+                                  const struct xcapture_context *xctx)
 {
+    XCAP_UNUSED(buflen);
+
     buf[0] = '\0';
     char temp[512];
     int first = 1;
@@ -134,12 +125,74 @@ static void build_extra_info_json(const struct task_output_event *event, char *b
         first = 0;
     }
 
-    // Add ur_filename if present
-    if (event->ur_filename[0]) {
+    // Add io_uring filename samples if present
+    if (event->ur_sq_filename[0]) {
         if (!first) strcat(buf, ",");
-        snprintf(temp, sizeof(temp), "\"uring_filename\":\"%s\"", event->ur_filename);
+        snprintf(temp, sizeof(temp), "\"uring_sq_file\":\"%s\"", event->ur_sq_filename);
         strcat(buf, temp);
         first = 0;
+    }
+
+    if (event->ur_filename[0]) {
+        if (!first) strcat(buf, ",");
+        snprintf(temp, sizeof(temp), "\"uring_cq_file\":\"%s\"", event->ur_filename);
+        strcat(buf, temp);
+        first = 0;
+    }
+
+    if (xctx->print_uring_debug) {
+        // Debug instrumentation for io_uring filename resolution
+        if (event->uring_dbg_sq_idx != -1) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_dbg_sq_idx\":%d", event->uring_dbg_sq_idx);
+            strcat(buf, temp);
+            first = 0;
+        }
+
+        if (event->uring_dbg_sq_fixed) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_dbg_sq_fixed\":1");
+            strcat(buf, temp);
+            first = 0;
+        }
+
+        if (event->uring_dbg_sq_user_data) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_dbg_sq_ud\":\"0x%llx\"",
+                     (unsigned long long)event->uring_dbg_sq_user_data);
+            strcat(buf, temp);
+            first = 0;
+        }
+
+        if (event->uring_dbg_sq_file_ptr) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_dbg_sq_fp\":\"0x%llx\"",
+                     (unsigned long long)event->uring_dbg_sq_file_ptr);
+            strcat(buf, temp);
+            first = 0;
+        }
+
+        if (event->uring_dbg_cq_scanned > 0) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_dbg_cq_scan\":%d", event->uring_dbg_cq_scanned);
+            strcat(buf, temp);
+            first = 0;
+        }
+
+        if (event->uring_dbg_cq_matched) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_dbg_cq_matched\":1");
+            strcat(buf, temp);
+            first = 0;
+        }
+
+        if (event->uring_dbg_cq_file_ptr) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_dbg_cq_fp\":\"0x%llx\"",
+                     (unsigned long long)event->uring_dbg_cq_file_ptr);
+            strcat(buf, temp);
+            first = 0;
+        }
     }
 
     // Add TCP stats if present
@@ -218,6 +271,11 @@ static void build_extra_info_json(const struct task_output_event *event, char *b
             snprintf(temp, sizeof(temp), "\"uring_fd\":%d", event->uring_fd);
             strcat(buf, temp);
             first = 0;
+        } else if (event->uring_reg_idx >= 0) {
+            if (!first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"uring_reg_idx\":%d", event->uring_reg_idx);
+            strcat(buf, temp);
+            first = 0;
         }
 
         if (!first) strcat(buf, ",");
@@ -254,8 +312,61 @@ static void build_extra_info_json(const struct task_output_event *event, char *b
         first = 0;
     }
 
-    // Connection info is now displayed as separate columns, not in JSON
-    // (Removed from extra_info JSON)
+    if (event->has_socket_info && event->sock_info.family == AF_UNIX) {
+        if (!first) strcat(buf, ",");
+        strcat(buf, "\"unix\":{");
+        int inner_first = 1;
+
+        if (event->sock_info.unix_path_len > 0) {
+            snprintf(temp, sizeof(temp), "\"path\":\"%.*s\"",
+                     event->sock_info.unix_path_len,
+                     event->sock_info.unix_path);
+            strcat(buf, temp);
+            inner_first = 0;
+        } else if (event->sock_info.unix_inode) {
+            snprintf(temp, sizeof(temp), "\"inode\":%llu",
+                     (unsigned long long)event->sock_info.unix_inode);
+            strcat(buf, temp);
+            inner_first = 0;
+        }
+
+        if (event->sock_info.unix_is_abstract) {
+            if (!inner_first) strcat(buf, ",");
+            strcat(buf, "\"abstract\":true");
+            inner_first = 0;
+        }
+
+        if (event->sock_info.unix_peer_pid) {
+            if (!inner_first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"peer_pid\":%u",
+                     event->sock_info.unix_peer_pid);
+            strcat(buf, temp);
+            inner_first = 0;
+        }
+
+        if (event->sock_info.unix_peer_inode) {
+            if (!inner_first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"peer_inode\":%llu",
+                     (unsigned long long)event->sock_info.unix_peer_inode);
+            strcat(buf, temp);
+            inner_first = 0;
+        }
+
+        if (event->sock_info.unix_owner_uid) {
+            if (!inner_first) strcat(buf, ",");
+            snprintf(temp, sizeof(temp), "\"owner_uid\":%u",
+                     event->sock_info.unix_owner_uid);
+            strcat(buf, temp);
+            inner_first = 0;
+        }
+
+        if (inner_first) {
+            strcat(buf, "\"details\":\"unix socket\"");
+        }
+
+        strcat(buf, "}");
+        first = 0;
+    }
 
     // Add syscall info description if it's not "-" and not an AIO syscall (since we show actual value)
     if (!is_aio_syscall) {
@@ -312,9 +423,10 @@ static int symbolize_kernel_stack(const __u64 *stack, int stack_len, char *out_b
     char *ptr = out_buf;
     size_t remaining = buflen;
     int written_count = 0;
+    size_t frame_limit = (size_t)stack_len;
 
     // Format: symbol1+0xoffset;symbol2+0xoffset;...
-    for (int i = 0; i < stack_len && i < syms->cnt && remaining > 1; i++) {
+    for (size_t i = 0; i < frame_limit && i < syms->cnt && remaining > 1; i++) {
         if (syms->syms[i].name == NULL) continue;
 
         const struct blaze_sym *sym = &syms->syms[i];
@@ -327,21 +439,28 @@ static int symbolize_kernel_stack(const __u64 *stack, int stack_len, char *out_b
 
         // Write main symbol
         written = snprintf(ptr, remaining, "%s+0x%lx", sym->name, sym->offset);
-        if (written >= remaining) break;
+        if (written < 0) {
+            break;
+        }
+        if ((size_t)written >= remaining) break;
 
         ptr += written;
         remaining -= written;
         written_count++;
 
         // Add inlined functions if any
-        for (int j = 0; j < sym->inlined_cnt && remaining > 1; j++) {
+        for (size_t j = 0; j < sym->inlined_cnt && remaining > 1; j++) {
             const struct blaze_symbolize_inlined_fn *inlined = &sym->inlined[j];
 
             *ptr++ = ';';
             remaining--;
 
             written = snprintf(ptr, remaining, "%s[inlined]", inlined->name);
-            if (written >= remaining) break;
+            if (written < 0) {
+                remaining = 0;
+                break;
+            }
+            if ((size_t)written >= remaining) break;
 
             ptr += written;
             remaining -= written;
@@ -376,9 +495,10 @@ static int symbolize_user_stack(const __u64 *stack, int stack_len, pid_t pid, ch
     char *ptr = out_buf;
     size_t remaining = buflen;
     int written_count = 0;
+    size_t frame_limit = (size_t)stack_len;
 
     // Format: symbol1+0xoffset;symbol2+0xoffset;...
-    for (int i = 0; i < stack_len && i < syms->cnt && remaining > 1; i++) {
+    for (size_t i = 0; i < frame_limit && i < syms->cnt && remaining > 1; i++) {
         if (syms->syms[i].name == NULL) continue;
 
         const struct blaze_sym *sym = &syms->syms[i];
@@ -391,21 +511,28 @@ static int symbolize_user_stack(const __u64 *stack, int stack_len, pid_t pid, ch
 
         // Write main symbol
         written = snprintf(ptr, remaining, "%s+0x%lx", sym->name, sym->offset);
-        if (written >= remaining) break;
+        if (written < 0) {
+            break;
+        }
+        if ((size_t)written >= remaining) break;
 
         ptr += written;
         remaining -= written;
         written_count++;
 
         // Add inlined functions if any
-        for (int j = 0; j < sym->inlined_cnt && remaining > 1; j++) {
+        for (size_t j = 0; j < sym->inlined_cnt && remaining > 1; j++) {
             const struct blaze_symbolize_inlined_fn *inlined = &sym->inlined[j];
 
             *ptr++ = ';';
             remaining--;
 
             written = snprintf(ptr, remaining, "%s[inlined]", inlined->name);
-            if (written >= remaining) break;
+            if (written < 0) {
+                remaining = 0;
+                break;
+            }
+            if ((size_t)written >= remaining) break;
 
             ptr += written;
             remaining -= written;
@@ -420,6 +547,12 @@ static int symbolize_user_stack(const __u64 *stack, int stack_len, pid_t pid, ch
 
 int handle_task_event(void *ctx, void *data, size_t data_sz)
 {
+    XCAP_UNUSED(data_sz);
+
+    struct xcapture_context *xctx = ctx;
+    if (!xctx)
+        return 0;
+
     enum event_type *type_ptr = (enum event_type *)data;
     enum event_type event_type = *type_ptr;
 
@@ -433,7 +566,8 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
 
     // get sample_start timestamp from when this task loop iteration started
     char timestamp[64];
-    struct timespec current_sample_ts_iter_start = get_wall_from_mono(&tcorr, event->storage.sample_start_ktime);
+    struct timespec current_sample_ts_iter_start =
+        get_wall_from_mono(&xctx->tcorr, event->storage.sample_start_ktime);
     get_str_from_ts(current_sample_ts_iter_start, timestamp, sizeof(timestamp));
 
     // Process task info
@@ -449,12 +583,12 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
     // get syscall start timestamp string from ktime ns
     if (event->storage.sc_enter_time > 0) {
         struct timespec current_sc_start_ts = get_wall_from_mono(
-            &tcorr, event->storage.sample_actual_ktime - sc_duration_ns);
+            &xctx->tcorr, event->storage.sample_actual_ktime - sc_duration_ns);
         get_str_from_ts(current_sc_start_ts, sc_start_time_str, sizeof(sc_start_time_str));
     }
 
     char extra_info[1024];
-    build_extra_info_json(event, extra_info, sizeof(extra_info));
+    build_extra_info_json(event, extra_info, sizeof(extra_info), xctx);
 
     // Format connection info for separate columns
     char conn_buf[256] = "";
@@ -469,53 +603,100 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
     char kstack_hash_str[32] = "-";
     char ustack_hash_str[32] = "-";
 
-    if (dump_kernel_stack_traces && event->kstack_hash != 0) {
+    if (xctx->dump_kernel_stack_traces && event->kstack_hash != 0) {
         snprintf(kstack_hash_str, sizeof(kstack_hash_str), "%016llx", event->kstack_hash);
     }
 
-    if (dump_user_stack_traces && event->ustack_hash != 0) {
+    if (xctx->dump_user_stack_traces && event->ustack_hash != 0) {
         snprintf(ustack_hash_str, sizeof(ustack_hash_str), "%016llx", event->ustack_hash);
     }
 
-    if (output_csv) {
-        if (check_and_rotate_files(&files) < 0) {
+    char trace_payload_hex[TRACE_PAYLOAD_LEN * 2 + 1] = "";
+    if (xctx->payload_trace_enabled && event->storage.trace_payload_len > 0 &&
+        event->storage.trace_payload_len <= TRACE_PAYLOAD_LEN) {
+        bytes_to_hex(event->storage.trace_payload,
+                     event->storage.trace_payload_len,
+                     trace_payload_hex,
+                     sizeof(trace_payload_hex));
+    }
+
+    if (xctx->output_csv) {
+        if (check_and_rotate_files(&xctx->files, xctx) < 0) {
             fprintf(stderr, "Failed to rotate output files\n");
             return -1;
         }
 
-        fprintf(files.sample_file,
-               "%s,%ld,%d,%d,%u,%llu,%s,'%s','%s','%s',%s,%s,%s,%lld,%lld,%lld,%llx,%llx,%llx,%llx,%llx,%llx,'%s','%s','%s','%s',%llx,%llx\n",
-               timestamp,
-               sample_weight_us,
-               event->pid,
-               event->tgid,
-               event->storage.pid_ns_id,
-               event->storage.cgroup_id,
-               format_task_state(event->state, event->on_rq, event->on_cpu, event->migration_pending),
-               getusername(event->euid),
-               (event->flags & PF_KTHREAD) ? "[kernel]" : event->exe_file,
-               event->comm,
-               (event->flags & PF_KTHREAD) ? "-" : safe_syscall_name(event->syscall_nr),
-               (event->flags & PF_KTHREAD) ? "-" : (
-                   event->storage.sc_enter_time ? safe_syscall_name(event->storage.in_syscall_nr) : "?"
-               ),
-               event->storage.sc_enter_time > 0 ? sc_start_time_str : "", // todo validate bug
-               sc_duration_ns,
-               event->storage.sc_sequence_num,
-               event->storage.iorq_sequence_num,
-               event->syscall_args[0],
-               event->syscall_args[1],
-               event->syscall_args[2],
-               event->syscall_args[3],
-               event->syscall_args[4],
-               event->syscall_args[5],
-               event->filename[0] ? event->filename : "",
-               conn_buf[0] ? conn_buf : "",
-               conn_state_str[0] ? conn_state_str : "",
-               extra_info,
-               event->kstack_hash,
-               event->ustack_hash
-        );
+        if (xctx->payload_trace_enabled) {
+            fprintf(xctx->files.sample_file,
+                   "%s,%ld,%d,%d,%u,%llu,%s,'%s','%s','%s',%s,%s,%s,%lld,%lld,%lld,%llx,%llx,%llx,%llx,%llx,%llx,'%s','%s','%s','%s',%llx,%llx,'%s',%u\n",
+                   timestamp,
+                   xctx->sample_weight_us,
+                   event->pid,
+                   event->tgid,
+                   event->storage.pid_ns_id,
+                   event->storage.cgroup_id,
+                   format_task_state(event->state, event->on_rq, event->on_cpu, event->migration_pending),
+                   getusername(event->euid),
+                   (event->flags & PF_KTHREAD) ? "[kernel]" : event->exe_file,
+                   event->comm,
+                   (event->flags & PF_KTHREAD) ? "-" : safe_syscall_name(event->syscall_nr),
+                   (event->flags & PF_KTHREAD) ? "-" : (
+                       event->storage.sc_enter_time ? safe_syscall_name(event->storage.in_syscall_nr) : "?"
+                   ),
+                   event->storage.sc_enter_time > 0 ? sc_start_time_str : "", // todo validate bug
+                   sc_duration_ns,
+                   event->storage.sc_sequence_num,
+                   event->storage.iorq_sequence_num,
+                   event->syscall_args[0],
+                   event->syscall_args[1],
+                   event->syscall_args[2],
+                   event->syscall_args[3],
+                   event->syscall_args[4],
+                   event->syscall_args[5],
+                   event->filename[0] ? event->filename : "",
+                   conn_buf[0] ? conn_buf : "",
+                   conn_state_str[0] ? conn_state_str : "",
+                   extra_info,
+                   event->kstack_hash,
+                   event->ustack_hash,
+                   trace_payload_hex,
+                   event->storage.trace_payload_len
+            );
+        } else {
+            fprintf(xctx->files.sample_file,
+                   "%s,%ld,%d,%d,%u,%llu,%s,'%s','%s','%s',%s,%s,%s,%lld,%lld,%lld,%llx,%llx,%llx,%llx,%llx,%llx,'%s','%s','%s','%s',%llx,%llx\n",
+                   timestamp,
+                   xctx->sample_weight_us,
+                   event->pid,
+                   event->tgid,
+                   event->storage.pid_ns_id,
+                   event->storage.cgroup_id,
+                   format_task_state(event->state, event->on_rq, event->on_cpu, event->migration_pending),
+                   getusername(event->euid),
+                   (event->flags & PF_KTHREAD) ? "[kernel]" : event->exe_file,
+                   event->comm,
+                   (event->flags & PF_KTHREAD) ? "-" : safe_syscall_name(event->syscall_nr),
+                   (event->flags & PF_KTHREAD) ? "-" : (
+                       event->storage.sc_enter_time ? safe_syscall_name(event->storage.in_syscall_nr) : "?"
+                   ),
+                   event->storage.sc_enter_time > 0 ? sc_start_time_str : "", // todo validate bug
+                   sc_duration_ns,
+                   event->storage.sc_sequence_num,
+                   event->storage.iorq_sequence_num,
+                   event->syscall_args[0],
+                   event->syscall_args[1],
+                   event->syscall_args[2],
+                   event->syscall_args[3],
+                   event->syscall_args[4],
+                   event->syscall_args[5],
+                   event->filename[0] ? event->filename : "",
+                   conn_buf[0] ? conn_buf : "",
+                   conn_state_str[0] ? conn_state_str : "",
+                   extra_info,
+                   event->kstack_hash,
+                   event->ustack_hash
+            );
+        }
     }
     else {
         // Use the new column-based formatting system for STDOUT developer mode
@@ -526,7 +707,7 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
             .extra_info = extra_info,
             .kstack_hash_str = kstack_hash_str,
             .ustack_hash_str = ustack_hash_str,
-            .sample_weight_us = sample_weight_us,
+            .sample_weight_us = xctx->sample_weight_us,
             .off_us = (event->storage.sample_actual_ktime - event->storage.sample_start_ktime) / 1000,
             .sysc_us_so_far = sc_duration_ns / 1000,
             .sysc_entry_time_str = event->storage.sc_enter_time > 0 ? sc_start_time_str : "-"
@@ -535,11 +716,11 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
         format_stdout_line(event, &ctx);
 
         // Track unique stacks if needed
-        if (print_stack_traces && !output_csv) {
-            if (dump_kernel_stack_traces && event->kstack_hash != 0) {
+        if (xctx->print_stack_traces && !xctx->output_csv) {
+            if (xctx->dump_kernel_stack_traces && event->kstack_hash != 0) {
                 add_unique_stack(event->kstack_hash, true);
             }
-            if (dump_user_stack_traces && event->ustack_hash != 0) {
+            if (xctx->dump_user_stack_traces && event->ustack_hash != 0) {
                 add_unique_stack(event->ustack_hash, false);
             }
         }
@@ -552,12 +733,12 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
             // Successfully resolved - it's now cached
 
             // Write to cgroup CSV file if in CSV mode
-            if (output_csv && files.cgroup_file) {
-                write_cgroup_entry(files.cgroup_file, event->storage.cgroup_id, cgroup_path);
+            if (xctx->output_csv && xctx->files.cgroup_file) {
+                write_cgroup_entry(xctx->files.cgroup_file, event->storage.cgroup_id, cgroup_path);
             }
 
             // Print to stdout if requested (will add -c flag later)
-            if (print_cgroups && !output_csv) {
+            if (xctx->print_cgroups && !xctx->output_csv) {
                 printf("CGROUP  %18llu  %s\n", event->storage.cgroup_id, cgroup_path);
             }
         }
@@ -568,6 +749,12 @@ int handle_task_event(void *ctx, void *data, size_t data_sz)
 
 int handle_stack_event(void *ctx, void *data, size_t data_sz)
 {
+    XCAP_UNUSED(data_sz);
+
+    struct xcapture_context *xctx = ctx;
+    if (!xctx)
+        return 0;
+
     enum event_type *type_ptr = (enum event_type *)data;
     enum event_type event_type = *type_ptr;
 
@@ -580,7 +767,7 @@ int handle_stack_event(void *ctx, void *data, size_t data_sz)
     const struct stack_trace_event *event = data;
 
     // Cache symbolized stack for stdout printing if needed
-    if (print_stack_traces && !output_csv) {
+    if (xctx->print_stack_traces && !xctx->output_csv) {
         unsigned int idx = hash_to_index(event->stack_hash);
         struct stack_cache_entry *cache = event->is_kernel ?
             &kernel_stack_cache[idx] : &user_stack_cache[idx];
@@ -626,10 +813,10 @@ int handle_stack_event(void *ctx, void *data, size_t data_sz)
 
     // Determine which file to write to based on stack type
     FILE *output_file = NULL;
-    if (event->is_kernel && files.kstack_file) {
-        output_file = files.kstack_file;
-    } else if (!event->is_kernel && files.ustack_file) {
-        output_file = files.ustack_file;
+    if (event->is_kernel && xctx->files.kstack_file) {
+        output_file = xctx->files.kstack_file;
+    } else if (!event->is_kernel && xctx->files.ustack_file) {
+        output_file = xctx->files.ustack_file;
     }
 
     // Skip if no appropriate file is open

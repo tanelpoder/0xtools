@@ -12,6 +12,7 @@
 #include "xcapture.h"
 #include "../probes/xcapture_config.h"
 #include "file_helpers.h"
+#include "../utils/xcapture_helpers.h"
 
 #if defined(__TARGET_ARCH_arm64)
 #include "syscall_aarch64.h"
@@ -23,29 +24,31 @@
 #define IOSQE_FIXED_FILE 0x01
 
 // Helper to get filename from file descriptor
-static void __always_inline get_fd_filename(struct task_struct *task, int fd, char *filename, size_t size)
+static __always_inline struct file *get_file_from_fd(struct files_struct *files, int fd)
 {
-    if (fd < 0 || fd >= 1024) {
-        filename[0] = '\0';
-        return;
-    }
-
-    struct files_struct *files = task->files;
-    if (!files) {
-        filename[0] = '\0';
-        return;
-    }
+    if (!files || fd < 0)
+        return NULL;
 
     struct fdtable *fdt = files->fdt;
-    struct file **fd_array = fdt->fd;
+    if (!fdt)
+        return NULL;
 
-    if (!fd_array) {
-        filename[0] = '\0';
-        return;
-    }
+    unsigned int max_fds = BPF_CORE_READ(fdt, max_fds);
+    if (max_fds && (unsigned int)fd >= max_fds)
+        return NULL;
+
+    struct file **fd_array = fdt->fd;
+    if (!fd_array)
+        return NULL;
 
     struct file *file = NULL;
     bpf_probe_read_kernel(&file, sizeof(file), &fd_array[fd]);
+    return file;
+}
+
+static void __always_inline get_fd_filename(struct task_struct *task, int fd, char *filename, size_t size)
+{
+    struct file *file = get_file_from_fd(task->files, fd);
 
     if (file) {
         get_file_name(file, filename, size, "-");
@@ -54,222 +57,394 @@ static void __always_inline get_fd_filename(struct task_struct *task, int fd, ch
     }
 }
 
-// Helper to calculate io_uring SQ and CQ pending counts and get last submitted fd info
+#ifdef OLD_KERNEL_SUPPORT
+static __always_inline struct file *resolve_io_uring_fixed_file(struct io_ring_ctx *ctx, __s32 idx)
+{
+    return NULL;
+}
+#else
+static __always_inline struct file *resolve_io_uring_fixed_file(struct io_ring_ctx *ctx, __s32 idx)
+{
+    if (!ctx || idx < 0)
+        return NULL;
+    void *table_ptr = (void *)&ctx->file_table;
+    int bitmap_off = bpf_core_field_offset(struct io_file_table, bitmap);
+    if (bitmap_off < 0)
+        return NULL;
+
+    if (bitmap_off == (int)sizeof(void *)) {
+        /* Legacy layout: file_table.files points to io_fixed_file entries */
+        struct io_fixed_file *files = NULL;
+        if (bpf_probe_read_kernel(&files, sizeof(files), table_ptr) != 0 || !files)
+            return NULL;
+
+        struct io_fixed_file fixed_entry = {};
+        if (bpf_probe_read_kernel(&fixed_entry, sizeof(fixed_entry), &files[idx]) != 0)
+            return NULL;
+
+        if (!fixed_entry.file_ptr)
+            return NULL;
+
+        return (struct file *)fixed_entry.file_ptr;
+    }
+
+    if (bitmap_off < (int)(2 * sizeof(void *)))
+        return NULL;
+
+    /* Modern layout: first field embeds io_rsrc_data { nr, nodes } */
+    unsigned int nr = 0;
+    if (bpf_probe_read_kernel(&nr, sizeof(nr), table_ptr) != 0)
+        return NULL;
+    if ((unsigned int)idx >= nr)
+        return NULL;
+
+    struct io_rsrc_node **nodes = NULL;
+    int nodes_off = bitmap_off - (int)sizeof(void *);
+    if (bpf_probe_read_kernel(&nodes, sizeof(nodes), (__u8 *)table_ptr + nodes_off) != 0 || !nodes)
+        return NULL;
+
+    struct io_rsrc_node *node = NULL;
+    if (bpf_probe_read_kernel(&node, sizeof(node), &nodes[idx]) != 0 || !node)
+        return NULL;
+
+    /* io_rsrc_node layout stores file_ptr 16 bytes from base (after type, refs, tag) */
+    unsigned long file_ptr = 0;
+    const int file_ptr_off = 16;
+    if (bpf_probe_read_kernel(&file_ptr, sizeof(file_ptr), (__u8 *)node + file_ptr_off) != 0)
+        return NULL;
+
+    if (!file_ptr)
+        return NULL;
+
+    return (struct file *)file_ptr;
+}
+#endif
+
+static void __always_inline uring_track_request(struct task_storage *storage,
+                                                __u64 user_data,
+                                                __s32 fd,
+                                                __s32 reg_idx,
+                                                __u64 file_ptr)
+{
+    if (!storage)
+        return;
+
+    storage->cache.uring_last_user_data = user_data;
+    storage->cache.uring_last_fd = fd;
+    storage->cache.uring_last_reg_idx = reg_idx;
+    storage->cache.uring_last_file_ptr = file_ptr;
+}
+
+static __u64 __always_inline uring_lookup_tracked_file(const struct task_storage *storage,
+                                                       __u64 user_data)
+{
+    if (!storage)
+        return 0;
+
+    if (storage->cache.uring_last_user_data != user_data)
+        return 0;
+
+    return storage->cache.uring_last_file_ptr;
+}
+
+// Helper to calculate io_uring SQ and CQ pending counts and get sample filenames for both queues
+#ifdef OLD_KERNEL_SUPPORT
 static void __always_inline get_io_uring_pending_counts(struct file *ring_file, struct task_struct *task,
                                                         __u32 *sq_pending_out, __u32 *cq_pending_out,
-                                                        char *sqe_filename, size_t filename_size,
+                                                        char *sqe_filename, size_t sq_filename_size,
+                                                        char *cqe_filename, size_t cq_filename_size,
+                                                        struct task_storage *storage,
                                                         struct task_output_event *event)
 {
-    *sq_pending_out = 0;
-    *cq_pending_out = 0;
+    if (sq_pending_out)
+        *sq_pending_out = 0;
+    if (cq_pending_out)
+        *cq_pending_out = 0;
 
-    if (!ring_file || !task) {
-        return;
+    if (sqe_filename && sq_filename_size > 0)
+        sqe_filename[0] = '\0';
+    if (cqe_filename && cq_filename_size > 0)
+        cqe_filename[0] = '\0';
+
+    if (storage) {
+        storage->cache.uring_last_user_data = 0;
+        storage->cache.uring_last_fd = -1;
+        storage->cache.uring_last_reg_idx = -1;
+        storage->cache.uring_last_file_ptr = 0;
     }
 
-    // Get io_ring_ctx from file->private_data
+    if (event) {
+        event->uring_dbg_sq_idx = -9;
+        event->uring_dbg_sq_fixed = 0;
+        event->uring_dbg_sq_user_data = 0;
+        event->uring_dbg_sq_file_ptr = 0;
+        event->uring_dbg_cq_scanned = 0;
+        event->uring_dbg_cq_matched = 0;
+        event->uring_dbg_cq_file_ptr = 0;
+    }
+}
+#else
+static void __always_inline get_io_uring_pending_counts(struct file *ring_file, struct task_struct *task,
+                                                        __u32 *sq_pending_out, __u32 *cq_pending_out,
+                                                        char *sqe_filename, size_t sq_filename_size,
+                                                        char *cqe_filename, size_t cq_filename_size,
+                                                        struct task_storage *storage,
+                                                        struct task_output_event *event)
+{
+    if (sq_pending_out)
+        *sq_pending_out = 0;
+    if (cq_pending_out)
+        *cq_pending_out = 0;
+
+    if (sqe_filename && sq_filename_size > 0)
+        sqe_filename[0] = '\0';
+    if (cqe_filename && cq_filename_size > 0)
+        cqe_filename[0] = '\0';
+
+    if (!ring_file || !task)
+        return;
+
     struct io_ring_ctx *ctx = BPF_CORE_READ(ring_file, private_data);
-    if (!ctx) {
+    if (!ctx)
         return;
-    }
 
-    // Get the rings pointer from io_ring_ctx
     struct io_rings *rings = BPF_CORE_READ(ctx, rings);
-    if (!rings) {
+    if (!rings)
         return;
-    }
 
-    // Read SQ head
-    // Note: The rings structure is shared between kernel and userspace
-    // The head is updated by consumer (kernel for SQ), tail by producer (userspace for SQ)
     __u32 sq_head = BPF_CORE_READ(rings, sq.head);
-
-    // Read SQ tail
-    // For SQ: tail is written by userspace, head by kernel
     __u32 sq_tail = BPF_CORE_READ(rings, sq.tail);
-
-    // Read SQ mask
     __u32 sq_mask = BPF_CORE_READ(rings, sq_ring_mask);
 
-    // Read CQ head
     __u32 cq_head = BPF_CORE_READ(rings, cq.head);
-
-    // Read CQ tail
     __u32 cq_tail = BPF_CORE_READ(rings, cq.tail);
-
-    // Read CQ mask
     __u32 cq_mask = BPF_CORE_READ(rings, cq_ring_mask);
 
-    // Calculate pending in submission queue (wrapping handled by masking)
-    if (sq_tail >= sq_head) {
-        *sq_pending_out = sq_tail - sq_head;
-    } else {
-        // Handle wrap around
-        *sq_pending_out = (sq_mask + 1) - sq_head + sq_tail;
+    __u32 sq_pending = 0;
+    if (sq_tail >= sq_head)
+        sq_pending = sq_tail - sq_head;
+    else
+        sq_pending = (sq_mask + 1) - sq_head + sq_tail;
+
+    if (event) {
+        event->uring_dbg_cq_scanned = 0;
+        event->uring_dbg_cq_matched = 0;
+        event->uring_dbg_cq_file_ptr = 0;
     }
 
-    // Calculate completed but not reaped in completion queue
+    if (sq_pending_out)
+        *sq_pending_out = sq_pending;
+    if (storage && sq_pending == 0) {
+        storage->cache.uring_last_user_data = 0;
+        storage->cache.uring_last_file_ptr = 0;
+        storage->cache.uring_last_fd = -1;
+        storage->cache.uring_last_reg_idx = -1;
+    }
+
     __u32 cq_pending_calc = 0;
-    if (cq_tail >= cq_head) {
+    if (cq_tail >= cq_head)
         cq_pending_calc = cq_tail - cq_head;
-    } else {
-        // Handle wrap around
+    else
         cq_pending_calc = (cq_mask + 1) - cq_head + cq_tail;
-    }
-    *cq_pending_out = cq_pending_calc;
 
+    if (cq_pending_out)
+        *cq_pending_out = cq_pending_calc;
 
-    // Calculations complete
-
-    // Try to get the fd from the most recently submitted SQE
-    if (sqe_filename && filename_size > 0) {
-        // Initialize filename to empty
-        sqe_filename[0] = '\0';
-
-        // Get SQ array pointer from context
+    if (sqe_filename && sq_filename_size > 0) {
         __u32 *sq_array = BPF_CORE_READ(ctx, sq_array);
-        if (!sq_array) {
-            goto skip_sqe_read;
-        }
-
-        // Get SQE array pointer from context
         struct io_uring_sqe *sqes = BPF_CORE_READ(ctx, sq_sqes);
-        if (!sqes) {
-            goto skip_sqe_read;
-        }
 
-        // If there are any submissions (even if they've been consumed),
-        // look at the most recent one. For pending CQs, check the submission
-        // that led to them
-        if (sq_tail > 0 || cq_pending_calc > 0) {
-            // Get the index of the most recently submitted entry
-            __u32 last_sq_idx = 0;
-            if (sq_tail > 0) {
-                last_sq_idx = (sq_tail - 1) & sq_mask;
-            } else {
-                // If sq_tail is 0 but we have completions, try index 0
-                last_sq_idx = 0;
-            }
+        bool has_sq_array = sq_array != NULL;
+        bool has_sqes = sqes != NULL;
 
-            // Read the SQE index from the SQ array
-            // Note: We must use bpf_probe_read_kernel here for dynamic array access
+        if (!has_sqes) {
+            if (event)
+                event->uring_dbg_sq_idx = -7;
+        } else if (sq_tail > 0 || cq_pending_calc > 0) {
+            __u32 last_sq_idx = (sq_tail > 0) ? ((sq_tail - 1) & sq_mask) : 0;
             __u32 sqe_idx = 0;
-            int ret = bpf_probe_read_kernel(&sqe_idx, sizeof(sqe_idx), &sq_array[last_sq_idx]);
-            if (ret < 0) {
-                goto skip_sqe_read;
-            }
+            bool sqe_valid = true;
 
-            // Read the SQE at this index
-            // Note: We must use bpf_probe_read_kernel here for dynamic array access
-            struct io_uring_sqe sqe;
-            ret = bpf_probe_read_kernel(&sqe, sizeof(sqe), &sqes[sqe_idx]);
-            if (ret < 0) {
-                goto skip_sqe_read;
-            }
-
-            // Check if this is a registered file (IOSQE_FIXED_FILE = 0x01)
-            bool is_fixed_file = (sqe.flags & IOSQE_FIXED_FILE) != 0;
-            __s32 fd = sqe.fd;
-
-            if (is_fixed_file) {
-                // For registered files, sqe.fd is an index into the registered files array
-                // Try to access registered files through io_ring_ctx
-                struct file *reg_file = NULL;
-
-                // Check if we can access file_data field
-                if (fd >= 0 && fd < 64) {
-                    // The registered files structure has changed across kernel versions
-                    // Try different approaches based on what's available
-
-                    // Approach 1: Try ctx->file_table if it exists (not a pointer)
-                    if (bpf_core_field_exists(ctx->file_table)) {
-                        // file_table is embedded, not a pointer
-                        if (bpf_core_field_exists(ctx->file_table.files)) {
-                            // files is an array of io_fixed_file structures
-                            struct io_fixed_file *fixed_files = BPF_CORE_READ(ctx, file_table.files);
-                            if (fixed_files) {
-                                // io_fixed_file contains a file pointer as file_ptr (unsigned long)
-                                struct io_fixed_file fixed_file;
-                                if (bpf_probe_read_kernel(&fixed_file, sizeof(fixed_file), &fixed_files[fd]) == 0) {
-                                    // Read the file_ptr field which is unsigned long containing the file pointer
-                                    unsigned long file_ptr = BPF_CORE_READ(&fixed_file, file_ptr);
-                                    if (file_ptr) {
-                                        // Convert the unsigned long to a file pointer
-                                        reg_file = (struct file *)file_ptr;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Approach 2: Try ctx->file_data if previous didn't work
-                    else if (!reg_file && bpf_core_field_exists(ctx->file_data)) {
-                        struct io_rsrc_data *file_data = BPF_CORE_READ(ctx, file_data);
-                        if (file_data) {
-                            // io_rsrc_data might have a different structure
-                            // Try to find a way to access the files
-                            // This is kernel version dependent
-                        }
-                    }
-                }
-
-                // Try to get filename if we found the file
-                if (reg_file && sqe_filename && filename_size > 0) {
-                    get_file_name(reg_file, sqe_filename, filename_size, "-");
-                } else if (sqe_filename && filename_size > 0) {
-                    // Fallback: Mark as registered file
-                    // we can't resolve the filename for registered files
-                    // on all kernel versions, so we just show [reg]
-                    if (filename_size > 5) {
-                        sqe_filename[0] = '[';
-                        sqe_filename[1] = 'r';
-                        sqe_filename[2] = 'e';
-                        sqe_filename[3] = 'g';
-                        sqe_filename[4] = ']';
-                        sqe_filename[5] = '\0';
-                    }
-                }
-
-                // For registered files, we indicate it's not a regular fd
-                if (event) {
-                    event->uring_fd = -1;  // Indicate it's not a regular fd
-                    event->uring_reg_idx = -1;  // Not using reg_idx anymore
-
-                    // Also ensure we have a filename for registered files
-                    if (sqe_filename && sqe_filename[0] == '\0' && filename_size > 5) {
-                        // Set a simple marker
-                        sqe_filename[0] = '[';
-                        sqe_filename[1] = 'r';
-                        sqe_filename[2] = 'e';
-                        sqe_filename[3] = 'g';
-                        sqe_filename[4] = ']';
-                        sqe_filename[5] = '\0';
-                    }
-                }
+            if (!has_sq_array) {
+                sqe_idx = last_sq_idx;
             } else {
-                // Regular file descriptor
-                if (fd >= 0 && fd < 1024) {
-                    get_fd_filename(task, fd, sqe_filename, filename_size);
+                bool sqe_idx_loaded = false;
+                bool tried_task_copy = false;
+
+                if (task) {
+                    tried_task_copy = true;
+                    if (xcap_copy_from_user_task(&sqe_idx, sizeof(sqe_idx),
+                                                &sq_array[last_sq_idx], task, 0) == 0)
+                        sqe_idx_loaded = true;
                 }
-                if (event) {
-                    event->uring_fd = fd;  // Store the actual fd from SQE
-                    event->uring_reg_idx = -1;  // Not a registered file
+
+                if (!sqe_idx_loaded) {
+                    if (bpf_probe_read_user(&sqe_idx, sizeof(sqe_idx), &sq_array[last_sq_idx]) == 0 ||
+                        bpf_probe_read_kernel(&sqe_idx, sizeof(sqe_idx), &sq_array[last_sq_idx]) == 0)
+                        sqe_idx_loaded = true;
+                }
+
+                if (!sqe_idx_loaded) {
+                    sqe_valid = false;
+                    if (event)
+                        event->uring_dbg_sq_idx = tried_task_copy ? -3 : -2;
                 }
             }
 
-            // Store io_uring operation details in event
-            if (event) {
-                event->uring_opcode = sqe.opcode;
-                event->uring_flags = sqe.flags;
-                event->uring_offset = sqe.off;
-                event->uring_len = sqe.len;
-                event->uring_rw_flags = sqe.rw_flags;
+            struct io_uring_sqe sqe = {};
+            if (sqe_valid) {
+                bool sqe_loaded = false;
+                bool tried_task_copy_sqe = false;
+
+                if (task) {
+                    tried_task_copy_sqe = true;
+                    if (xcap_copy_from_user_task(&sqe, sizeof(sqe), &sqes[sqe_idx], task, 0) == 0)
+                        sqe_loaded = true;
+                }
+
+                if (!sqe_loaded) {
+                    if (bpf_probe_read_user(&sqe, sizeof(sqe), &sqes[sqe_idx]) == 0 ||
+                        bpf_probe_read_kernel(&sqe, sizeof(sqe), &sqes[sqe_idx]) == 0)
+                        sqe_loaded = true;
+                }
+
+                if (!sqe_loaded) {
+                    sqe_valid = false;
+                    if (event)
+                        event->uring_dbg_sq_idx = tried_task_copy_sqe ? -3 : -2;
+                }
             }
+
+            if (!sqe_valid) {
+                if (event)
+                event->uring_dbg_sq_idx = (event->uring_dbg_sq_idx < 0)
+                                              ? event->uring_dbg_sq_idx
+                                              : -2;
+            } else {
+                bool is_fixed_file = (sqe.flags & IOSQE_FIXED_FILE) != 0;
+                __s32 fd = sqe.fd;
+                __s32 reg_idx = -1;
+                struct file *file = NULL;
+
+                if (event) {
+                    event->uring_dbg_sq_idx = sqe_idx;
+                    event->uring_dbg_sq_fixed = is_fixed_file ? 1 : 0;
+                    event->uring_dbg_sq_user_data = sqe.user_data;
+                }
+
+                if (is_fixed_file) {
+                    reg_idx = fd;
+                    file = resolve_io_uring_fixed_file(ctx, reg_idx);
+
+                    if (file)
+                        get_file_name(file, sqe_filename, sq_filename_size, "-");
+                    else if (sq_filename_size > 5) {
+                        sqe_filename[0] = '[';
+                        sqe_filename[1] = 'r';
+                        sqe_filename[2] = 'e';
+                        sqe_filename[3] = 'g';
+                        sqe_filename[4] = ']';
+                        sqe_filename[5] = '\0';
+                    }
+
+                    if (event) {
+                        event->uring_fd = -1;
+                        event->uring_reg_idx = reg_idx;
+                    }
+
+                    uring_track_request(storage, sqe.user_data, -1, reg_idx, (__u64)file);
+                } else {
+                    if (fd >= 0)
+                        file = get_file_from_fd(task->files, fd);
+
+                    if (file)
+                        get_file_name(file, sqe_filename, sq_filename_size, "-");
+                    else if (sq_filename_size > 0)
+                        sqe_filename[0] = '\0';
+
+                    if (event) {
+                        event->uring_fd = fd;
+                        event->uring_reg_idx = -1;
+                    }
+
+                    uring_track_request(storage, sqe.user_data, fd, -1, (__u64)file);
+                }
+
+                if (event) {
+                    event->uring_opcode = sqe.opcode;
+                    event->uring_flags = sqe.flags;
+                    event->uring_offset = sqe.off;
+                    event->uring_len = sqe.len;
+                    event->uring_rw_flags = sqe.rw_flags;
+                    event->uring_dbg_sq_file_ptr = (__u64)file;
+                }
+            }
+        } else if (event) {
+            event->uring_dbg_sq_idx = -5;
         }
     }
 
-skip_sqe_read:
-    ;  // Empty statement to avoid C23 warning
+    if (cqe_filename && cq_filename_size > 0 && cq_pending_calc > 0 && storage) {
+        const __u32 max_scan = 8;
+        __u32 to_scan = cq_pending_calc;
+        if (to_scan > max_scan)
+            to_scan = max_scan;
+
+        struct io_uring_cqe *cqes = BPF_CORE_READ(rings, cqes);
+        if (cqes) {
+            for (int i = 0; i < max_scan; i++) {
+            if (i >= to_scan)
+                break;
+
+            __u32 idx = (cq_head + i) & cq_mask;
+
+            struct io_uring_cqe cqe;
+            if (bpf_probe_read_user(&cqe, sizeof(cqe), &cqes[idx]) != 0 &&
+                bpf_probe_read_kernel(&cqe, sizeof(cqe), &cqes[idx]) != 0)
+                continue;
+
+            if (event) {
+                event->uring_dbg_cq_scanned = i + 1;
+            }
+
+            __u64 file_ptr = uring_lookup_tracked_file(storage, cqe.user_data);
+
+            if ((!file_ptr) && storage && storage->cache.uring_last_user_data == cqe.user_data) {
+                if (storage->cache.uring_last_reg_idx >= 0) {
+                    struct file *reg_file = resolve_io_uring_fixed_file(ctx, storage->cache.uring_last_reg_idx);
+                    if (reg_file) {
+                        file_ptr = (__u64)reg_file;
+                        storage->cache.uring_last_file_ptr = file_ptr;
+                    }
+                } else if (storage->cache.uring_last_fd >= 0) {
+                    struct file *file_retry = get_file_from_fd(task->files,
+                                                               storage->cache.uring_last_fd);
+                    if (file_retry) {
+                        file_ptr = (__u64)file_retry;
+                        storage->cache.uring_last_file_ptr = file_ptr;
+                    }
+                }
+            }
+
+            if (!file_ptr)
+                continue;
+
+            struct file *file = (struct file *)file_ptr;
+            get_file_name(file, cqe_filename, cq_filename_size, "-");
+
+            if (event) {
+                event->uring_dbg_cq_matched = 1;
+                event->uring_dbg_cq_file_ptr = (__u64)file;
+            }
+
+            break;
+            }
+        } else if (event) {
+            event->uring_dbg_cq_scanned = -1;
+        }
+    }
 }
+#endif
 
 // Helper to check io_uring fd for daemon port
 static __u16 __always_inline check_io_uring_daemon_ports(struct pt_regs *regs, struct task_struct *task);
@@ -299,14 +474,8 @@ static int __always_inline get_io_uring_sqe_info(struct pt_regs *regs, struct ta
     struct file *ring_file = NULL;
     struct files_struct *files = task->files;
 
-    if (files) {
-        struct fdtable *fdt = files->fdt;
-        struct file **fd_array = fdt->fd;
-
-        if (fd_array && ring_fd >= 0 && ring_fd < 1024) {
-            bpf_probe_read_kernel(&ring_file, sizeof(ring_file), &fd_array[ring_fd]);
-        }
-    }
+    if (files)
+        ring_file = get_file_from_fd(files, ring_fd);
 
     if (!ring_file)
         return -1;
@@ -320,6 +489,13 @@ static int __always_inline get_io_uring_sqe_info(struct pt_regs *regs, struct ta
 }
 
 // Helper to get first fd from AIO syscalls (io_getevents/io_pgetevents/io_submit)
+#ifdef OLD_KERNEL_SUPPORT
+static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct task_struct *task,
+                                                  int *fd_out, struct file **file_out)
+{
+    return -1;
+}
+#else
 static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct task_struct *task,
                                                   int *fd_out, struct file **file_out)
 {
@@ -354,7 +530,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
         if (iocbpp_ptr && nr > 0) {
             struct iocb *iocb_ptr;
             // Read first pointer from the array
-            if (bpf_copy_from_user_task(&iocb_ptr, sizeof(iocb_ptr), (void *)iocbpp_ptr, task, 0) == 0) {
+            if (xcap_copy_from_user_task(&iocb_ptr, sizeof(iocb_ptr), (void *)iocbpp_ptr, task, 0) == 0) {
                 if (iocb_ptr) {
                     struct iocb {
                         __u64 aio_data;
@@ -365,7 +541,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
                         __u32 aio_fildes;
                     } iocb;
 
-                    if (bpf_copy_from_user_task(&iocb, sizeof(iocb), (void *)iocb_ptr, task, 0) == 0) {
+                    if (xcap_copy_from_user_task(&iocb, sizeof(iocb), (void *)iocb_ptr, task, 0) == 0) {
                         int fd = iocb.aio_fildes;
                         if (fd > 0 && fd < 1024) {
                             // Get file from fd
@@ -420,7 +596,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
         // We don't need the rest of the structure
     } ring;
 
-    if (bpf_copy_from_user_task(&ring, sizeof(ring), (void *)ctx_id, task, 0) != 0)
+    if (xcap_copy_from_user_task(&ring, sizeof(ring), (void *)ctx_id, task, 0) != 0)
         return -1;
 
     // The io_events array starts right after the aio_ring header
@@ -444,7 +620,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
         // Calculate offset for this entry
         __u64 entry_offset = event_offset + (idx * sizeof(struct io_event));
 
-        if (bpf_copy_from_user_task(&ring_event, sizeof(ring_event),
+        if (xcap_copy_from_user_task(&ring_event, sizeof(ring_event),
                                     (void *)(ctx_id + entry_offset), task, 0) == 0) {
             if (ring_event.obj) {
                 struct iocb {
@@ -456,7 +632,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
                     __u32 aio_fildes;  // This is the file descriptor
                 } iocb;
 
-                if (bpf_copy_from_user_task(&iocb, sizeof(iocb), (void *)ring_event.obj, task, 0) == 0) {
+                if (xcap_copy_from_user_task(&iocb, sizeof(iocb), (void *)ring_event.obj, task, 0) == 0) {
                     int fd = iocb.aio_fildes;
                     // Debug: Let's check what we're actually reading
                     // Store the opcode in fd_out temporarily to debug
@@ -464,7 +640,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
                         // If fd is 0 but we have a valid opcode, the structure might be misaligned
                         // Try reading just the fd field at the expected offset
                         __u32 fd_only;
-                        if (bpf_copy_from_user_task(&fd_only, sizeof(fd_only),
+                        if (xcap_copy_from_user_task(&fd_only, sizeof(fd_only),
                                                     (void *)((char *)ring_event.obj + 20), task, 0) == 0) {
                             fd = fd_only;
                         }
@@ -503,7 +679,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
         } event;
 
         // Read first io_event from userspace
-        if (bpf_copy_from_user_task(&event, sizeof(event), (void *)events_ptr, task, 0) == 0) {
+        if (xcap_copy_from_user_task(&event, sizeof(event), (void *)events_ptr, task, 0) == 0) {
             // Now read the iocb structure that event.obj points to
             if (event.obj) {
                 struct iocb {
@@ -515,7 +691,7 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
                     __u32 aio_fildes;  // This is the file descriptor
                 } iocb;
 
-                if (bpf_copy_from_user_task(&iocb, sizeof(iocb), (void *)event.obj, task, 0) == 0) {
+                if (xcap_copy_from_user_task(&iocb, sizeof(iocb), (void *)event.obj, task, 0) == 0) {
                     int fd = iocb.aio_fildes;
                     if (fd >= 0 && fd < 1024) {
                         // Get file from fd
@@ -542,9 +718,16 @@ static int __always_inline get_aio_first_fd_info(struct pt_regs *regs, struct ta
 
     return -1;
 }
+#endif
 
 // Helper function to calculate number of inflight AIO requests in a ring
-// For use in task iterator context with bpf_copy_from_user_task()
+// For use in task iterator context with xcap_copy_from_user_task()
+#ifdef OLD_KERNEL_SUPPORT
+static __u32 __always_inline get_aio_inflight_count_task(__u64 ctx_id, struct task_struct *task)
+{
+    return 0;
+}
+#else
 static __u32 __always_inline get_aio_inflight_count_task(__u64 ctx_id, struct task_struct *task)
 {
     if (!ctx_id || !task) return 0;
@@ -557,7 +740,7 @@ static __u32 __always_inline get_aio_inflight_count_task(__u64 ctx_id, struct ta
     } ring;
 
     // Read the aio_ring structure from userspace
-    if (bpf_copy_from_user_task(&ring, sizeof(ring), (void *)ctx_id, task, 0) != 0)
+    if (xcap_copy_from_user_task(&ring, sizeof(ring), (void *)ctx_id, task, 0) != 0)
         return 0;
 
     // Calculate inflight requests
@@ -570,6 +753,7 @@ static __u32 __always_inline get_aio_inflight_count_task(__u64 ctx_id, struct ta
         return (UINT32_MAX - ring.head) + ring.tail + 1;
     }
 }
+#endif
 
 // Include fd_helpers.h for check_fd_port function
 #include "fd_helpers.h"

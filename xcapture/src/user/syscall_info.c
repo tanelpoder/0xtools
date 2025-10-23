@@ -24,7 +24,7 @@ const char *safe_syscall_name(__s32 syscall_nr)
     if (syscall_nr < 0)
         return "-";
 
-    if (syscall_nr < NR_SYSCALLS && sysent0[syscall_nr].name != NULL) {
+    if ((unsigned long)syscall_nr < NR_SYSCALLS && sysent0[syscall_nr].name != NULL) {
         return sysent0[syscall_nr].name;
     }
 

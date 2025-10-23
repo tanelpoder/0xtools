@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 #include <linux/types.h>
 #include "xcapture.h"
 #include "xcapture_user.h"
@@ -13,6 +14,10 @@
 // socket inet connection endpoints
 const char *get_connection_state(const struct socket_info *si)
 {
+    if (si->family == AF_UNIX) {
+        return "";
+    }
+
     if (si->protocol == IPPROTO_TCP) {
         switch (si->state) {
             case 10: return "LISTEN";      // TCP_LISTEN
@@ -34,6 +39,47 @@ const char *get_connection_state(const struct socket_info *si)
 
 const char *format_connection(const struct socket_info *si, char *buf, size_t buflen)
 {
+    if (si->family == AF_UNIX) {
+        const char *type;
+        switch (si->socket_type) {
+            case SOCK_DGRAM:     type = "UNIX-DGRAM"; break;
+            case SOCK_SEQPACKET: type = "UNIX-SEQ"; break;
+            case SOCK_STREAM:
+            default:
+                type = "UNIX-STREAM";
+                break;
+        }
+
+        char self_desc[160];
+        if (si->unix_inode) {
+            snprintf(self_desc, sizeof(self_desc), "inode=%llu", (unsigned long long)si->unix_inode);
+        } else if (si->unix_path_len > 0) {
+            if (si->unix_is_abstract) {
+                snprintf(self_desc, sizeof(self_desc), "@%.*s", si->unix_path_len, si->unix_path);
+            } else {
+                snprintf(self_desc, sizeof(self_desc), "%.*s", si->unix_path_len, si->unix_path);
+            }
+        } else {
+            snprintf(self_desc, sizeof(self_desc), "anonymous");
+        }
+
+        char peer_desc[128];
+        if (si->unix_peer_inode) {
+            snprintf(peer_desc, sizeof(peer_desc), "inode=%llu",
+                     (unsigned long long)si->unix_peer_inode);
+        } else {
+            snprintf(peer_desc, sizeof(peer_desc), "peer");
+        }
+
+        if (si->unix_peer_pid) {
+            snprintf(buf, buflen, "%s %s->%s peerpid=%u", type, self_desc, peer_desc, si->unix_peer_pid);
+        } else {
+            snprintf(buf, buflen, "%s %s->%s", type, self_desc, peer_desc);
+        }
+
+        return buf;
+    }
+
     char src[INET6_ADDRSTRLEN], dst[INET6_ADDRSTRLEN];
     const char *proto = (si->protocol == IPPROTO_TCP) ? "TCP" :
                         (si->protocol == IPPROTO_UDP) ? "UDP" : "[unknown]";

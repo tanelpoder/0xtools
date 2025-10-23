@@ -26,7 +26,7 @@
 
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
-char VERSION[] = "3.0.0";
+char VERSION[] = "3.0.3";
 extern int LINUX_KERNEL_VERSION __kconfig;
 
 #define PAGE_SIZE 4096
@@ -47,51 +47,69 @@ static __u32 __always_inline get_task_state(void *arg)
 // Queue-based I/O tracking has been removed - using classic hashtable approach only
 
 // Interesting task filtering for task iterator
-static bool __always_inline should_emit_task(__u32 task_state,
-                                             __s32 syscall_nr, __u32 aio_inflight_reqs,
-                                             __u32 io_uring_sq_pending, __u32 io_uring_cq_pending,
-                                             __u16 read_local_port_num)
+// Return codes:
+//   1 - show_all flag forces emission
+//   2 - aio getevents/pgetevents with inflight requests
+//   3 - io_uring_enter with pending SQ/CQ work
+//   4 - interruptible READ on non-daemon port (active client)
+//   5 - default path (task deemed interesting)
+//   6 - interruptible READ on UNIX stream socket with active peer
+static __s32 __always_inline should_emit_task(__u32 task_state,
+                                              __s32 syscall_nr, __u32 aio_inflight_reqs,
+                                              __u32 io_uring_sq_pending, __u32 io_uring_cq_pending,
+                                              __u16 read_local_port_num,
+                                              bool waiting_on_unix_read)
 {
     if (xcap_show_all)
-        return true;
+        return 1;
 
     // Filter out TASK_INTERRUPTIBLE state tasks by default unless a task in
     // SLEEP state is waiting for a recently submitted async I/O completion
     if ((syscall_nr == __NR_io_getevents || syscall_nr == __NR_io_pgetevents) && aio_inflight_reqs)
     {
-        return true;
+        return 2;
     }
 
     // Show tasks in io_uring_enter syscall with pending I/O
     if (syscall_nr == __NR_io_uring_enter && (io_uring_sq_pending > 0 || io_uring_cq_pending > 0))
     {
-        return true;
+        return 3;
     }
 
     if (task_state & TASK_INTERRUPTIBLE) {
+        if (waiting_on_unix_read) {
+            // Passive client waiting on UNIX stream data
+            return 6;
+        }
         // Check daemon port logic for READ operations on TCP/UDP sockets
         if (read_local_port_num > 0 && is_read_syscall(syscall_nr)) {
             // Special case: if read_local_port_num is 1, it means LISTEN socket
             if (read_local_port_num == 1) {
                 // This is a daemon waiting on a LISTEN socket - skip it
-                return false;
+                return 0;
             }
             if (read_local_port_num <= xcap_daemon_ports) {
                 // This is a daemon waiting for work - skip it
-                return false;
+                return 0;
             }
             // else: local_port > daemon_ports, this is an active client - include it
-            return true;
+            return 4;
         }
         // Not a READ operation on a socket, filter out sleeping task
-        return false;
+        return 0;
     }
 
-    return true;
+    return 5;
 }
 
 
-SEC("iter.s/task")  // Sleepable iterator for modern kernels
+#ifdef OLD_KERNEL_SUPPORT
+#define TASK_ITER_SECTION "iter/task"
+#else
+#define TASK_ITER_SECTION "iter.s/task"
+#endif
+
+SEC(TASK_ITER_SECTION)
 int get_tasks(struct bpf_iter__task *ctx)
 {
     // use the same timestamp for each record returned from a task iterator loop
@@ -191,11 +209,17 @@ int get_tasks(struct bpf_iter__task *ctx)
 
     // Read socket info early for daemon port filtering
     __u16 read_local_port_num = 0;
+    bool waiting_on_unix_read = false;
 
-    // Special handling for ppoll syscall - check multiple fds
+    // Special handling for poll/ppoll syscalls - check multiple fds
     if (passive_syscall_nr == __NR_ppoll && passive_regs) {
         read_local_port_num = check_ppoll_daemon_ports(passive_regs, task);
     }
+#ifdef __NR_poll
+    else if (passive_syscall_nr == __NR_poll && passive_regs) {
+        read_local_port_num = check_ppoll_daemon_ports(passive_regs, task);
+    }
+#endif
     // Special handling for pselect6 syscall - check multiple fds
     else if (passive_syscall_nr == __NR_pselect6 && passive_regs) {
         read_local_port_num = check_pselect6_daemon_ports(passive_regs, task);
@@ -243,7 +267,10 @@ int get_tasks(struct bpf_iter__task *ctx)
                 get_io_uring_pending_counts(ring_file, task,
                                           &storage->state.io_uring_sq_pending,
                                           &storage->state.io_uring_cq_pending,
-                                          NULL, 0, NULL);  // Don't need filename or event in first call
+                                          NULL, 0,
+                                          NULL, 0,
+                                          storage,
+                                          NULL);  // First pass: counts only
             }
         }
     }
@@ -276,8 +303,13 @@ int get_tasks(struct bpf_iter__task *ctx)
                 if ((i_mode & S_IFMT) == S_IFSOCK) {
                     struct socket_info sock_info;
                     if (get_socket_info(file, &sock_info)) {
-                        // Only filter on TCP/UDP sockets
-                        if (sock_info.protocol == IPPROTO_TCP || sock_info.protocol == IPPROTO_UDP) {
+                        if (sock_info.family == AF_UNIX) {
+                            if (is_read_syscall(passive_syscall_nr) && sock_info.unix_peer_pid &&
+                                (sock_info.socket_type == SOCK_STREAM ||
+                                 sock_info.socket_type == SOCK_SEQPACKET)) {
+                                waiting_on_unix_read = true;
+                            }
+                        } else if (sock_info.protocol == IPPROTO_TCP || sock_info.protocol == IPPROTO_UDP) {
                             // If it's a TCP socket in LISTEN state, set special value 1
                             if (sock_info.protocol == IPPROTO_TCP && sock_info.state == TCP_LISTEN) {
                                 read_local_port_num = 1;  // Special value indicating LISTEN socket
@@ -292,9 +324,13 @@ int get_tasks(struct bpf_iter__task *ctx)
     }
 
     // Apply user-controlled interesting task filtering
-    if (!should_emit_task(task_state, passive_syscall_nr, storage->state.aio_inflight_reqs,
-                          storage->state.io_uring_sq_pending, storage->state.io_uring_cq_pending,
-                          read_local_port_num))
+    __s32 emit_reason = should_emit_task(task_state, passive_syscall_nr,
+                                         storage->state.aio_inflight_reqs,
+                                         storage->state.io_uring_sq_pending,
+                                         storage->state.io_uring_cq_pending,
+                                         read_local_port_num,
+                                         waiting_on_unix_read);
+    if (emit_reason <= 0)
         return 0;
 
     // By this point we know the task/state is interesting
@@ -344,6 +380,7 @@ int get_tasks(struct bpf_iter__task *ctx)
     event->pid = task->pid;   // to avoid confusion, use TID and TGID in userspace output
     event->tgid = task->tgid; // kernel pid == TID (thread ID) in userspace for threads
                               // kernel tgid == TGID (thread group ID) for processes
+    event->emit_reason = emit_reason;
 
     // Scheduler state info (volatile fast changing values)
     event->flags = task_flags;
@@ -369,6 +406,23 @@ int get_tasks(struct bpf_iter__task *ctx)
     // which are internal to BPF and never used in userspace
     // This copies ~160 bytes instead of ~2040 bytes (avoiding the large stack arrays)
     event->storage = storage->state; // (shallow) copy the entire task_state struct
+
+    if (event->storage.trace_payload_len > 0) {
+        __s32 payload_sys_nr = event->storage.trace_payload_syscall;
+        bool payload_is_rw = is_read_syscall(payload_sys_nr) || is_write_syscall(payload_sys_nr);
+        bool passive_is_rw = (passive_syscall_nr >= 0) &&
+                             (is_read_syscall(passive_syscall_nr) || is_write_syscall(passive_syscall_nr));
+        bool still_in_syscall = passive_is_rw && (passive_syscall_nr == payload_sys_nr);
+
+        if (!payload_is_rw || event->storage.trace_payload_seq_num == 0 ||
+            (passive_is_rw && !still_in_syscall)) {
+            event->storage.trace_payload_len = 0;
+        } else {
+            storage->state.trace_payload_len = 0;
+            storage->state.trace_payload_syscall = -1;
+            storage->state.trace_payload_seq_num = 0;
+        }
+    }
 
     // if in syscall, read syscall number and args, otherwise skip
     if (passive_syscall_nr >= 0 && passive_regs) {
@@ -406,6 +460,34 @@ int get_tasks(struct bpf_iter__task *ctx)
         __builtin_memcpy(event->exe_file, "[NO_MM]", 8);
     }
 
+    // best-effort argv capture when requested from userspace
+    event->cmdline_len = 0;
+    event->cmdline[0] = '\0';
+
+    if (xcap_capture_cmdline && !(event->flags & PF_KTHREAD)) {
+        struct mm_struct *mm = task->mm;
+
+        if (mm) {
+            unsigned long arg_start = mm->arg_start;
+            unsigned long arg_end = mm->arg_end;
+
+            if (arg_end > arg_start) {
+                __u64 bytes = arg_end - arg_start;
+
+                if (bytes > (MAX_CMDLINE_LEN - 1))
+                    bytes = MAX_CMDLINE_LEN - 1;
+
+                if (bytes > 0) {
+                    if (xcap_copy_from_user_task(event->cmdline, bytes,
+                                                (void *)arg_start, task, 0) == 0) {
+                        event->cmdline[bytes] = '\0';
+                        event->cmdline_len = bytes;
+                    }
+                }
+            }
+        }
+    }
+
     // first reset the output values due to conditional population below (and ringbuf reuse!)
     event->kstack_hash = 0;  // 0 means no stack
     event->ustack_hash = 0;  // 0 means no stack
@@ -415,6 +497,7 @@ int get_tasks(struct bpf_iter__task *ctx)
     event->has_tcp_stats = false;
     event->aio_fd = -1; // Initialize to -1 (no fd)
     event->ur_filename[0] = '\0'; // Initialize io_uring CQE filename
+    event->ur_sq_filename[0] = '\0'; // Initialize io_uring SQE filename
     event->aio_filename[0] = '\0'; // Initialize AIO filename
     event->uring_fd = -1; // Initialize to -1 (no fd)
     event->uring_reg_idx = -1; // Initialize to -1 (not registered)
@@ -423,6 +506,13 @@ int get_tasks(struct bpf_iter__task *ctx)
     event->uring_opcode = 0;
     event->uring_flags = 0;
     event->uring_rw_flags = 0;
+    event->uring_dbg_sq_idx = -1;
+    event->uring_dbg_sq_fixed = 0;
+    event->uring_dbg_sq_user_data = 0;
+    event->uring_dbg_sq_file_ptr = 0;
+    event->uring_dbg_cq_scanned = 0;
+    event->uring_dbg_cq_matched = 0;
+    event->uring_dbg_cq_file_ptr = 0;
 
     // Read file descriptor information for current syscall
     struct file *file = NULL;
@@ -430,11 +520,19 @@ int get_tasks(struct bpf_iter__task *ctx)
     // Special handling for ppoll/pselect6 - get first fd info
     if (passive_syscall_nr == __NR_ppoll && passive_regs) {
         int fd;
-        if (get_ppoll_first_fd_info(passive_regs, task, &fd, &file) == 0) {
+        if (get_ppoll_first_fd_info(passive_regs, task, &fd, &file, NULL) == 0) {
             // Update syscall_args[0] to show the actual fd being monitored
             event->syscall_args[0] = fd;
         }
     }
+#ifdef __NR_poll
+    else if (passive_syscall_nr == __NR_poll && passive_regs) {
+        int fd;
+        if (get_ppoll_first_fd_info(passive_regs, task, &fd, &file, NULL) == 0) {
+            event->syscall_args[0] = fd;
+        }
+    }
+#endif
     else if (passive_syscall_nr == __NR_pselect6 && passive_regs) {
         int fd;
         if (get_pselect6_first_fd_info(passive_regs, task, &fd, &file) == 0) {
@@ -508,8 +606,8 @@ int get_tasks(struct bpf_iter__task *ctx)
         }
     }
 
-    // If we're in io_uring_enter syscall and have pending CQEs, populate ur_filename with last submitted fd
-    if (passive_syscall_nr == __NR_io_uring_enter && storage->state.io_uring_cq_pending > 0 && passive_regs) {
+    // If we're in io_uring_enter syscall, capture one filename sample for SQ and CQ (if present)
+    if (passive_syscall_nr == __NR_io_uring_enter && passive_regs) {
         __u64 ring_fd;
 #if defined(__TARGET_ARCH_x86)
         ring_fd = passive_regs->di;
@@ -531,13 +629,15 @@ int get_tasks(struct bpf_iter__task *ctx)
             }
 
             if (ring_file) {
-                // Call the function again to get SQE filename
                 __u32 sq_pending_dummy, cq_pending_dummy;
                 get_io_uring_pending_counts(ring_file, task,
                                           &sq_pending_dummy,
                                           &cq_pending_dummy,
+                                          event->ur_sq_filename,
+                                          sizeof(event->ur_sq_filename),
                                           event->ur_filename,
                                           sizeof(event->ur_filename),
+                                          storage,
                                           event);
             }
         }
@@ -649,11 +749,11 @@ int get_tasks(struct bpf_iter__task *ctx)
 
                         // Read the stack frame
                         __u64 next_fp, ret_addr;
-                        if (bpf_copy_from_user_task(&next_fp, sizeof(next_fp),
+                        if (xcap_copy_from_user_task(&next_fp, sizeof(next_fp),
                                                     (void *)fp, task, 0) < 0) {
                             break;
                         }
-                        if (bpf_copy_from_user_task(&ret_addr, sizeof(ret_addr),
+                        if (xcap_copy_from_user_task(&ret_addr, sizeof(ret_addr),
                                                     (void *)(fp + 8), task, 0) < 0) {
                             break;
                         }
@@ -681,11 +781,11 @@ int get_tasks(struct bpf_iter__task *ctx)
 
                         // Read the stack frame
                         __u64 next_fp, ret_addr;
-                        if (bpf_copy_from_user_task(&next_fp, sizeof(next_fp),
+                        if (xcap_copy_from_user_task(&next_fp, sizeof(next_fp),
                                                     (void *)fp, task, 0) < 0) {
                             break;
                         }
-                        if (bpf_copy_from_user_task(&ret_addr, sizeof(ret_addr),
+                        if (xcap_copy_from_user_task(&ret_addr, sizeof(ret_addr),
                                                     (void *)(fp + 8), task, 0) < 0) {
                             break;
                         }

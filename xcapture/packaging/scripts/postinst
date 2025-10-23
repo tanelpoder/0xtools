@@ -1,0 +1,62 @@
+#!/bin/sh
+set -e
+
+CONFIG=/etc/xcapture.conf
+CONFIG_EXAMPLE=/etc/xcapture.conf.example
+
+create_group() {
+    if ! getent group "$1" >/dev/null 2>&1; then
+        if command -v groupadd >/dev/null 2>&1; then
+            groupadd --system "$1"
+        fi
+    fi
+}
+
+create_user() {
+    if ! id "$1" >/dev/null 2>&1; then
+        if command -v useradd >/dev/null 2>&1; then
+            useradd --system --no-create-home --home-dir /var/lib/xcapture --shell /usr/sbin/nologin --gid "$1" "$1"
+        fi
+    fi
+}
+
+ensure_config() {
+    if [ -f "$CONFIG_EXAMPLE" ] && [ ! -f "$CONFIG" ]; then
+        cp "$CONFIG_EXAMPLE" "$CONFIG"
+        chmod 0640 "$CONFIG"
+        chown root:xcapture "$CONFIG" 2>/dev/null || true
+    fi
+}
+
+ensure_log_dir() {
+    install -d -m 0750 -o xcapture -g xcapture /var/log/xcapture
+    install -d -m 0750 -o xcapture -g xcapture /var/lib/xcapture
+}
+
+apply_caps() {
+    if command -v setcap >/dev/null 2>&1; then
+        setcap cap_bpf,cap_sys_admin+epi /usr/bin/xcapture || true
+    fi
+}
+
+run_tmpfiles() {
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /usr/lib/tmpfiles.d/xcapture.conf || true
+    fi
+}
+
+reload_systemd() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload || true
+    fi
+}
+
+create_group xcapture
+create_user xcapture
+ensure_config
+ensure_log_dir
+apply_caps
+run_tmpfiles
+reload_systemd
+
+exit 0
