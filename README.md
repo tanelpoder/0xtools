@@ -58,21 +58,22 @@ By default, xcapture prints some of its fields as formatted output to your termi
 ```
 cd xcapture
 make
-sudo ./xcapture
+sudo build/xcapture
 ```
 
-The eventual "always-on" production mode for appending samples to hourly CSV files is enabled by the `-o DIRNAME` option. You can use `-o .` to output to your current directory.
+The "always-on" production mode for appending samples to hourly CSV files is enabled by the `-o DIRNAME` option. You can use `-o .` to output to your current directory.
 
 > While XCapture requires root privileges to load its eBPF programs and do its sampling, the consumers of the output CSV files **do not have to be root**! They can be any regular user who has the Unix filesystem permissions to read the output directory and CSV files. This provides a nice separation of duties. And you can analyze the "dimensional data warehouse" of Linux thread activity from any angle _you_ want, without having to update or change XCapture itself.
 
-You can also run `./xcapture --help` to get some idea of its current functionality.
+You can also run `xcapture --help` to get some idea of its current functionality.
 
 **NB!** While all the syscall & IO _tracking_ action happens automatically in the kernel space, the simulatneous _sampling_ of the tracked events is driven by the userspace `xcapture` program. The thread state sampling loop actually runs completely inside the kernel too, thanks to eBPF _task iterators_, but the invocation and frequency of the sampling is driven by the userspace program.
 
 Therefore it makes sense to schedule the userspace "sampling driver" with a high scheduling priority, to get consistently reoccurring samples from it. I run it like this and recommend that you do too:
 
 ```
-$ sudo TZ=:/etc/localtime chrt -r 30 ./xcapture -vo DIRNAME
+cd build
+sudo TZ=:/etc/localtime chrt -r 30 xcapture -vo DIRNAME
 ```
 
 The `chrt` puts the userspace xcapture program into real-time scheduling class. It's a single, single-threaded prodess and you'll only need to run only one in the host and it can monitor all threads in the system. By default it wakes up once per second and tells the eBPF task iterator to do its sampling, gets results via an eBPF ringbuf and writes the records either to STDOUT or CSV files.
