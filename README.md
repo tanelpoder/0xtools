@@ -1,8 +1,8 @@
-## XCapture v3.0.0-alpha
+## xCapture v3.0.3
 _By Tanel Poder_
-_2025-04-22_
+_2025-10-23_
 
-This is the first ever release of [0x.tools](https://0x.tools) XCapture tool that is built with **modern eBPF**! My previous tools and prototypes were using either _bcc_, _bpftrace_ or were just sampling and aggregating thread level info from _/proc_ files.
+This is the first ever release of [0x.tools](https://0x.tools) xCapture tool that is built with **modern eBPF**! My previous tools and prototypes were using either _bcc_, _bpftrace_ or were just sampling and aggregating thread level info from _/proc_ files.
 
 * [Announcing xCapture v3: Linux Performance Analysis with Modern eBPF and DuckDB](https://tanelpoder.com/posts/xcapture-v3-alpha-ebpf-performance-analysis-with-duckdb/)
 
@@ -10,13 +10,13 @@ This is the first ever release of [0x.tools](https://0x.tools) XCapture tool tha
 
 Modern eBPF means `libbpf`, `CORE`, `BTF`, `BPF iterators`, etc. I'll write about my learning journey with proper thank you notes soon.
 
-In practice this means you'll need to be on a **Linux kernel 5.14** or up. XCapture v3 is a future-facing tool, so I'll invest the time in that direction and not worry about all the legacy systems out there (unlike my approach was with all my previous tools was).
+In practice this means you'll need to be on a **Linux kernel 5.14** or up. xCapture v3 is a future-facing tool, so I'll invest the time in that direction and not worry about all the legacy systems out there (unlike my approach was with all my previous tools was).
 
 This means, RHEL9+ on Linux 5.14, or Oracle Enterprise Linux 8+, as long as you run at least their UEK7 Linux kernel (5.15). Ubuntu has pretty new kernels (and they have the HWE versions), so Ubuntu 20+ with the latest HWE kernel available for it should work. I have done my latest tests on Ubuntu 24.04 on Linux 6.8 though (will keep you updated once I test more).
 
-_**Update** (temporary): I simplified the **xcapture** code as it was riddled with lots of conditionals and #ifdefs for supporting differend older kernel versions. Currently you'd have to be either on a RHEL9 5.14+ kernel or 5.18+ otherwise. I plan to add back older kernel support (notably 5.15 used by Oracle UEK7 kernel and some earlier Ubuntu distros)._
+_Currently you'd have to be either on a RHEL9 5.14+ kernel or 5.18+ otherwise (for all functionality). RedHat backported 6.8 eBPF functionality to their 5.14 kernel (RHEL 9.5 onwards). For older kernels without such backports, notably 5.15 used by Oracle UEK7 kernel and older Ubuntu, use "make old" to build the limited xcapture version._
 
-## Building xcapture-next (v3)
+## Building xcapture v3
 
 ```
 git clone https://github.com/tanelpoder/0xtools.git
@@ -43,17 +43,9 @@ To install required libbpf dependencies for the GitHub repo, run:
 git submodule update --init --recursive
 ```
 
-If you want to run `xtop`, install python dependencies to your personal virtual environment (or use `uv` or `pipx`):
-
-```
-$ . .venv/bin/activate # change to where your venv is
-$ pip install duckdb textual
-```
-
 ## Running xcapture in developer mode
 
 By default, xcapture prints some of its fields as formatted output to your terminal screen:
-
 
 ```
 cd xcapture
@@ -86,7 +78,21 @@ The `TZ:=/etc/localtime` setting gives you two things:
 2) The timezone environment variable also reduces `xcapture` userspace CPU usage, as otherwise it would go and check some `/etc/localtimezone` file or something like that on every `snprintf()` library call.
 
 
+## xtop and demo workload files
+If you want to run `xtop`, install python dependencies to your personal virtual environment (or use `uv` or `pipx`):
+
+```
+. .venv/bin/activate # change to where your venv is
+pip install duckdb textual
+
+cd xtop
+export TERM=xterm-256color
+export XCAPTURE_DATADIR=demo # demo workload files under xtop/demo
+./xtop
+
+```
+
 ## That's all!
 
-Back to [0x.tools](https://0x.tools)
+Follow the news and developments at my blog [tanelpoder.com](https://tanelpoder.com)
 
