@@ -5,6 +5,7 @@ _2025-10-23_
 This is the first ever release of [0x.tools](https://0x.tools) xCapture tool that is built with **modern eBPF**! My previous tools and prototypes were using either _bcc_, _bpftrace_ or were just sampling and aggregating thread level info from _/proc_ files.
 
 * [Announcing xCapture v3: Linux Performance Analysis with Modern eBPF and DuckDB](https://tanelpoder.com/posts/xcapture-v3-alpha-ebpf-performance-analysis-with-duckdb/)
+* [xtop: Dimensional Performance Analysis of Sampled Thread Activity](https://tanelpoder.com/posts/xcapture-xtop-beta/)
 
 ## Requirements
 
