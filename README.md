@@ -31,13 +31,13 @@ Install required system packages for compiling the binary:
 On Ubuntu 20.04+ with HWE kernel 5.15+:
 
 ```
-sudo apt install make gcc pkg-config libbpf-dev libbpf-tools clang llvm libbfd-dev libelf1 libelf-dev zlib1g-dev
+sudo apt install make cmake gcc pkg-config libbpf-dev libbpf-tools clang llvm libbfd-dev libelf1 libelf-dev zlib1g-dev
 ```
 
 On RHEL9 with RHEL 5.14+ kernel (with RedHat backports):
 
 ```
-sudo dnf install libbpf libbpf-tools clang llvm-devel binutils-devel elfutils-libelf elfutils-libelf-devel zlib-devel
+sudo dnf install libbpf libbpf-tools cmake clang llvm-devel binutils-devel elfutils-libelf elfutils-libelf-devel zlib-devel
 ```
 
 To install required libbpf dependencies for the GitHub repo, run:
