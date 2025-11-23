@@ -71,7 +71,7 @@ cd build
 sudo TZ=:/etc/localtime chrt -r 30 xcapture -vo DIRNAME
 ```
 
-The `chrt` puts the userspace xcapture program into real-time scheduling class. It's a single, single-threaded prodess and you'll only need to run only one in the host and it can monitor all threads in the system. By default it wakes up once per second and tells the eBPF task iterator to do its sampling, gets results via an eBPF ringbuf and writes the records either to STDOUT or CSV files.
+The `chrt` puts the userspace xcapture program into real-time scheduling class. It's a single, single-threaded process and you'll only need to run only one in the host and it can monitor all threads in the system. By default it wakes up once per second and tells the eBPF task iterator to do its sampling, gets results via an eBPF ringbuf and writes the records either to STDOUT or CSV files.
 
 The entire sampling loop itself is very quick, from ~100us in my laptop VMs, to ~20ms per wakeup in a large NUMA machine with 384 CPUs. So, XCapture _passive sampling_ at 1Hz without _active tracking_ of event latencies has only taken between 0.01% and 2% _**of a single CPU**__ in my servers! (The _2% of-a-single-CPU_ result is from my AMD EPYC server with 384 CPUs :-)
 
