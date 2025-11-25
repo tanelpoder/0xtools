@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+
+# Copyright 2020 Tanel Poder
+# Copyright 2024 Kristian Rados
+# Licensed under the Apache License, Version 2.0
+
+from datetime import datetime
+import time, re, subprocess, argparse
+
+NANOSECONDS_PER_SEC = 1000000000
+NANOSECONDS_PER_USEC = 1000
+HELP = """SchedLatSys by Kristian Rados and Tanel Poder [https://0x.tools]
+
+%CPU = mean %time spent running tasks on the CPU
+%LAT = mean %time spent waiting in the run queue (scheduler latency) by all tasks, normalized by num tasks
+%SLP = 100 - (%CPU + %LAT)
+"""
+
+
+def main(args):
+    print(HELP)
+    print(u"%s|    RUNQ LAT \u00B5s" % (" " * 42))
+    print(
+        "%-20s %6s %6s %6s | %7s %6s"
+        % ("TIMESTAMP", "%CPU", "%LAT", "%SLP", str(args.interval) + "-sec", "boot")
+    )
+
+    count = 0
+    lat_us_sum = 0
+    try:
+        while not args.count or count < args.count:
+            with open("/proc/schedstat", "r") as f:
+                t1 = time.time()
+                (cpu_ns1, lat_ns1, slices1) = parse_schedstat(f.read())
+
+                time.sleep(args.interval)
+                f.seek(0)
+
+                t2 = time.time()
+                (cpu_ns2, lat_ns2, slices2) = parse_schedstat(f.read())
+
+            cpu = (cpu_ns2 - cpu_ns1) / (t2 - t1) / NANOSECONDS_PER_SEC * 100
+
+            ps = subprocess.Popen(("ps", "-e", "--no-headers"), stdout=subprocess.PIPE)
+            num_tasks = subprocess.check_output(["wc", "-l"], stdin=ps.stdout)
+
+            lat_all = lat_ns2 - lat_ns1
+            lat_norm = lat_all / int(num_tasks)
+            lat = lat_norm / (t2 - t1) / NANOSECONDS_PER_SEC * 100
+
+            lat_us = (lat_ns2 - lat_ns1) / (slices2 - slices1) / NANOSECONDS_PER_USEC
+            lat_us_boot = lat_ns2 / slices2 / NANOSECONDS_PER_USEC
+
+            lat_us_sum += lat_us
+            count += 1
+
+            debug_str = (
+                ""
+                if not args.verbose
+                else "  (%.6f ms avg wait time in %.6f s normalized by num tasks, i.e. %.6f / %d)"
+                % (
+                    (lat_norm) / 1000000,
+                    t2 - t1,
+                    lat_all / 1000000,
+                    int(num_tasks),
+                )
+            )
+            print(
+                "%-20s %6.2f %6.2f %6.2f | %7.2f %6.2f%s"
+                % (
+                    datetime.fromtimestamp(t2).strftime("%Y-%m-%d %H:%M:%S"),
+                    cpu,
+                    lat,
+                    100 - (cpu + lat),
+                    lat_us,
+                    lat_us_boot,
+                    debug_str,
+                )
+            )
+    except KeyboardInterrupt:
+        print()
+
+    print(u"Mean RUNQ LAT: %.2f \u00B5s" % (lat_us_sum / count))
+
+
+def parse_schedstat(text):
+    cpus = re.findall(
+        "cpu(?:\d+) (?:\d+ ){6}(?P<run>\d+) (?P<wait>\d+) (?P<slices>\d+)", text
+    )
+
+    cpu_ns, wait_ns, slices = 0, 0, 0
+    for cpu in cpus:
+        cpu_ns += int(cpu[0])
+        wait_ns += int(cpu[1])
+        slices += int(cpu[2])
+
+    cpu_ns /= len(cpus)
+    # Mean time all tasks spent waiting on the run queue across all CPUs
+    wait_ns /= len(cpus)
+    slices /= len(cpus)
+
+    return cpu_ns, wait_ns, slices
+
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-i",
+        "--interval",
+        type=int,
+        default=1,
+        help="how long to sleep in seconds before measuring /proc/schedstat",
+    )
+    parser.add_argument(
+        "-c",
+        "--count",
+        type=int,
+        default=None,
+        help="number of intervals to track before stopping",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="display info regarding the calculation of %%LAT",
+    )
+
+    args = parser.parse_args()
+    return args
+
+
+if __name__ == "__main__":
+    main(get_args())
