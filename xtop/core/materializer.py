@@ -140,7 +140,7 @@ class DataMaterializer:
                 SELECT
                     REGEXP_EXTRACT_ALL(column0, ' +(\\w+)') field_list
                 FROM
-                    read_csv('{self.datadir}/partitions', skip=1, header=false)
+                    read_csv('/proc/partitions', skip=1, header=false)
                 WHERE
                     field_list IS NOT NULL
             )

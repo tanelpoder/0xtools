@@ -254,12 +254,12 @@ class XCaptureDataSource:
         Read partitions file to map device numbers to names.
         Returns dict: {major:minor -> device_name}
         """
-        partitions_file = self.datadir / 'partitions'
+        partitions_file = Path('/proc/partitions')
         device_map = {}
-        
+
         if not partitions_file.exists():
             return device_map
-        
+
         try:
             with open(partitions_file, 'r') as f:
                 # Skip header line
@@ -273,7 +273,7 @@ class XCaptureDataSource:
                         device_map[f"{major}:{minor}"] = name
         except Exception:
             pass
-        
+
         return device_map
     
     def __enter__(self):
