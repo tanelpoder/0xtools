@@ -1,5 +1,8 @@
-#!/usr/bin/env python
-#
+#!/usr/bin/env python2
+
+# use the following line on RHEL5 (if you have the additional python26 package installed from EPEL):
+##!/usr/bin/env python26 
+
 #  psn -- Linux Process Snapper by Tanel Poder [https://0x.tools]
 #  Copyright 2019-2021 Tanel Poder
 #
