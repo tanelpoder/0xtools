@@ -88,6 +88,13 @@ If you want to run `xtop`, install python dependencies to your personal virtual 
 . .venv/bin/activate # change to where your venv is
 pip install duckdb textual
 
+# xtop expects to find the partitions data source
+# in $data_dir/partitions, currently we need to
+# manually creating a symlink to /proc/partitions,
+# replace /var/lib/xcapture to your data_dir if not
+# using the default.
+ln -s /var/lib/xcapture/partitions /proc/partitions
+
 cd xtop
 export TERM=xterm-256color
 export XCAPTURE_DATADIR=demo # demo workload files under xtop/demo
