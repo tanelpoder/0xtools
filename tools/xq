@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# Rudimentary "frontend" for querying xcapture output CSV data using DuckDB and
+# any template queries in the /next/tools/sql directory
+
+# bail out on any error
+set -e
+
+if [ $# -lt 3 ]; then
+    echo "Usage:   $0 <REPORTQUERY> <GROUPBY> <FILTER> [LOW_TIME] [HIGH_TIME]"
+    echo "Example: $0 sclathist \"status,username,exe,syscall,filename\" \"state='DISK'\""
+    echo
+    echo "Time arguments can be:"
+    echo "  - Date command offsets (e.g., -5M for 5 minutes ago)"
+    echo "  - Explicit timestamps (e.g., \"2025-03-17 09:00:00\")"
+    echo
+    echo "Examples with time:"
+    echo "  $0 sclathist \"state,exe,syscall,filename\" \"username='mysql'\" -5M"
+    echo "  $0 sclathist \"state,exe,syscall,filename\" \"syscall LIKE 'p%64'\" -2H -1H"
+    echo "  $0 sclathist \"state,exe,syscall,filename\" \"exe='oracle'\" \"2025-03-17 09:00:00\" \"2025-03-17 10:00:00\""
+    exit 1
+fi
+
+TEMPLATE="$1"
+GROUPBY="$2"
+FILTER="$3"
+
+# if datadir env var is not set, read CSV files from current dir
+DATADIR="${DATADIR:-.}"
+
+# where the xq script resides, the sql templates are in "sql" dir under it for now
+BASENAME="$(dirname "$(realpath "$0")")"
+
+# Function to process timestamp - handles both date offsets and explicit timestamps
+process_timestamp() {
+    local time_arg="$1"
+
+    # Check if the argument looks like a date offset (starts with + or -)
+    if [[ "$time_arg" =~ ^[+-] ]]; then
+        # It's a date offset, use the date command
+        # date --date "$time_arg" +"%Y-%m-%d %H:%M:%S"
+        date -v "$time_arg" +"%Y-%m-%d %H:%M:%S"
+    else
+        # It's an explicit timestamp, return as is
+        echo "$time_arg"
+    fi
+}
+
+# Process low timestamp if provided, otherwise read from 1 minute ago
+if [ $# -ge 4 ]; then
+    LOW_TIME=$(process_timestamp "$4")
+else
+    LOW_TIME=$(process_timestamp "-1M")
+fi
+
+# Process high timestamp if provided, otherwise use current time
+if [ $# -ge 5 ]; then
+    HIGH_TIME=$(process_timestamp "$5")
+else
+    HIGH_TIME=$(process_timestamp "+0S")
+fi
+
+echo
+echo "[0x.tools] Xcapture Query: Time from $LOW_TIME to $HIGH_TIME"
+echo
+
+# slashes in DATADIR path must be escaped for sed variable substitution
+ESCAPED_DATADIR=$(printf '%s\n' "$DATADIR" | sed 's/\//\\\//g')
+
+sed -e 's/#XTOP_GROUP_COLS#/'"${GROUPBY}"'/g' \
+    -e 's/#XTOP_WHERE#/'"${FILTER}"'/g' \
+    -e 's/#XTOP_LOW_TIME#/'"${LOW_TIME}"'/g' \
+    -e 's/#XTOP_HIGH_TIME#/'"${HIGH_TIME}"'/g' \
+    -e 's/#XTOP_DATADIR#/'"${ESCAPED_DATADIR}"'/g' \
+    "${BASENAME}/sql/${TEMPLATE}.sql" > ${BASENAME}/sql/out.sql
+
+# cat ${BASENAME}/sql/out.sql
+
+duckdb -f ${BASENAME}/sql/out.sql
+
+# rm ${BASENAME}/sql/out.sql
+echo

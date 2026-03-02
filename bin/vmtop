@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# This tool is part of https://0x.tools
+
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 SLEEP_SECONDS"
+  exit 1
+fi
+
+F1=/tmp/vmtop1.$$.tmp
+F2=/tmp/vmtop2.$$.tmp
+
+cat /proc/vmstat > $F2
+
+while true ; do
+    clear
+    echo `date` "    [0x.tools vmtop]"
+    echo
+    printf "%-32s %16s %16s %16s %16s\n" "METRIC" "DELTA" "DELTA_KB" "CURRENT" "CURRENT_MB"
+    printf "%-32s %16s %16s %16s %16s\n" "-------------------------------" "----------------" "----------------" "----------------" "----------------"
+    mv $F2 $F1
+    cat /proc/vmstat > $F2
+    join $F1 $F2 | grep ^nr | awk '{ printf("%-32s %16d %\47 16i %\47 16i %\47 16i\n", $1,$3-$2, ($3-$2)*4, $3, $3*4/1024) }' | grep -v ' 0 '
+    sleep $1 
+done
+
+
+# TODO trap CTRL-C remove file
+

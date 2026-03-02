@@ -1,0 +1,740 @@
+#!/usr/bin/env python3
+
+#  xcapture-bpf -- Always-on profiling of Linux thread activity, by Tanel Poder [https://tanelpoder.com]
+#  Copyright 2024 Tanel Poder
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License along
+#  with this program; if not, write to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+#  SPDX-License-Identifier: GPL-2.0-or-later
+
+__version__      = "2.0.3"
+__author__       = "Tanel Poder"
+__date__         = "2024-06-27"
+__description__  = "Always-on profiling of Linux thread activity using eBPF."
+__url__          = "https://0x.tools"
+
+DEFAULT_GROUP_BY = "st,username,comm,syscall" # for xtop mode
+DECODE_CHARSET   = "utf-8"
+XTOP_MAX_LINES   = 25 # how many top output lines to print
+BLOCK_CHARS      = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'] # for fancy viz
+
+import os, sys, io, pwd, time, ctypes, platform, re, shutil, argparse, signal
+from collections import defaultdict
+from datetime import datetime
+from bcc import BPF, PerfType, PerfSWConfig
+
+# distro package might not be present
+try:
+    import distro
+except ImportError:
+    distro = None
+    pass
+
+# all available fields with descriptions (if you add more fields to thread_state_t in BPF/C, add them here)
+available_fdescr = [ ('timestamp' , 'sample timestamp')
+                   , ('st'        , 'short thread state')
+                   , ('tid'       , 'thread/task id')
+                   , ('pid'       , 'process/thread group id')
+                   , ('username'  , 'username or user id if not found')
+                   , ('comm'      , 'task comm digits deduplicated')
+                   , ('comm2'     , 'task comm actual') 
+                   , ('syscall'   , 'system call')
+                   , ('cmdline'   , 'argv0 command line digits deduplicated')
+                   , ('cmdline2'  , 'argv0 command line actual')
+                   , ('offcpu_u'  , 'user stack id when thread went off CPU')
+                   , ('offcpu_k'  , 'kernel stack id when thread went off CPU')
+                   , ('oncpu_u'   , 'recent user stack id if the thread was on CPU')
+                   , ('oncpu_k'   , 'recent kernel stack id if the thread was on CPU')
+                   , ('waker_tid' , 'thread ID that woke up this thread last')
+                   , ('sch'       , 'thread state flags for scheduler nerds')
+                   , ('oracle_wait_event', 'oracle wait event name')
+                   , ('debug_ret' , 'debug return')
+                   ]
+
+available_fields = []
+for f in available_fdescr:
+    available_fields.append(f[0])
+
+# default output fields for ungrouped full detail output
+output_fields = [ 'timestamp', 'st', 'tid', 'pid', 'username', 'comm', 'syscall', 'cmdline'
+                , 'offcpu_u', 'offcpu_k', 'oncpu_u', 'oncpu_k', 'waker_tid', 'sch' ]
+
+
+# syscall id to name translation (todo: fix aarch64 include file lookup)
+def extract_system_call_ids(unistd_64_fh):
+    syscall_id_to_name = {}
+
+    # strip 3264bit prefixes from syscall names
+    for name_prefix in ['__NR_', '__NR3264_']:
+        for line in unistd_64_fh.readlines():
+            tokens = line.split()
+            if tokens and len(tokens) == 3 and tokens[0] == '#define' and tokens[2].isnumeric() is True:
+                _, s_name, s_id = tokens
+                s_id = int(s_id)
+                if s_name.startswith(name_prefix):
+                    s_name = s_name[len(name_prefix):]
+                    syscall_id_to_name[s_id] = s_name
+
+    return syscall_id_to_name
+
+def get_system_call_names():
+    psn_dir=os.path.dirname(os.path.realpath(__file__))
+    kernel_ver=platform.release().split('-')[0]
+
+    # this probably needs to be improved for better platform support
+    if platform.machine() == 'aarch64':
+        unistd_64_paths = ['/usr/include/asm-generic/unistd.h']
+    else:
+        unistd_64_paths = [  '/usr/include/asm/unistd_64.h', '/usr/include/x86_64-linux-gnu/asm/unistd_64.h'
+                           , '/usr/include/asm-x86_64/unistd.h', '/usr/include/asm/unistd.h'
+                           , psn_dir+'/syscall_64_'+kernel_ver+'.h', psn_dir+'/syscall_64.h']
+    
+    for path in unistd_64_paths:
+        try:
+            with open(path) as f:
+                return extract_system_call_ids(f)
+        except IOError as e:
+            pass
+
+    raise Exception('unistd_64.h not found in' + ' or '.join(unistd_64_paths) + '.\n' +
+                    '           You may need to "dnf install kernel-headers" or "apt-get install libc6-dev"\n') 
+
+# syscall lookup table
+syscall_id_to_name = get_system_call_names()
+
+
+# task states
+TASK_RUNNING           =   0x00000000
+TASK_INTERRUPTIBLE     =   0x00000001
+TASK_UNINTERRUPTIBLE   =   0x00000002
+TASK_STOPPED           =   0x00000004
+TASK_TRACED            =   0x00000008
+
+EXIT_DEAD              =   0x00000010
+EXIT_ZOMBIE            =   0x00000020
+EXIT_TRACE             =   (EXIT_ZOMBIE | EXIT_DEAD)
+
+TASK_PARKED            =   0x00000040
+TASK_DEAD              =   0x00000080
+TASK_WAKEKILL          =   0x00000100
+TASK_WAKING            =   0x00000200
+TASK_NOLOAD            =   0x00000400
+TASK_NEW               =   0x00000800
+TASK_RTLOCK_WAIT       =   0x00001000
+TASK_FREEZABLE         =   0x00002000
+TASK_FREEZABLE_UNSAFE  =   0x00004000 # depends on: IS_ENABLED(CONFIG_LOCKDEP)
+TASK_FROZEN            =   0x00008000
+TASK_STATE_MAX         =   0x00010000 # as of linux kernel 6.9
+
+##define TASK_STATE_TO_CHAR_STR "RSDTtXZxKWPN"
+
+task_states = {
+    0x00000000: "R", # "RUNNING",
+    0x00000001: "S", # "INTERRUPTIBLE",
+    0x00000002: "D", # "UNINTERRUPTIBLE",
+    0x00000004: "T", # "STOPPED",
+    0x00000008: "t", # "TRACED",
+    0x00000010: "X", # "EXIT_DEAD",
+    0x00000020: "Z", # "EXIT_ZOMBIE",
+    0x00000040: "P", # "PARKED",
+    0x00000080: "dd",# "DEAD",
+    0x00000100: "wk",# "WAKEKILL",
+    0x00000200: "wg",# "WAKING",
+    0x00000400: "I", # "NOLOAD",
+    0x00000800: "N", # "NEW",
+    0x00001000: "rt",# "RTLOCK_WAIT",
+    0x00002000: "fe",# "FREEZABLE",
+    0x00004000: "fu",# "__TASK_FREEZABLE_UNSAFE = (0x00004000 * IS_ENABLED(CONFIG_LOCKDEP))"
+    0x00008000: "fo",# "FROZEN"
+}
+
+
+def get_task_state_name(task_state):
+    if task_state == 0:
+        return "R"
+    if task_state & TASK_NOLOAD: # idle kthread waiting for work
+        return "I"
+
+    names = []
+    for state, name in task_states.items():
+        if task_state & state:
+            names.append(name)
+
+    return "+".join(names)
+    
+
+# is task state interesting ("active") according to your rules
+#   mode=active: any states that should be captured and printed out (including perf/on-cpu samples)
+#   mode=offcpu: states that are relevant for offcpu stack printing (the BPF program doesn't clear up previous offcpu stackids)
+#   mode=oncpu:  states that are relevant for on-cpu stack printing (don't print previous oncpu stacks if a task sample is not on CPU)
+def is_interesting(st, syscall, comm, mode="active"):
+    if mode == "active":
+        if st[0] in ['R','D', 'T', 't']:
+            return True
+        if st[0] == 'S':
+            if current_syscall == 'io_getevents' and comm.startswith('ora'):
+                return True 
+
+    if mode == "offcpu":
+        if st[0] in ['D', 'T', 't'] or st.startswith('RQ'): # there may be occasinal states like "D+wk" reported
+            return True
+        if st[0] == 'S':
+            if current_syscall == 'io_getevents' and comm.startswith('ora'):
+                return True 
+
+    if mode == "oncpu":
+        if st[0] == 'R':
+            return True
+
+    return False
+
+# translate uid to username (no container/uid namespace support right now)
+def get_username(uid):
+    try:
+        username = pwd.getpwuid(uid).pw_name
+        return username
+    except KeyError:
+        return str(uid)
+
+
+
+def print_fields(rows, columns, linelimit=0):
+    columns = [col.rstrip() for col in columns] # strip as colname might have extra spaces passed in for width/formatting
+    col_widths = {}
+    # column width auto-sizing
+    for col in columns:
+        col_length = len(col) # the col may have extra trailing spaces as a formatting directive
+        max_value_length = max((len(str(row[col])) for row in rows if col in row), default=0)
+        col_widths[col] = max(col_length, max_value_length)
+
+    header1 = "=== Active Threads "
+    header2 = " | ".join(f"{col:<{col_widths[col]}}" for col in columns)
+
+    print(header1 + "=" * (len(header2) - len(header1)) + "\n")
+    print(header2)
+    print("-" * len(header2))
+
+    for i, row in enumerate(rows):
+        line = " | ".join(
+            f"{row[col]:>{col_widths[col]}.2f}" if col in ["seconds", "samples", "avg_thr"] 
+                                                else f"{str(row[col]):<{col_widths[col]}}"
+            if col in row else ' ' * col_widths[col] for col in columns
+        )
+        print(line)
+
+        # dont break out if linelimit is at its default 0
+        if linelimit and i >= linelimit - 1:
+            break
+
+def print_header_csv(columns):
+    header = ",".join(f"{col.upper()}" for col in columns)
+    print(header)
+
+def print_fields_csv(rows, columns):
+    for i, row in enumerate(rows):
+        line = ",".join(f"{row[col]}" for col in columns)
+    print(line)
+
+def get_ustack_traces(ustack_traces, ignore_ustacks={}, strip_args=True):
+    exclusions = ['__GI___clone3']
+    dedup_map = {}
+    lines = []
+
+    for stack_id, pid in output_ustack:
+        if stack_id and stack_id >= 0 and stack_id not in ignore_ustacks:   # todo: find why we have Null/none stackids in this map
+            line = f"ustack {stack_id:6} "
+            stack = list(ustack_traces.walk(stack_id))
+            for addr in reversed(stack): # reversed(stack):
+                func_name = b.sym(addr, pid).decode(DECODE_CHARSET, 'replace')
+                if func_name not in exclusions:
+                    if strip_args:
+                        func_name = re.split('[<(]', func_name)[0]
+                    line += "->" + (func_name if func_name != '[unknown]' else '{:x}'.format(addr))
+
+            dedup_map[stack_id] = line
+
+    for stack_id in sorted(dedup_map):
+        lines.append(dedup_map[stack_id])
+
+    return lines
+
+def get_kstack_traces(kstack_traces, ignore_kstacks={}):
+    exclusions = ['entry_SYSCALL_64_after_hwframe', 'do_syscall_64', 'x64_sys_call'
+                 , 'ret_from_fork_asm', 'ret_from_fork', '__bpf_trace_sched_switch', '__traceiter_sched_switch'
+                 , 'el0t_64_sync', 'el0t_64_sync_handler', 'el0_svc', 'do_el0_svc', 'el0_svc_common', 'invoke_syscall' ]
+    lines = []
+ 
+    for k, v in kstack_traces.items():
+        stack_id = k.value
+        if stack_id in output_kstack and stack_id not in ignore_kstacks:
+            line = f"kstack {stack_id:6} "
+            if stack_id >= 0:
+                stack = list(kstack_traces.walk(stack_id))
+               
+                for addr in reversed(stack):
+                    func = b.ksym(addr).decode(DECODE_CHARSET, 'replace')
+                    if func not in exclusions and not func.startswith('bpf_'):
+                        line += "->" + b.ksym(addr).decode(DECODE_CHARSET, 'replace')
+
+                lines.append(line)
+        
+    return lines
+
+
+def pivot_stack_traces(traces):
+    pivoted_traces = []
+    for trace in traces:
+        parts = trace.split("->")
+        pivoted_traces.append(parts)
+    
+    max_length = max(len(trace) for trace in pivoted_traces)
+    for trace in pivoted_traces:
+        while len(trace) < max_length:
+            trace.append("")
+    
+    return pivoted_traces
+
+def calculate_columns(pivoted_traces, max_line_length):
+    max_length = max(len(part) for trace in pivoted_traces for part in trace)
+    return max(1, max_line_length // (max_length + 3))
+
+def print_pivoted_dynamic(traces, max_line_length):
+    num_traces = len(traces)
+    start = 0
+    
+    while start < num_traces:
+        end = start + 1
+        while end <= num_traces:
+            subset_traces = traces[start:end]
+            pivoted_traces = pivot_stack_traces(subset_traces)
+            num_columns = calculate_columns(pivoted_traces, max_line_length)
+            
+            if num_columns < end - start:
+                break
+            
+            end += 1
+
+        end -= 1
+        subset_traces = traces[start:end]
+        pivoted_traces = pivot_stack_traces(subset_traces)
+        
+        max_length = max(len(part) for trace in pivoted_traces for part in trace)
+        
+        print("-" * max_line_length)
+        for row in zip(*pivoted_traces):
+            print(" | ".join(f"{part:<{max_length}}" for part in row) + ' |')
+        
+        start = end
+
+# stack printing and formatting choice driver function
+def print_stacks_if_nerdmode():
+    if args.giant_nerd_mode and stackmap:
+        # printing stacktiles first, so the task state info is in the bottom of terminal output
+        (term_width, term_height) = shutil.get_terminal_size()
+
+        print_pivoted_dynamic(get_kstack_traces(stackmap), max_line_length=term_width)
+        print()
+
+        print_pivoted_dynamic(get_ustack_traces(stackmap), max_line_length=term_width)
+        print()
+
+    if args.nerd_mode:
+        for s in get_kstack_traces(stackmap): 
+            print(s)
+        print()
+        for s in get_ustack_traces(stackmap): 
+            print(s)
+
+# group by for reporting
+def group_by(records, column_names, sample_attempts_in_set, time_range_in_set):
+    total_records = len(records)
+    grouped_data = defaultdict(lambda: {'samples': 0})
+
+    for record in records:
+        key = tuple(record[col] for col in column_names)
+        if key not in grouped_data:
+            grouped_data[key].update({col: record[col] for col in column_names})
+        grouped_data[key]['samples'] += 1
+
+    grouped_list = list(grouped_data.values())
+
+    for item in grouped_list:
+        item['avg_thr'] = round(item['samples'] / sample_attempts_in_set, 2)
+        item['seconds'] = round(item['samples'] * (time_range_in_set / sample_attempts_in_set), 2)
+
+        # fancy viz
+        pct = item['samples'] / total_records
+        full_blocks = int(pct * 10)
+        remainder = (pct * 80) % 8
+        visual = '█' * full_blocks
+        if remainder > 0:
+            visual += BLOCK_CHARS[int(remainder)]
+        item['visual_pct'] = visual
+        #ascii also possible
+        #item['visual_pct'] = '#' * int(pct * 10)
+                 
+
+    return grouped_list
+
+
+# main()
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+# args 
+parser = argparse.ArgumentParser(description=__description__)
+parser.add_argument('-x', '--xtop', action='store_true', help='Run in aggregated top-thread-activity (xtop) mode')
+parser.add_argument('-d', dest="report_seconds", metavar='report_seconds', type=int, default=5, help='xtop report printing interval (default: %(default)ds)')
+parser.add_argument('-f', '--sample-hz', default=20, type=int, help='xtop sampling frequency in Hz (default: %(default)d)')
+parser.add_argument('-g', '--group-by', metavar='csv-columns', default=DEFAULT_GROUP_BY, help='Full column list what to group by')
+parser.add_argument('-G', '--append-group-by', metavar='append-csv-columns', default=None, help='List of additional columns to default cols what to group by')
+parser.add_argument('-n', '--nerd-mode', action='store_true', help='Print out relevant stack traces as wide output lines')
+parser.add_argument('-N', '--giant-nerd-mode', action='store_true', help='Print out relevant stack traces as stacktiles')
+parser.add_argument('-c', '--clear-screen', action='store_true', help='Clear screen before printing next output')
+parser.add_argument('-V', '--version', action='version', version=f"%(prog)s {__version__} by {__author__} [{__url__}]", help='Show the program version and exit')
+parser.add_argument('-o', '--output-dir', type=str, default=None, help=f'Directory path where to write the output CSV files')
+parser.add_argument('-l', '--list', default=None, action='store_true', help='list all available columns for display and grouping')
+
+args = parser.parse_args()
+
+if args.list:
+    for f in available_fdescr:
+        print(f'{f[0]:15} {f[1]}')
+    sys.exit(0)
+
+if args.clear_screen and args.output_dir:
+    print("Error: --clear-screen (interactive) and --output-dir (continuous logging) are mutually exclusive, use only one option.")
+    sys.exit(1)
+
+# handle xtop -g and -G group by columns (and same -g/-G options work for non-xtop output col addition too)
+# args.group_by defaults to DEFAULT_GROUP_BY
+groupby_fields = args.group_by.split(',')
+
+if args.xtop:
+    groupby_fields = groupby_fields + args.append_group_by.split(',') if args.append_group_by else groupby_fields
+    used_fields = groupby_fields # todo
+else:
+    output_fields = output_fields + args.append_group_by.split(',') if args.append_group_by else output_fields
+    used_fields = output_fields
+
+if set(used_fields) - set(available_fields):
+    print("Error: incorrect group by field name specified, use --list option see allowed columns")
+    exit(1)
+
+# eBPF programs have be loaded as root
+if os.geteuid() != 0:
+    print("Error: you need to run this command as root")
+    sys.exit(1)
+
+# ready to go
+progname  = "xtop" if args.xtop else "xcapture-bpf"
+kernname  = platform.release().split('-')[0]
+archname  = platform.machine()
+distroid  = distro.id().title() if distro else ''
+distrover = distro.version() if distro else ''
+sf        = None # fd for separate stackfile in continuous csv sampling mode
+
+print(f'=== [0x.tools] {progname} {__version__} BETA by {__author__}. {distroid} Linux {distrover} {kernname} {archname}')
+
+# open and load the BPF instrumenter
+with open(os.path.dirname(os.path.abspath(__file__)) + '/xcapture-bpf.c', 'r') as file:
+    bpf_text = file.read()
+
+# set up global variables for conditionally inserting stack capture code
+offcpu_u = 'offcpu_u' in used_fields
+offcpu_k = 'offcpu_k' in used_fields
+offcpu_stacks = offcpu_u or offcpu_k
+oncpu_stacks = ('oncpu_u' in used_fields or 'oncpu_k' in used_fields)
+cmdline = ('cmdline' in used_fields or 'cmdline2' in used_fields)
+
+# dynamic compilation of features that are needed
+ifdef = ''
+if offcpu_u:
+    ifdef += '#define OFFCPU_U 1\n'
+if offcpu_k:
+    ifdef += '#define OFFCPU_K 1\n'
+if offcpu_stacks:
+    ifdef += '#define OFFCPU_STACKS 1\n'
+if oncpu_stacks:
+    ifdef += '#define ONCPU_STACKS 1\n'
+if cmdline:
+    ifdef += '#define CMDLINE 1\n'
+
+
+print('===  Loading BPF...')
+b = BPF(text= ifdef + bpf_text)
+
+# Software CPU_CLOCK is useful in cloud & VM environments where perf hardware events 
+# are not available, but software clocks don't measure what happens when CPUs are in 
+# critical sections when most interrupts are disabled
+b.attach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK
+                    , fn_name="update_cpu_stack_profile"
+                    , sample_freq=2) # args.sample_hz if args.xtop else 1
+
+# Oracle wait event example. sym_off=2 due to two NOPs at the entry of functions
+oracle_binary = "/u01/app/oracle/product/19.0.0/dbhome_1/bin/oracle"
+b.attach_uprobe(name=oracle_binary, sym="kskthbwt", sym_off=2, fn_name="uprobe_kskthbwt")
+b.attach_uprobe(name=oracle_binary, sym="kskthewt", sym_off=2, fn_name="uprobe_kskthewt")
+
+
+# start sampling the Task State Array
+tsa = b.get_table("tsa")
+
+if oncpu_stacks or offcpu_stacks:
+    stackmap  = b.get_table("stackmap")
+else:
+    stackmap = {}
+
+# get own pid so to not display it in output
+mypid = os.getpid()
+print(f"===  Ready (mypid {mypid})\n")
+
+# regex for replacing digits in "comm" for better grouping and reporting (comm2 shows original)
+trim_comm = re.compile(r'\d+')
+
+written_kstacks = {} # stack ids already written to csv (in -o mode)
+written_ustacks = {}
+
+first_report_printed = False # show first xtop report quicker
+csv_header_printed   = False
+
+while True:
+    try:
+        output_kstack = {} # map of stack_ids seen so far
+        output_ustack = {}
+        output_records = []
+    
+        sample_start = time.time()
+        duration = (args.report_seconds if args.xtop and first_report_printed else 1)
+        sample_end = sample_start + duration # todo: 1 Hz for raw/csv output for now
+        first_report_printed = True
+        samples_attempted = 0 # not all TSA samples contain active threads of interest, this tells us how many samples we really took
+    
+        while time.time() < sample_end:
+            samples_attempted += 1
+            ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            i = tsa.items()[0]
+    
+            for i in tsa.items():
+                save_record = True
+                # extract python values from BPF ctypes, return '-' if there's no match
+                fields_dict = {field[0]: getattr(i[1], field[0], '-') for field in i[1]._fields_}
+    
+                if fields_dict['tid'] == mypid:
+                    continue
+    
+                # additional fields for adding human readable info (not using None as it would be printed out as "None")
+                fields_dict['st']          = ''
+                fields_dict['sch']         = '' # for scheduler nerds
+                fields_dict['state_flags'] = '' # full scheduler state bitmap
+                fields_dict['username']    = ''
+                fields_dict['syscall']     = ''
+                fields_dict['comm2']       = ''
+                fields_dict['cmdline2']    = ''
+     
+                current_syscall   = syscall_id_to_name.get(fields_dict['syscall_id'], '-') if fields_dict['syscall_set'] else '-'
+                comm              = str(fields_dict['comm'], DECODE_CHARSET)
+
+                in_sched_migrate  = fields_dict['in_sched_migrate']
+                in_sched_wakeup   = fields_dict['in_sched_wakeup']
+                in_sched_waking   = fields_dict['in_sched_waking']
+                is_running_on_cpu = fields_dict['is_running_on_cpu']
+
+                # we use state for conditionally printing out things like offcpu_stack etc
+                state_suffix = ''
+                state = get_task_state_name(fields_dict['state'])
+
+                if state == 'R' and not is_running_on_cpu: # runnable on runqueue
+                    state += 'Q'
+
+                enriched_fields = {"timestamp": ts[:-3]}
+    
+                for field_name in fields_dict:
+                    if not field_name in used_fields:
+                        continue
+
+                    outv = None # enriched value
+                    if field_name in ['state', 'st']:
+                        if is_interesting(state, current_syscall, comm):
+                            outv = state
+                        else:
+                            save_record = False
+                            break
+    
+                    elif field_name.startswith('comm'):
+                        val = fields_dict['comm'] # source field is "comm" regardless of potential comm2 output field name
+                        if isinstance(val, bytes):
+                            outv = str(val, DECODE_CHARSET)
+                        else:
+                            outv = str(val)
+                        if field_name == 'comm':  # only trim "comm", but not comm2 that is the unaltered string
+                            outv = re.sub(trim_comm, '*', outv)
+    
+                    elif field_name.startswith('cmdline'):
+                        val = fields_dict['cmdline']
+                        if isinstance(val, bytes):
+                            outv = str(val, DECODE_CHARSET)
+                        else:
+                            outv = str(val)
+                        if field_name == 'cmdline':
+                            outv = re.sub(trim_comm, '*', outv)
+    
+                    elif field_name == 'syscall':
+                        outv = current_syscall 
+    
+                    elif field_name == 'username':
+                        outv = get_username(fields_dict['uid']) 
+    
+                    elif field_name == ('offcpu_k'):   # kstack id
+                        val = fields_dict[field_name]
+                        # runnable state can be R or RQ: RQ is also off CPU, so will capture it
+                        if is_interesting(state, current_syscall, comm, 'offcpu') and val > 0:  
+                            outv = val
+                            output_kstack[val] = True
+                        else:
+                            outv = '-'
+    
+                    elif field_name == ("offcpu_u"):   # ustack id
+                        val = fields_dict[field_name]
+                        if is_interesting(state, current_syscall, comm, 'offcpu') and val > 0:
+                            outv = val
+                            # using pid/tgid here, address space is same for all threads in a process
+                            output_ustack[val, fields_dict['pid']] = True  
+                        else:
+                            outv = '-'
+
+                    elif field_name == ('oncpu_k'):
+                        val = fields_dict[field_name]
+                        # only print the perf-cpu samples when actually caught on cpu (not runqueue) for now
+                        if is_interesting(state, current_syscall, comm, 'oncpu') and val > 0: 
+                            outv = val
+                            output_kstack[val] = True
+                        else:
+                            outv = '-'
+
+                    elif field_name == ("oncpu_u"):
+                        val = fields_dict[field_name]
+                        if is_interesting(state, current_syscall, comm, 'oncpu') and val > 0:
+                            outv = val
+                            # using pid/tgid here, address space is same for all threads in a process
+                            output_ustack[val, fields_dict['pid']] = True  
+                        else:
+                            outv = '-'
+    
+                    elif field_name == 'sch': 
+                        # (in_sched_waking, in_sched_wakeup, is_running_on_cpu)
+                        outv  = '-' if in_sched_migrate  else '_'
+                        outv += '-' if in_sched_waking   else '_'
+                        outv += '-' if in_sched_wakeup   else '_'
+                        outv += '-' if is_running_on_cpu else '_'
+    
+                    else:
+                        val = fields_dict[field_name]
+                        if isinstance(val, bytes):
+                            outv = str(val, DECODE_CHARSET, errors='replace')
+                        else:
+                            outv = str(val)
+                        
+                    enriched_fields[field_name] = outv
+    
+                if save_record:
+                    output_records.append(enriched_fields)
+    
+            time.sleep(1 / (args.sample_hz if args.xtop else 1))
+    
+        if output_records:
+            # csv output mode will not do any terminal stuff
+            if args.output_dir:
+                outfile = args.output_dir + '/threads_' + ts[:13].replace(' ', '.') + '.csv'
+
+                if os.path.isfile(outfile):  # special case if xcapture-bpf has been restarted within the same hour
+                    csv_header_printed = True
+
+                if sys.stdout.name != outfile: # create a new output file when the hour changes
+                    csv_header_printed = False # new file
+                    sys.stdout = open(outfile, 'a')
+
+                if not csv_header_printed:
+                    print_header_csv(output_fields)
+                    csv_header_printed = True
+                    
+                print_fields_csv(output_records, output_fields)
+
+                # stackfile is created once and name doesn't change throughout xcapture process lifetime
+                if not sf:
+                    stackfile = args.output_dir + '/stacks_' + ts[:13].replace(' ', '.') + '.csv'
+                    sf = open(stackfile, 'a')
+
+                if sf:
+                    for s in get_kstack_traces(stackmap, ignore_kstacks=written_kstacks):
+                        print(s, file=sf)
+                        written_kstacks[int(s.split()[1])] = True
+                        #print(written_kstacks, file=sf)
+
+                    for s in get_ustack_traces(stackmap, ignore_ustacks=written_ustacks):
+                        print(s, file=sf)
+                        written_ustacks[int(s.split()[1])] = True
+                        #print(written_ustacks, file=sf)
+
+                    sf.flush()
+
+            else:
+                if args.clear_screen:               # interactive (xtop)
+                    buffer = io.StringIO()
+                    sys.stdout = buffer
+
+                print_stacks_if_nerdmode()
+                print()
+                print()
+
+                if args.xtop:
+                    total_records = len(output_records)
+                    # a new field "samples" shows up (count(*))
+                    grouped_list = group_by(output_records, groupby_fields, samples_attempted, sample_end - sample_start) 
+                    ordered_aggr = sorted(grouped_list, key=lambda x: x['samples'], reverse=True)
+                    print_fields(ordered_aggr, ['seconds', 'avg_thr', 'visual_pct'] + groupby_fields, linelimit=XTOP_MAX_LINES)
+        
+                    print()
+                    print()
+                    print(f'sampled: {samples_attempted} times, avg_thr: {round(total_records / samples_attempted, 2)}')
+                    print(f'start: {ts[:19]}, duration: {duration}s')
+              
+                    if args.clear_screen:
+                        # terminal size may change over time 
+                        (term_width, term_height) = shutil.get_terminal_size()
+        
+                        for x in range(1, term_height - min(len(ordered_aggr), XTOP_MAX_LINES) - 9): # header/footer lines
+                            print()
+                    else:
+                        print()
+        
+                else: # wide raw terminal output
+                    print_fields(output_records, output_fields) 
+                    print()
+                    print()
+        
+                if args.clear_screen:
+                    os.system('clear')
+                    output = buffer.getvalue()
+                    sys.stdout = sys.__stdout__ 
+                    print(output)
+
+            sys.stdout.flush()
+
+    except KeyboardInterrupt:
+        exit(0)
+        #signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+# That's all, folks!

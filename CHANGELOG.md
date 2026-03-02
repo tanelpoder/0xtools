@@ -1,6 +1,47 @@
-# 0x.tools v1.0
+# 0x.tools changelog
 
-## pSnapper changelog
+3.0.0-alpha-preview
+=====================
+* Moved older xcapture versions (and experiemental prototypes to `experiments/`) directory
+ - xcapture-v0-proc still works just fine (reading /proc files) and is useful for always-on thread sampling on older Linux kernels without eBPF
+ - xcapture-v1-bpftrace is a simple hack + prototype
+ - xcapture-v2-bcc is a more functional version, but also prototype-grade (but you can see how the "xtop" tool could work with stack tracing etc)
+ - xcapture-v3: The current `bin/xcapture` is now the final, modern eBPF + libbpf based tool for efficient, always-on thread activity tracking that will eventually graduate to production grade (my current plan is to launch it with my talk at [P99CONF 2025](https://www.p99conf.io) (in 22-23 October 2025).
+
+1.2.3
+======================
+* OS support
+  - add unistd.h lookup for arm64 and ppc64le platforms
+
+* Installation & running
+  - add RPMspec for creating RPMs
+  - add systemd service definitions
+
+* Features
+  - add more "single file descriptor" syscalls that can report filenames accessed
+  - report /proc/PID/ns/pid for container namespace info
+  - systems with python3 now print out extra newlines like intended
+
+1.1.0
+======================
+* general
+  - using semantic versioning now (major.minor.patch)
+  - in the future, will update version numbers in a specific tool only when it was updated
+
+* pSnapper
+  - `psn` works with python 3 now too (uses whereever the "/usr/bin/env python" command points to)
+
+* xcapture
+ - Fixed xcapture compiler warnings shown on newer gcc versions
+ - More precise sampling interval (account for sampling busy-time and subtract that from next sleep duration)
+ - Under 1 sec sleep durations supported (For example `-d 0.1` for sampling at 10 Hz)
+
+* make/install
+ - by default, executables go to `/usr/bin` now
+ - python libraries go under PREFIX/lib/0xtools now
+ - use PREFIX option in makefile to adjust the installation root
+ - makefile uses the `install` command instead of the `ln -s` hack for installing files
+ - `make uninstall` removes installed files
 
 0.18
 ======================

@@ -1,0 +1,16 @@
+[Unit]
+Description=0x.Tools xcapture
+
+[Service]
+Environment="SAMPLEINTERVAL=1"
+Environment="LOGDIRPATH=/var/log/xcapture"
+Environment="ADDITIONALOPTIONS=syscall,wchan,exe,cmdline"
+Environment="MINUTES=59520"
+EnvironmentFile=/etc/default/xcapture
+ExecStartPre=/bin/sh -c 'test -d "$LOGDIRPATH"'
+ExecStartPre=/bin/sh -c 'test "$SAMPLEINTERVAL" -ge 1'
+ExecStart=/bin/sh -c '/usr/bin/xcapture -d ${SAMPLEINTERVAL} -c ${ADDITIONALOPTIONS} -o ${LOGDIRPATH}'
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

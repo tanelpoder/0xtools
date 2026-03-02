@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+
+#  tracepointargs -- List Linux tracepoint events, their arguments
+#  and expand related structures if an argument is a structure
+#
+#  Copyright 2025 Tanel Poder [https://0x.tools]
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  SPDX-License-Identifier: GPL-2.0-or-later
+
+import os
+import sys
+import argparse
+import signal
+import re
+import json
+from typing import Dict, List, Tuple, Optional
+
+__version__     = "1.0.0"
+__description__ = "List tracepoint event arguments from debugfs"
+__author__      = "Tanel Poder"
+__date__        = "2025-01-30"
+__url__         = "https://0x.tools"
+
+DEFAULT_PATH = '/sys/kernel/debug/tracing/events'
+
+# Parse C struct definitions from vmlinux.h
+def parse_vmlinux_structs(vmlinux_path: str) -> Dict[str, List[Tuple[str, str]]]:
+    if not os.path.exists(vmlinux_path):
+        print(f"Error: vmlinux.h file not found: {vmlinux_path}", file=sys.stderr)
+        sys.exit(1)
+
+    structs = {}
+    current_struct = None
+    current_members = []
+    
+    with open(vmlinux_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            
+            # Start of struct definition
+            if line.startswith('struct ') and '{' in line:
+                struct_name = line.split()[1].split('{')[0].strip()
+                current_struct = struct_name
+                current_members = []
+            
+            # Struct member
+            elif current_struct and ';' in line and not line.startswith('}'):
+                # Remove comments if present
+                line = line.split('//')[0].strip()
+                if line:
+                    # Split type and name, handling pointers and arrays
+                    parts = line.rstrip(';').strip().split()
+                    if len(parts) >= 2:
+                        member_type = ' '.join(parts[:-1])
+                        member_name = parts[-1].split('[')[0]  # Remove array dimensions
+                        current_members.append((member_type, member_name))
+            
+            # End of struct
+            elif line.startswith('};') and current_struct:
+                if current_members:  # Only add if struct has members
+                    structs[current_struct] = current_members
+                current_struct = None
+                current_members = []
+    
+    return structs
+
+def parse_event_format(file_path):
+    event_info = {}
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+        for line in lines:
+            line = line.strip()
+            if line.startswith('name:'):
+                event_info['name'] = line.split(':')[1].strip()
+            elif line.startswith('ID:'):
+                event_info['id'] = int(line.split()[1].strip())
+            elif line.startswith('field:'):
+                # example: field:unsigned short common_type;       offset:0;       size:2; signed:0;
+                field_info = line.split(';')[0].replace(':', ' ').split()
+                if len(field_info) >= 3:
+                    field_type = ' '.join(field_info[1:-1])
+                    field_name = field_info[-1]
+                    if 'args' not in event_info:
+                        event_info['args'] = []
+                    # Skip common_* fields as they're present in all events
+                    if not field_name.startswith('common_'):
+                        event_info['args'].append((field_type, field_name))
+
+    return event_info
+
+def list_tracepoints(events_path):
+    tracepoints = []
+    for event_type in os.listdir(events_path):
+        type_path = os.path.join(events_path, event_type)
+        if not os.path.isdir(type_path):
+            continue
+
+        for event_name in os.listdir(type_path):
+            event_dir = os.path.join(type_path, event_name)
+            if not os.path.isdir(event_dir):
+                continue
+
+            format_file = os.path.join(event_dir, 'format')
+            if os.path.isfile(format_file):
+                event_info = parse_event_format(format_file)
+                event_info['type'] = event_type
+                tracepoints.append(event_info)
+
+    if not tracepoints:
+        if os.geteuid() != 0:
+            print("Error: No tracepoints found. Please run this as root or mount the debugfs with proper permissions.", 
+                  file=sys.stderr)
+        else:
+            print(f"Error: No tracepoints found in the specified path {events_path}", file=sys.stderr)
+        sys.exit(1)
+
+    return tracepoints
+
+def format_struct_members(struct_name: str, members: List[Tuple[str, str]], structs: Dict[str, List[Tuple[str, str]]], 
+                         indent: str = '', follow_structs: bool = False, depth: int = 0,
+                         visited: Optional[set] = None) -> str:
+    if not members:
+        return f"{struct_name} {{}}"
+    
+    # Prevent infinite recursion
+    if visited is None:
+        visited = set()
+    if struct_name in visited:
+        return f"{struct_name} /* recursive reference */"
+    visited.add(struct_name)
+    
+    # Limit maximum recursion depth (linked lists, etc)
+    MAX_DEPTH = 2
+    if depth > MAX_DEPTH:
+        return f"{struct_name} /* max depth reached */"
+    
+    result = [f"{struct_name} {{"]
+    for type_name, member_name in members:
+        line = f"{indent}  {type_name} {member_name};"
+        result.append(line)
+        
+        # If following structs and this is a struct type, expand it
+        if follow_structs and 'struct ' in type_name:
+            # Extract the struct name, handling pointers and const
+            sub_struct = type_name.split('struct ')[-1].split()[0]
+            sub_struct = sub_struct.replace('*', '').replace('const', '').strip()
+            
+            if sub_struct in structs and sub_struct not in visited:
+                # Expand the sub-struct with increased indentation
+                sub_expansion = format_struct_members(
+                    f"struct {sub_struct}",
+                    structs[sub_struct],
+                    structs,
+                    indent + '    ',
+                    follow_structs,
+                    depth + 1,
+                    visited.copy()  # Create a new copy for each branch
+                )
+                result.append(f"{indent}    {sub_expansion}")
+    
+    result.append(f"{indent}}}")
+    return '\n'.join(result)
+
+def main():
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # for things like: ./tracepointargs | head
+
+    parser = argparse.ArgumentParser(description='List kernel tracepoint events and their arguments from Linux debugfs.')
+    parser.add_argument('-l', '--newlines', action='store_true', 
+                      help='Print each tracepoint and its arguments on a new line')
+    parser.add_argument('-i', '--id', action='store_true', 
+                      help='Print tracepoint ID')
+    parser.add_argument('-t', '--typeinfo', action='store_true', 
+                      help='Include type information for tracepoint arguments in the output')
+    parser.add_argument('-a', '--expand-structs', action='store_true',
+                      help='Access and expand struct definitions from vmlinux.h (requires -t)')
+    parser.add_argument('-f', '--follow-structs', action='store_true',
+                      help='Recursively expand nested struct definitions (requires -a)')
+    parser.add_argument('--vmlinux', type=str,
+                      help='Path to vmlinux.h file for struct definitions')
+    parser.add_argument('-s', '--sort', choices=['name', 'type'], default='name',
+                      help='Sort output by event name or type (default: name)')
+    parser.add_argument('-V', '--version', action='version', 
+                      version=f"%(prog)s {__version__}", 
+                      help='Show the program version and exit')
+    parser.add_argument('pattern', nargs='?', type=str,
+                      help='Regex pattern to filter events (e.g., "block/*done*" or ".*write.*")')
+    parser.add_argument('--path', type=str, default=DEFAULT_PATH, 
+                      help=f'Path to the debugfs events directory: {DEFAULT_PATH}')
+    parser.add_argument('--type', type=str, help='Filter events by type (e.g., "syscalls", "block")')
+
+    args = parser.parse_args()
+
+    # Load struct definitions if requested
+    structs = {}
+    if args.expand_structs:
+        if not args.typeinfo:
+            print("Error: --expand-structs (-a) requires --typeinfo (-t)", file=sys.stderr)
+            sys.exit(1)
+        if not args.vmlinux:
+            print("Error: --expand-structs (-a) requires --vmlinux <file>", file=sys.stderr)
+            sys.exit(1)
+        if args.follow_structs and not args.expand_structs:
+            print("Error: --follow-structs (-f) requires --expand-structs (-a)", file=sys.stderr)
+            sys.exit(1)
+        structs = parse_vmlinux_structs(args.vmlinux)
+
+    tracepoints = list_tracepoints(args.path)
+
+    # Filter by type if specified
+    if args.type:
+        tracepoints = [tp for tp in tracepoints if tp['type'] == args.type]
+        if not tracepoints:
+            print(f"No tracepoints found for type: {args.type}", file=sys.stderr)
+            sys.exit(1)
+    
+    # Filter by regex pattern if specified
+    if args.pattern:
+        try:
+            # Convert shell-style wildcards to regex
+            pattern = args.pattern.replace('*', '.*')
+            regex = re.compile(pattern)
+            tracepoints = [tp for tp in tracepoints 
+                          if regex.search(f"{tp['type']}/{tp['name']}")]
+            if not tracepoints:
+                print(f"No tracepoints found matching pattern: {args.pattern}", file=sys.stderr)
+                sys.exit(1)
+        except re.error as e:
+            print(f"Invalid regex pattern: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Sort tracepoints
+    if args.sort == 'name':
+        tracepoints.sort(key=lambda x: x['name'])
+    else:  # sort by type
+        tracepoints.sort(key=lambda x: (x['type'], x['name']))
+
+    for tp in tracepoints:
+        event_name = f"{tp['type']}/{tp['name']}"
+        
+        if args.id:
+            print(f"{event_name}", end=f" // {tp['id']}\n" if args.newlines else "(")
+        else:
+            print(f"{event_name}", end="\n" if args.newlines else "(")
+
+        args_list = []
+        for index, (arg_type, arg_name) in enumerate(tp.get('args', [])):
+            if args.typeinfo:
+                # Check if this type is a struct and we should expand it
+                struct_expanded = ""
+                if args.expand_structs:
+                    # Extract struct name, handling pointers
+                    struct_name = arg_type.strip()
+                    if struct_name.startswith('struct '):
+                        struct_name = struct_name.split()[1]
+                        # Remove pointer asterisks and const
+                        struct_name = struct_name.replace('*', '').replace('const', '').strip()
+                        if struct_name in structs:
+                            # Add extra indentation if using newlines mode
+                            base_indent = '      ' if args.newlines else '    '
+                            struct_expanded = f"\n{base_indent}{format_struct_members(f'struct {struct_name}', structs[struct_name], structs, base_indent, args.follow_structs)}"
+                
+                argout = f"({arg_type}) {arg_name}{struct_expanded}"
+            else:
+                argout = arg_name
+            if args.newlines:
+                print(f"  {index}: {argout}")
+            else:
+                args_list.append(argout)
+        
+        if not args.newlines:
+            print(", ".join(args_list), end="")
+
+        if args.id:
+            print("" if args.newlines else f"); // {tp['id']}")
+        else:
+            print("" if args.newlines else ");")
+
+if __name__ == "__main__":
+    main()

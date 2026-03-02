@@ -1,35 +1,34 @@
-CC=gcc
+CC ?= gcc
 PREFIX ?= /usr
 
-# build
-CFLAGS=-I include -Wall
-
-# debuginfo included
-CFLAGS_DEBUG=-I include -ggdb -Wall
-
-# debug without compiler optimizations
-CFLAGS_DEBUG0=-I include -ggdb -O0
-
+# Default target
+.PHONY: all
 all:
-	$(CC) $(CFLAGS) -o bin/xcapture src/xcapture.c
-
-debug:
-	$(CC) $(CFLAGS_DEBUG) -o bin/xcapture src/xcapture.c
-
-debug0:
-	$(CC) $(CFLAGS_DEBUG0) -o bin/xcapture src/xcapture.c
+	@echo "To install the 0xtools utilities, please run:"
+	@echo "  sudo make install"
+	@echo ""
+	@echo "To remove the 0xtools utilities, please run:"
+	@echo "  sudo make uninstall"
 
 install:
-	install -m 0755 bin/xcapture ${PREFIX}/bin/xcapture
+	install -m 0755 -d ${PREFIX}/bin
 	install -m 0755 bin/psn ${PREFIX}/bin/psn
+	install -m 0755 -d ${PREFIX}/lib/0xtools
+	install -m 0644 lib/0xtools/psnproc.py ${PREFIX}/lib/0xtools/psnproc.py
+	install -m 0644 lib/0xtools/psnreport.py ${PREFIX}/lib/0xtools/psnreport.py
+	install -m 0644 lib/0xtools/argparse.py ${PREFIX}/lib/0xtools/argparse.py
 	install -m 0755 bin/schedlat ${PREFIX}/bin/schedlat
-	install -m 0644 lib/proc.py ${PREFIX}/lib/proc.py
-	install -m 0644 lib/psnreport.py ${PREFIX}/lib/psnreport.py
-	install -m 0644 lib/argparse.py ${PREFIX}/lib/argparse.py
+	install -m 0755 bin/vmtop ${PREFIX}/bin/vmtop
+	install -m 0755 bin/syscallargs ${PREFIX}/bin/syscallargs
+	install -m 0755 bin/tracepointargs ${PREFIX}/bin/tracepointargs
+	install -m 0755 bin/cpumhz ${PREFIX}/bin/cpumhz
+	install -m 0755 bin/cpumhzturbo ${PREFIX}/bin/cpumhzturbo
+	install -m 0755 bin/cpuactturbo ${PREFIX}/bin/cpuactturbo
+	install -m 0755 bin/lsds ${PREFIX}/bin/lsds
 
 uninstall:
-	rm -fv ${PREFIX}/bin/xcapture ${PREFIX}/bin/psn ${PREFIX}/bin/schedlat
-	rm -fv ${PREFIX}/lib/proc.py ${PREFIX}/lib/psnreport.py ${PREFIX}/lib/argparse.py
-
-clean:
-	rm -f bin/xcapture
+	rm -fv  ${PREFIX}/bin/psn
+	rm -fv  ${PREFIX}/bin/schedlat ${PREFIX}/bin/vmtop ${PREFIX}/bin/syscallargs ${PREFIX}/bin/tracepointargs
+	rm -fv  ${PREFIX}/bin/cpumhz ${PREFIX}/bin/cpumhzturbo ${PREFIX}/bin/cpuactturbo ${PREFIX}/bin/lsds
+	rm -fv  ${PREFIX}/lib/0xtools/psnproc.py ${PREFIX}/lib/0xtools/psnreport.py ${PREFIX}/lib/0xtools/argparse.py
+	rm -rfv ${PREFIX}/lib/0xtools

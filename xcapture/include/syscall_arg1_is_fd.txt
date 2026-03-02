@@ -1,0 +1,58 @@
+0    // read((unsigned int) fd, (char *) buf, (size_t) count); // nr
+1    // write((unsigned int) fd, (const char *) buf, (size_t) count); // nr
+5    // newfstat((unsigned int) fd, (struct stat *) statbuf); // nr
+8    // lseek((unsigned int) fd, (off_t) offset, (unsigned int) whence); // nr
+16   // ioctl((unsigned int) fd, (unsigned int) cmd, (unsigned long) arg); // nr
+17   // pread64((unsigned int) fd, (char *) buf, (size_t) count, (loff_t) pos); // nr
+18   // pwrite64((unsigned int) fd, (const char *) buf, (size_t) count, (loff_t) pos); // nr
+19   // readv((unsigned long) fd, (const struct iovec *) vec, (unsigned long) vlen); // nr
+20   // writev((unsigned long) fd, (const struct iovec *) vec, (unsigned long) vlen); // nr
+42   // connect((int) fd, (struct sockaddr *) uservaddr, (int) addrlen); // nr
+43   // accept((int) fd, (struct sockaddr *) upeer_sockaddr, (int *) upeer_addrlen); // nr
+44   // sendto((int) fd, (void *) buff, (size_t) len, (unsigned int) flags, (struct sockaddr *) addr, (int) addr_len); // nr
+45   // recvfrom((int) fd, (void *) ubuf, (size_t) size, (unsigned int) flags, (struct sockaddr *) addr, (int *) addr_len); // nr
+46   // sendmsg((int) fd, (struct user_msghdr *) msg, (unsigned int) flags); // nr
+47   // recvmsg((int) fd, (struct user_msghdr *) msg, (unsigned int) flags); // nr
+48   // shutdown((int) fd, (int) how); // nr
+49   // bind((int) fd, (struct sockaddr *) umyaddr, (int) addrlen); // nr
+50   // listen((int) fd, (int) backlog); // nr
+51   // getsockname((int) fd, (struct sockaddr *) usockaddr, (int *) usockaddr_len); // nr
+52   // getpeername((int) fd, (struct sockaddr *) usockaddr, (int *) usockaddr_len); // nr
+54   // setsockopt((int) fd, (int) level, (int) optname, (char *) optval, (int) optlen); // nr
+55   // getsockopt((int) fd, (int) level, (int) optname, (char *) optval, (int *) optlen); // nr
+72   // fcntl((unsigned int) fd, (unsigned int) cmd, (unsigned long) arg); // nr
+73   // flock((unsigned int) fd, (unsigned int) cmd); // nr
+77   // ftruncate((unsigned int) fd, (off_t) length); // nr
+78   // getdents((unsigned int) fd, (struct linux_dirent *) dirent, (unsigned int) count); // nr
+91   // fchmod((unsigned int) fd, (umode_t) mode); // nr
+93   // fchown((unsigned int) fd, (uid_t) user, (gid_t) group); // nr
+138  // fstatfs((unsigned int) fd, (struct statfs *) buf); // nr
+187  // readahead((int) fd, (loff_t) offset, (size_t) count); // nr
+190  // fsetxattr((int) fd, (const char *) name, (const void *) value, (size_t) size, (int) flags); // nr
+193  // fgetxattr((int) fd, (const char *) name, (void *) value, (size_t) size); // nr
+196  // flistxattr((int) fd, (char *) list, (size_t) size); // nr
+199  // fremovexattr((int) fd, (const char *) name); // nr
+217  // getdents64((unsigned int) fd, (struct linux_dirent64 *) dirent, (unsigned int) count); // nr
+221  // fadvise64((int) fd, (loff_t) offset, (size_t) len, (int) advice); // nr
+254  // inotify_add_watch((int) fd, (const char *) pathname, (u32) mask); // nr
+255  // inotify_rm_watch((int) fd, (__s32) wd); // nr
+277  // sync_file_range((int) fd, (loff_t) offset, (loff_t) nbytes, (unsigned int) flags); // nr
+278  // vmsplice((int) fd, (const struct iovec *) uiov, (unsigned long) nr_segs, (unsigned int) flags); // nr
+285  // fallocate((int) fd, (int) mode, (loff_t) offset, (loff_t) len); // nr
+288  // accept4((int) fd, (struct sockaddr *) upeer_sockaddr, (int *) upeer_addrlen, (int) flags); // nr
+295  // preadv((unsigned long) fd, (const struct iovec *) vec, (unsigned long) vlen, (unsigned long) pos_l, (unsigned long) pos_h); // nr
+296  // pwritev((unsigned long) fd, (const struct iovec *) vec, (unsigned long) vlen, (unsigned long) pos_l, (unsigned long) pos_h); // nr
+299  // recvmmsg((int) fd, (struct mmsghdr *) mmsg, (unsigned int) vlen, (unsigned int) flags, (struct __kernel_timespec *) timeout); // nr
+307  // sendmmsg((int) fd, (struct mmsghdr *) mmsg, (unsigned int) vlen, (unsigned int) flags); // nr
+308  // setns((int) fd, (int) flags); // nr
+313  // finit_module((int) fd, (const char *) uargs, (int) flags); // nr
+322  // execveat((int) fd, (const char *) filename, (const char *const *) argv, (const char *const *) envp, (int) flags); // nr
+327  // preadv2((unsigned long) fd, (const struct iovec *) vec, (unsigned long) vlen, (unsigned long) pos_l, (unsigned long) pos_h, (rwf_t) flags); // nr
+328  // pwritev2((unsigned long) fd, (const struct iovec *) vec, (unsigned long) vlen, (unsigned long) pos_l, (unsigned long) pos_h, (rwf_t) flags); // nr
+426  // io_uring_enter((unsigned int) fd, (u32) to_submit, (u32) min_complete, (u32) flags, (const void *) argp, (size_t) argsz); // nr
+427  // io_uring_register((unsigned int) fd, (unsigned int) opcode, (void *) arg, (unsigned int) nr_args); // nr
+431  // fsconfig((int) fd, (unsigned int) cmd, (const char *) _key, (const void *) _value, (int) aux); // nr
+436  // close_range((unsigned int) fd, (unsigned int) max_fd, (unsigned int) flags); // nr
+438  // pidfd_getfd((int) pidfd, (int) fd, (unsigned int) flags); // nr
+443  // quotactl_fd((unsigned int) fd, (unsigned int) cmd, (qid_t) id, (void *) addr); // nr
+451  // cachestat((unsigned int) fd, (struct cachestat_range *) cstat_range, (struct cachestat *) cstat, (unsigned int) flags); // nr

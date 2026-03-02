@@ -1,37 +1,54 @@
-#!/usr/bin/env python2
-
-# use the following line on RHEL5 (if you have the additional python26 package installed from EPEL):
-##!/usr/bin/env python26 
-
-#  psn -- Linux Process Snapper by Tanel Poder
-#  Copyright 2019-2020 Tanel Poder
+#!/usr/bin/env python
 #
-#  This program is free software: you can redistribute it and/or modify
+#  psn -- Linux Process Snapper by Tanel Poder [https://0x.tools]
+#  Copyright 2019-2021 Tanel Poder
+#
+#  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation, either version 3 of the License, or
+#  the Free Software Foundation; either version 2 of the License, or
 #  (at your option) any later version.
-#  
+#
 #  This program is distributed in the hope that it will be useful,
 #  but WITHOUT ANY WARRANTY; without even the implied warranty of
 #  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #  GNU General Public License for more details.
-#  
-#  You should have received a copy of the GNU General Public License
-#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+#  You should have received a copy of the GNU General Public License along
+#  with this program; if not, write to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+#  SPDX-License-Identifier: GPL-2.0-or-later
+#
+# NOTES
+#
+#  If you have only python3 binary in your system (no "python" command without any suffix),
+#  then set up the OS default alternative or symlink so that you'd have a "python" command.
+#
+#  For example (on RHEL 8):
+#    sudo alternatives --set python /usr/bin/python3
+#
+#  One exception on RHEL 5, use the following line, without quotes (if you have the
+#  additional python26 package installed from EPEL):
+#
+#  "#!/usr/bin/env python26"
+#
+
+PSN_VERSION = '1.2.9'
 
 import sys, os, os.path, time, datetime
 import re
 import sqlite3
 import logging
 from signal import signal, SIGPIPE, SIG_DFL
+import atexit
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + '/lib')
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + '/lib/0xtools')
 
 import argparse
-import proc, psnreport
+import psnproc as proc, psnreport
 
 # don't print "broken pipe" error when piped into commands like "head"
-signal(SIGPIPE,SIG_DFL) 
+signal(SIGPIPE,SIG_DFL)
 
 ### Defaults ###
 default_group_by='comm,state'
@@ -60,7 +77,7 @@ parser.add_argument('-G', '--append-group-by', metavar='csv-columns', default=No
 parser.add_argument('--list', default=None, action='store_true', help='list all available columns')
 
 # specify csv sources to be captured in full. use with -o or --output-sample-db to capture proc data for manual analysis
-parser.add_argument('--sources', metavar='csv-source-names', default='', help=argparse.SUPPRESS) 
+parser.add_argument('--sources', metavar='csv-source-names', default='', help=argparse.SUPPRESS)
 # capture all sources in full. use with -o or --output-sample-db', help=argparse.SUPPRESS)
 parser.add_argument('--all-sources', default=False, action='store_true', help=argparse.SUPPRESS)
 
@@ -81,13 +98,28 @@ start_time = time.time()
 sample_period_s = 1. / args.sample_hz
 sample_ps_period_s = 1. / args.ps_hz
 
+# Define cleanup function
+def cleanup():
+    if args.output_sample_db != ':memory:':
+        if os.path.exists(args.output_sample_db):
+            try:
+                os.remove(args.output_sample_db)
+                logging.debug("Removed temporary database file %s" % (args.output_sample_db))
+            except OSError as e:
+                logging.error("Error removing temporary database file: %s" % (e))
+
+# Register cleanup function only if execution duration exceeds 60 seconds and samples are not being persisted
+if (args.sample_seconds > 60) and (args.output_sample_db == ':memory:') :
+    args.output_sample_db = '/tmp/psn_samples_%.db' % os.getpid()
+    atexit.register(cleanup)
+
 if args.list:
     for p in proc.all_sources:
-        print "\n" + p.name
-        print "===================================="
+        print("\n" + p.name)
+        print("====================================")
         for c in p.available_columns:
             if c[1]:
-                print "%-30s %5s" % (c[0], c[1].__name__)
+                print("%-30s %5s" % (c[0], c[1].__name__))
 
     exit(0)
 
@@ -98,7 +130,7 @@ else:
 
 args.select = args.select.split(',')
 args.group_by = args.group_by.split(',')
-if args.append_group_by: 
+if args.append_group_by:
     args.append_group_by = args.append_group_by.split(',')
 else:
     args.append_group_by = []
@@ -151,7 +183,7 @@ def sqlexec(conn, sql):
 
 def sqlexecmany(conn, sql, samples):
     logging.debug(sql)
-    conn.execute(sql, samples)
+    conn.executemany(sql, samples)
     logging.debug('Done')
 
 ### Schema setup ###
@@ -163,7 +195,7 @@ else:
 
     def create_table(conn, s):
         def sqlite_type(python_type):
-            return {int: 'INTEGER', long: 'INTEGER', float: 'REAL', str: 'TEXT', unicode: 'TEXT'}.get(python_type)
+            return {int: 'INTEGER', int: 'INTEGER', float: 'REAL', str: 'TEXT', str: 'TEXT'}.get(python_type)
 
         sqlite_cols = [(c[0], sqlite_type(c[1])) for c in s.schema_columns]
         sqlite_cols_sql = ', '.join([' '.join(c) for c in sqlite_cols])
@@ -202,7 +234,7 @@ def get_matching_processes(pid_arg=None, recursive=False):
     if pid_arg:
         try:
             arg_pids = [int(p) for p in pid_arg.split(',')]
-            selected_pids = [p for p, b in pid_basename if p in arg_pids] 
+            selected_pids = [p for p, b in pid_basename if p in arg_pids]
         except ValueError as e:
             selected_pids = [p for p, b in pid_basename if re.search(pid_arg, b)]
 
@@ -218,8 +250,8 @@ def get_matching_processes(pid_arg=None, recursive=False):
 
     # deduplicate pids & remove pSnapper pid (as pSnapper doesnt consume any resources when it's not running)
     selected_pids=list(set(selected_pids))
-    if not args.show_yourself: 
-        if os.getpid() in selected_pids: 
+    if not args.show_yourself:
+        if os.getpid() in selected_pids:
             selected_pids.remove(os.getpid())
     return selected_pids
 
@@ -234,6 +266,13 @@ def get_process_tasks(pids):
     return tasks_by_pid
 
 
+def get_utc_now():
+    if sys.version_info >= (3, 2):
+        return datetime.datetime.now(datetime.timezone.utc)
+    else:
+        return datetime.datetime.utcnow()
+
+
 ## Main sampling loop ###
 def main():
     final_warning='' # show warning text in the end of output, if any
@@ -242,106 +281,102 @@ def main():
         num_sample_events = int(sqlexec(conn,'SELECT COUNT(DISTINCT(event_time)) FROM stat').fetchone()[0])
         total_measure_s = 0.
     else:
-        print
-        print('Linux Process Snapper v0.18 by Tanel Poder [https://0x.tools]')
+        print("")
+        print('Linux Process Snapper v%s by Tanel Poder [https://0x.tools]' % PSN_VERSION)
         print('Sampling /proc/%s for %d seconds...' % (', '.join([s.name for s in sources.keys()]), args.sample_seconds)),
         sys.stdout.flush()
         num_sample_events = 0
         num_ps_samples = 0
         total_measure_s = 0.
-    
+
         selected_pids = None
         process_tasks = {}
         sample_ioerrors = 0  # detect permissions issues with /proc/access
-        
+
         sample_seconds = args.sample_seconds
-    
+
         try:
             while time.time() < start_time + args.sample_seconds:
-                measure_begin_time = datetime.datetime.utcnow()
+                measure_begin_time = get_utc_now()
                 event_time = measure_begin_time.isoformat()
-    
+
                 # refresh matching pids at a much lower frequency than process sampling as the underlying ps is expensive
                 if not selected_pids or time.time() > start_time + num_ps_samples * sample_ps_period_s:
                     selected_pids = get_matching_processes(args.pid, args.recursive)
                     process_tasks = get_process_tasks(selected_pids)
                     num_ps_samples += 1
-    
+
                     if not selected_pids:
-                        print 'No matching processes found:', args.pid
+                        print('No matching processes found:', args.pid)
                         sys.exit(1)
-    
+
                 for pid in selected_pids:
                     try:
                         # if any process-level samples fail, don't insert any sample event rows for process or tasks...
                         process_samples = [s.sample(event_time, pid, pid) for s in sources.keys() if s.task_level == False]
-    
+
                         for s, samples in zip([s for s in sources.keys() if s.task_level == False], process_samples):
                             sqlexecmany(conn, s.insert_sql, samples)
-    
+
                         for task in process_tasks.get(pid, []):
                             try:
                                 # ...but if a task disappears mid-sample simply discard data for that task only
                                 task_samples = [s.sample(event_time, pid, task) for s in sources.keys() if s.task_level == True]
-    
+
                                 for s, samples in zip([s for s in sources.keys() if s.task_level == True], task_samples):
-                                    # TODO factor out
-                                    #sqlexecmany(conn, s.insert_sql, samples)
-                                    conn.executemany(s.insert_sql, samples)
-    
-                            except IOError, e:
+                                    sqlexecmany(conn, s.insert_sql, samples)
+
+                            except IOError as e:
                                 sample_ioerrors +=1
                                 logging.debug(e)
                                 continue
-    
-                    except IOError, e:
+
+                    except IOError as e:
                         sample_ioerrors +=1
                         logging.debug(e)
                         continue
-    
+
                 conn.commit()
-    
+
                 num_sample_events += 1
-                measure_delta = datetime.datetime.utcnow() - measure_begin_time
+                measure_delta = get_utc_now() - measure_begin_time
                 total_measure_s += measure_delta.seconds + (measure_delta.microseconds * 0.000001)
-    
+
                 sleep_until = start_time + num_sample_events * sample_period_s
                 time.sleep(max(0, sleep_until - time.time()))
-    
-            print 'finished.'
+
+            print('finished.')
             print
         except KeyboardInterrupt as e:
             sample_seconds = time.time() - start_time
-            print 'sampling interrupted.'
+            print('sampling interrupted.')
             print
-    
-    
+
+
     ### Query and report ###
     for r in reports:
         r.output_report(conn)
-    
-    print 'samples: %s' %  num_sample_events,
+
+    print('samples: %s' %  num_sample_events),
     if not args.input_sample_db:
-        print '(expected: %s)' % int(sample_seconds * args.sample_hz)
+        print('(expected: %s)' % int(sample_seconds * args.sample_hz))
         if num_sample_events < 10:
            final_warning += 'Warning: less than 10 samples captured. Reduce the amount of processes monitored or run pSnapper for longer.'
     else:
         print
-    
-    first_table_name = sources.keys()[0].name
-    print 'total processes: %s,' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()), 'threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone())
-    print 'runtime: %.2f,' % (time.time() - start_time), 'measure time: %.2f' % total_measure_s
+
+    first_table_name = list(sources.keys())[0].name
+    print('total processes: %s, threads: %s' % (conn.execute('SELECT COUNT(DISTINCT(pid)) FROM ' + first_table_name).fetchone()[0], conn.execute('SELECT COUNT(DISTINCT(task)) FROM ' + first_table_name).fetchone()[0]))
+    print('runtime: %.2f, measure time: %.2f' % (time.time() - start_time, total_measure_s))
     print
-    
-    # TODO needs some improvement as some file IO errors come from processes/threads exiting 
+
+    # TODO needs some improvement as some file IO errors come from processes/threads exiting
     # before we get to sample all files of interest under the PID
-    #if sample_ioerrors > 100:
-    
     if sample_ioerrors >= 100:
         final_warning = 'Warning: %d /proc file accesses failed. Run as root or avoid restricted\n         proc-files like "syscall" or measure only your own processes' % sample_ioerrors
-    
+
     if final_warning:
-        print final_warning
+        print(final_warning)
         print
 
 
@@ -354,7 +389,7 @@ def exit(r):
     sys.exit(r)
 
 
-## let's do this!	
+## let's do this!
 if args.profile:
     import cProfile
     cProfile.run('main()', 'psn-prof.dmp')

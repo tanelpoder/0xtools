@@ -1,0 +1,131 @@
+{
+  "timestamp": "2025-08-19T18:45:51.126857",
+  "datadir": "/home/tanel/dev/0xtools-next/xcapture/out",
+  "time_range": "2025-08-11T16:25:00 to 2025-08-11T17:05:00",
+  "suites": {
+    "Basic Tests": {
+      "passed": 5,
+      "failed": 0,
+      "duration": 3.6931521892547607,
+      "tests": [
+        {
+          "name": "basic_query",
+          "passed": true,
+          "duration": 0.7245512008666992,
+          "error": "2025-08-19 18:45:38,522 - INFO - Executing dynamic query\n2025-08-19 18:45:38,522 - INFO - Group columns: []\n2025-08-19 18:45:38,522 - INFO - Latency columns: []\n2025-08-19 18:45:38,908 - INFO - Query returned 5 rows in 0.386s\n"
+        },
+        {
+          "name": "group_by",
+          "passed": true,
+          "duration": 0.7608354091644287,
+          "error": "2025-08-19 18:45:39,242 - INFO - Executing dynamic query\n2025-08-19 18:45:39,242 - INFO - Group columns: ['state', 'username', 'comm']\n2025-08-19 18:45:39,242 - INFO - Latency columns: []\n2025-08-19 18:45:39,669 - INFO - Query returned 5 rows in 0.427s\n"
+        },
+        {
+          "name": "computed_cols",
+          "passed": true,
+          "duration": 0.747776985168457,
+          "error": "2025-08-19 18:45:40,005 - INFO - Executing dynamic query\n2025-08-19 18:45:40,005 - INFO - Group columns: ['state', 'filenamesum', 'comm2']\n2025-08-19 18:45:40,005 - INFO - Latency columns: []\n2025-08-19 18:45:40,418 - INFO - Query returned 5 rows in 0.413s\n"
+        },
+        {
+          "name": "where_clause",
+          "passed": true,
+          "duration": 0.7582640647888184,
+          "error": "2025-08-19 18:45:40,751 - INFO - Executing dynamic query\n2025-08-19 18:45:40,751 - INFO - Group columns: ['state', 'comm']\n2025-08-19 18:45:40,751 - INFO - Latency columns: []\n2025-08-19 18:45:41,176 - INFO - Query returned 5 rows in 0.425s\n"
+        },
+        {
+          "name": "time_columns",
+          "passed": true,
+          "duration": 0.7017161846160889,
+          "error": "2025-08-19 18:45:41,513 - INFO - Executing dynamic query\n2025-08-19 18:45:41,513 - INFO - Group columns: ['hh', 'mi', 'state']\n2025-08-19 18:45:41,513 - INFO - Latency columns: []\n2025-08-19 18:45:41,877 - INFO - Query returned 5 rows in 0.364s\n"
+        }
+      ]
+    },
+    "Latency Tests": {
+      "passed": 4,
+      "failed": 0,
+      "duration": 3.797600030899048,
+      "tests": [
+        {
+          "name": "syscall_latency",
+          "passed": true,
+          "duration": 0.911203145980835,
+          "error": "2025-08-19 18:45:42,214 - INFO - Executing dynamic query\n2025-08-19 18:45:42,214 - INFO - Group columns: ['state', 'syscall']\n2025-08-19 18:45:42,214 - INFO - Latency columns: ['sc.p50_us', 'sc.p95_us', 'sc.p99_us']\n2025-08-19 18:45:42,785 - INFO - Query returned 5 rows in 0.571s\n"
+        },
+        {
+          "name": "io_latency",
+          "passed": true,
+          "duration": 0.8018772602081299,
+          "error": "2025-08-19 18:45:43,120 - INFO - Executing dynamic query\n2025-08-19 18:45:43,121 - INFO - Group columns: ['state', 'exe']\n2025-08-19 18:45:43,121 - INFO - Latency columns: ['io.min_lat_us', 'io.avg_lat_us', 'io.max_lat_us']\n2025-08-19 18:45:43,588 - INFO - Query returned 5 rows in 0.468s\n"
+        },
+        {
+          "name": "syscall_histogram",
+          "passed": true,
+          "duration": 1.0991942882537842,
+          "error": "2025-08-19 18:45:43,926 - INFO - Executing dynamic query\n2025-08-19 18:45:43,926 - INFO - Group columns: ['state', 'syscall']\n2025-08-19 18:45:43,926 - INFO - Latency columns: ['sclat_histogram']\n2025-08-19 18:45:44,664 - INFO - Query returned 3 rows in 0.737s\n"
+        },
+        {
+          "name": "io_histogram",
+          "passed": true,
+          "duration": 0.9853208065032959,
+          "error": "2025-08-19 18:45:45,026 - INFO - Executing dynamic query\n2025-08-19 18:45:45,026 - INFO - Group columns: ['state']\n2025-08-19 18:45:45,026 - INFO - Latency columns: ['iolat_histogram']\n2025-08-19 18:45:45,649 - INFO - Query returned 3 rows in 0.623s\n"
+        }
+      ]
+    },
+    "Stack Tests": {
+      "passed": 3,
+      "failed": 0,
+      "duration": 2.2919178009033203,
+      "tests": [
+        {
+          "name": "kernel_stacks",
+          "passed": true,
+          "duration": 0.7655243873596191,
+          "error": "2025-08-19 18:45:46,011 - INFO - Executing dynamic query\n2025-08-19 18:45:46,011 - INFO - Group columns: ['state', 'kstack_current_func']\n2025-08-19 18:45:46,011 - INFO - Latency columns: []\n2025-08-19 18:45:46,435 - INFO - Query returned 5 rows in 0.424s\n"
+        },
+        {
+          "name": "user_stacks",
+          "passed": true,
+          "duration": 0.7673776149749756,
+          "error": "2025-08-19 18:45:46,780 - INFO - Executing dynamic query\n2025-08-19 18:45:46,780 - INFO - Group columns: ['state', 'ustack_current_func']\n2025-08-19 18:45:46,781 - INFO - Latency columns: []\n2025-08-19 18:45:47,205 - INFO - Query returned 5 rows in 0.424s\n"
+        },
+        {
+          "name": "stack_hashes",
+          "passed": true,
+          "duration": 0.7590134143829346,
+          "error": "2025-08-19 18:45:47,544 - INFO - Executing dynamic query\n2025-08-19 18:45:47,544 - INFO - Group columns: ['kstack_hash', 'state']\n2025-08-19 18:45:47,544 - INFO - Latency columns: []\n2025-08-19 18:45:47,965 - INFO - Query returned 5 rows in 0.421s\n"
+        }
+      ]
+    },
+    "Advanced Tests": {
+      "passed": 4,
+      "failed": 0,
+      "duration": 3.1231067180633545,
+      "tests": [
+        {
+          "name": "complex_grouping",
+          "passed": true,
+          "duration": 0.863412618637085,
+          "error": "2025-08-19 18:45:48,300 - INFO - Executing dynamic query\n2025-08-19 18:45:48,300 - INFO - Group columns: ['state', 'username', 'comm2', 'syscall']\n2025-08-19 18:45:48,300 - INFO - Latency columns: ['sc.p95_us']\n2025-08-19 18:45:48,809 - INFO - Query returned 5 rows in 0.509s\n"
+        },
+        {
+          "name": "device_names",
+          "passed": true,
+          "duration": 0.802821159362793,
+          "error": "2025-08-19 18:45:49,166 - INFO - Executing dynamic query\n2025-08-19 18:45:49,166 - INFO - Group columns: ['devname', 'state']\n2025-08-19 18:45:49,166 - INFO - Latency columns: ['io.avg_lat_us']\n2025-08-19 18:45:49,632 - INFO - Query returned 5 rows in 0.465s\n"
+        },
+        {
+          "name": "connection_info",
+          "passed": true,
+          "duration": 0.7275269031524658,
+          "error": "2025-08-19 18:45:49,967 - INFO - Executing dynamic query\n2025-08-19 18:45:49,967 - INFO - Group columns: ['connection', 'state']\n2025-08-19 18:45:49,968 - INFO - Latency columns: []\n2025-08-19 18:45:50,360 - INFO - Query returned 5 rows in 0.392s\n"
+        },
+        {
+          "name": "file_extensions",
+          "passed": true,
+          "duration": 0.7293422222137451,
+          "error": "2025-08-19 18:45:50,694 - INFO - Executing dynamic query\n2025-08-19 18:45:50,694 - INFO - Group columns: ['fext', 'state']\n2025-08-19 18:45:50,694 - INFO - Latency columns: []\n2025-08-19 18:45:51,089 - INFO - Query returned 5 rows in 0.395s\n"
+        }
+      ]
+    }
+  }
+}

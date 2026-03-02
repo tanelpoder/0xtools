@@ -1,3 +1,14 @@
 *.pyc
 *.swp
 bin/xcapture
+bin/xcap/*
+*.tar.gz
+*.o
+xcapture/.output/
+xcapture/out/
+xcapture/xcapture
+xcapture/tests/md5_test
+xcapture/.clangd
+xstack/.output/
+xstack/xstack
+xstack/xintr

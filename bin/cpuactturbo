@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Copyright 2022-2025, Tanel Poder [0x.tools]
+# SPDX-License-Identifier: GPL-2.0-or-later 
+#
+# Program:   cpuactturbo
+#
+# Purpose:   Show a summary of actual CPUs "busyness" (being in C0-state and not idle),
+#            in somewhat tricky units of MHz, grouped by 100MHz increments.
+#
+#            The "act" in cpuactturbo stands for actual (or active) running time for the CPU.
+#
+#            Since there are different levels of "idle", this output is too high
+#            level for *really understanding* your CPU (power) usage. For that,
+#            you'd need to use raw turbostat output to see the C1,C2,... states too
+#            (man turbostat helps)
+#
+# Notes:     You need sudo/root access for this tool as turbostat requires it (setcap
+#            is also possible)
+#
+# Important: This only shows you something about how often (and how fast) the CPU clocks
+#            ran during the measurement period. This tool does not drill down into
+#            actual CPU frontend/backend/latency metrics within the CPU. You'd need
+#            "perf stat -d" for that or similar tools.
+#
+#            One example of "perf stat -d" usage is in my blog:
+#            https://tanelpoder.com/2015/09/21/ram-is-the-new-disk-and-how-to-measure-its-performance-part-2-tools/
+
+# As this script needs to be ran as root (with sudo), /usr/bin might not be in root's path
+TURBOSTAT=/usr/bin/turbostat
+
+# turbostat requires root
+if [ "$USER" != root ]; then
+    echo "Error: This script uses turbostat which requires root privs. Run sudo $0" >&2
+    exit 1
+fi
+
+# create bars for barchart
+print_blocks() {
+    local count=$1
+    case $count in
+        1) printf "▏";;  # 1/8 block
+        2) printf "▎";;  # 1/4 block
+        3) printf "▍";;  # 3/8 block
+        4) printf "▌";;  # 1/2 block
+        5) printf "▋";;  # 5/8 block
+        6) printf "▊";;  # 3/4 block
+        7) printf "▉";;  # 7/8 block
+        8) printf "█";;  # full block
+        *)
+            # For numbers > 8, print full blocks and then a partial block
+            local full_blocks=$((count / 8))
+            local remainder=$((count % 8))
+            
+            for ((i=0; i<full_blocks; i++)); do
+                printf "█"
+            done
+            
+            if [ $remainder -ne 0 ]; then
+                print_blocks $remainder
+            fi
+            ;;
+    esac
+}
+
+# main - print header
+printf "%-8s %4s  %s\n" "MHz" "Num" "Visual"
+
+# using Core field only to filter out turbostat summary rows (Core is "-")
+${TURBOSTAT} -q -s Core,Avg_MHz -i 1 -n 1 | \
+    grep -Ev "Core|^-" | \
+    awk '{ printf("%04d\n",$2) }' | \
+    awk '{ 
+        split($1,x,"."); 
+        printf substr(x[1],1,2) "00..99 \n" 
+    }' | \
+    sed 's/^0/ /' | \
+    sort | \
+    uniq -c | \
+    sort -nbrk 2 | \
+    while read count bucket; do
+        printf "%-8s %4d  " "$bucket" "$count"
+        print_blocks "$count"
+        printf "\n"
+    done
+echo
+
